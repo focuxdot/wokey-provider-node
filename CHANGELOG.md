@@ -4,6 +4,17 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.37]
+
+### Fixed
+- Fixed the relay endpoint failover never alternating. A single failed connect
+  emits both `error` and `close`, so the reconnect handler ran twice and toggled
+  the direct↔fallback choice twice (net zero), leaving the bridge stuck retrying
+  the same unreachable endpoint. The endpoint now flips exactly once per failed
+  attempt, so a node whose current endpoint becomes unreachable actually moves to
+  the other one. (Binding still seeds the right endpoint, so this only affected
+  runtime failover after the initial connect.)
+
 ## [0.1.36]
 
 ### Changed

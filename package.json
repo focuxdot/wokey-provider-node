@@ -1,6 +1,6 @@
 {
   "name": "wokey-provider-node",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "description": "Wokey Provider Node runtime, local console, CLI, and installers.",
   "type": "module",
   "license": "Apache-2.0",
