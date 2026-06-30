@@ -4,6 +4,22 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.34]
+
+### Added
+- Provider link fallback for networks that block the bare origin IP but not the
+  domain (e.g. some mainland China ISPs). The bridge and the bind path retry
+  through a CDN-proxied endpoint (`node.wokey.ai` → `nodey.wokey.ai`) when the
+  direct one is unreachable, and stick to whichever endpoint connects. This is a
+  runtime fallback only — the direct host remains the persisted source of truth.
+- A 30s WebSocket keepalive ping so the relay survives CDN idle timeouts.
+
+### Changed
+- Binding now reports `platform_unreachable` (with a clear localized console
+  message) when neither the direct nor the fallback endpoint can be reached,
+  instead of a generic `internal_error`. Genuine binding-code rejections are
+  still surfaced verbatim.
+
 ## [0.1.33]
 
 ### Fixed
