@@ -4,6 +4,15 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.35]
+
+### Fixed
+- Bound the platform connect/upgrade with a 10s handshake timeout. Previously a
+  blocked or blackholed primary endpoint (firewall silently dropping packets)
+  could hang on the OS TCP timeout for ~2 minutes before the bridge flipped to
+  the fallback endpoint, so a node with a reachable fallback still looked
+  permanently disconnected. It now flips within seconds.
+
 ## [0.1.34]
 
 ### Added

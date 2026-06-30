@@ -14,7 +14,7 @@ try {
     [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
 } catch {}
 
-$Version = if ($env:WOKEY_PROVIDER_NODE_VERSION) { $env:WOKEY_PROVIDER_NODE_VERSION } else { "0.1.34" }
+$Version = if ($env:WOKEY_PROVIDER_NODE_VERSION) { $env:WOKEY_PROVIDER_NODE_VERSION } else { "0.1.35" }
 $PackageRevision = if ($env:WOKEY_PROVIDER_NODE_PACKAGE_REVISION) { $env:WOKEY_PROVIDER_NODE_PACKAGE_REVISION } else { $Version }
 $DefaultBaseUrl = "https://github.com/focuxdot/wokey-provider-node/releases/download/v$Version"
 $BaseUrl = if ($env:WOKEY_PROVIDER_NODE_BASE_URL) { $env:WOKEY_PROVIDER_NODE_BASE_URL.TrimEnd("/") } else { $DefaultBaseUrl }
