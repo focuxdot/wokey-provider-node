@@ -1,9 +1,39 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildProviderBridgeWebSocketConnection,
   normalizeProviderBridgeCloseReason,
   shouldSuppressProviderBridgeReconnect,
 } from '../src/provider-node/bridge.js';
+
+// Minimal controllable WebSocket so the failover state machine can be driven
+// (the real `ws` would open real sockets). buildProviderBridgeWebSocketConnection
+// tests above don't instantiate it, so mocking the module is safe for them.
+const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
+  const sockets: Array<{ url: string; readyState: number; emit: (event: string, ...args: unknown[]) => void }> = [];
+  class FakeWebSocket {
+    static OPEN = 1;
+    readyState = 0;
+    url: string;
+    private handlers: Record<string, Array<(...a: unknown[]) => void>> = {};
+    constructor(url: string) {
+      this.url = url;
+      sockets.push(this as never);
+    }
+    on(event: string, fn: (...a: unknown[]) => void) {
+      if (!this.handlers[event]) this.handlers[event] = [];
+      this.handlers[event].push(fn);
+      return this;
+    }
+    emit(event: string, ...args: unknown[]) {
+      for (const fn of this.handlers[event] || []) fn(...args);
+    }
+    close() {}
+    ping() {}
+    send() {}
+  }
+  return { FakeWebSocket, fakeSockets: sockets };
+});
+vi.mock('ws', () => ({ default: FakeWebSocket }));
 
 describe('ProviderBridge reconnect policy', () => {
   it('suppresses reconnects for platform-managed close reasons', () => {
@@ -86,5 +116,62 @@ describe('ProviderBridge reconnect policy', () => {
       true,
     );
     expect(connection.url).toBe('wss://staging.example.com:9443/internal/provider/connect');
+  });
+});
+
+describe('ProviderBridge endpoint failover', () => {
+  beforeEach(() => {
+    fakeSockets.length = 0;
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function makeBridge(preferFallbackEndpoint = false) {
+    const { defaultConfig } = await import('../src/provider-node/config.js');
+    const { ProviderBridge } = await import('../src/provider-node/bridge.js');
+    const config = {
+      ...defaultConfig(),
+      platformWsUrl: 'wss://node.wokey.ai:8443/internal/provider/connect',
+      preferFallbackEndpoint,
+    };
+    return new ProviderBridge(() => config);
+  }
+
+  it('flips to the fallback exactly once when a connect attempt fails (error + close)', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      expect(fakeSockets).toHaveLength(1);
+      expect(fakeSockets[0].url).toBe('wss://node.wokey.ai:8443/internal/provider/connect');
+
+      // A single failed connect emits BOTH 'error' and 'close', neither preceded
+      // by 'open'. The flip must net to one, not cancel itself.
+      fakeSockets[0].emit('error', new Error('ETIMEDOUT'));
+      fakeSockets[0].emit('close', 1006, Buffer.from(''));
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      expect(fakeSockets).toHaveLength(2);
+      expect(fakeSockets[1].url).toBe('wss://nodey.wokey.ai:8443/internal/provider/connect');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('keeps the same endpoint after a healthy session drops', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+      fakeSockets[0].emit('close', 1006, Buffer.from('')); // drop after a healthy session
+      await vi.advanceTimersByTimeAsync(40_000);
+
+      expect(fakeSockets).toHaveLength(2);
+      expect(fakeSockets[1].url).toBe('wss://node.wokey.ai:8443/internal/provider/connect');
+    } finally {
+      bridge.stop();
+    }
   });
 });

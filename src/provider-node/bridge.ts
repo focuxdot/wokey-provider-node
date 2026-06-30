@@ -238,12 +238,6 @@ export class ProviderBridge {
     if (this.stopped) return;
     this.state.connected = false;
     this.state.lastError = reason;
-    // Connect attempt failed before ever opening → try the other endpoint next
-    // (direct ↔ CDN-proxied fallback). A drop after a healthy session is not an
-    // endpoint problem, so we keep the same endpoint and just reconnect.
-    if (!wasConnected && platformFallbackUrl(this.getConfig().platformWsUrl)) {
-      this.useFallback = !this.useFallback;
-    }
     this.state.reconnectSuppressedReason = undefined;
     this.officialExitTunnels.closeAll('platform_connection_closed');
     this.rejectPendingMirrorUpdates(new Error(`provider_bridge_${reason}`));
@@ -255,7 +249,15 @@ export class ProviderBridge {
       this.state.reconnectSuppressedReason = reason;
       return;
     }
+    // A single failed attempt emits BOTH 'error' and 'close', so this runs twice;
+    // the dedup guard makes only the first one schedule. Flip AFTER the guard so a
+    // failed connect alternates the endpoint exactly once (direct ↔ CDN-proxied
+    // fallback) — flipping before it would toggle twice and never alternate. A
+    // drop after a healthy session (wasConnected) keeps the same endpoint.
     if (this.reconnectTimer) return;
+    if (!wasConnected && platformFallbackUrl(this.getConfig().platformWsUrl)) {
+      this.useFallback = !this.useFallback;
+    }
     const delayMs = this.nextReconnectDelayMs();
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
