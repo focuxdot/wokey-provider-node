@@ -4,6 +4,16 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.36]
+
+### Changed
+- The node now remembers which platform endpoint is reachable. When bind reaches
+  the platform only via the fallback endpoint, it records that preference so the
+  WebSocket relay connects straight to the fallback instead of trying the dead
+  direct endpoint first on every (re)connect. The bridge also persists whichever
+  endpoint it settles on, so the preference survives restarts and still recovers
+  to the direct endpoint if it becomes reachable again.
+
 ## [0.1.35]
 
 ### Fixed
