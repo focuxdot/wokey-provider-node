@@ -51,4 +51,30 @@ describe('ProviderBridge reconnect policy', () => {
       'x-provider-node-id': 'node with spaces',
     });
   });
+
+  it('targets the CDN-proxied fallback host when asked, keeping identity headers', () => {
+    const config = {
+      platformWsUrl: 'wss://node.wokey.ai:8443/internal/provider/connect',
+      nodeId: 'node_123',
+      providerNodeSecret: 'secret_123',
+    };
+    expect(buildProviderBridgeWebSocketConnection(config, false).url).toBe(
+      'wss://node.wokey.ai:8443/internal/provider/connect',
+    );
+    const fallback = buildProviderBridgeWebSocketConnection(config, true);
+    expect(fallback.url).toBe('wss://nodey.wokey.ai:8443/internal/provider/connect');
+    expect(fallback.options.headers).toMatchObject({ 'x-provider-node-id': 'node_123' });
+  });
+
+  it('falls back to the primary url when a custom host has no fallback', () => {
+    const connection = buildProviderBridgeWebSocketConnection(
+      {
+        platformWsUrl: 'wss://staging.example.com:9443/internal/provider/connect',
+        nodeId: 'node_123',
+        providerNodeSecret: 'secret_123',
+      },
+      true,
+    );
+    expect(connection.url).toBe('wss://staging.example.com:9443/internal/provider/connect');
+  });
 });

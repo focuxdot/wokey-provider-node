@@ -47,6 +47,8 @@ const messages = {
     nodeBindingUnavailable:
       'Could not verify Platform binding. Local credentials are shown, but authorization state may be stale.',
     platformTemporarilyUnavailable: 'Platform is temporarily unavailable. Please try again in a moment.',
+    platformUnreachable:
+      "Cannot reach the platform (tried the direct endpoint and the fallback). Check this node's network and that the server IP or domain is reachable from here.",
     credentialsTitle: 'Credentials',
     credentialsBody: 'Detected local OAuth credentials and OAuth browser flows available to this node.',
     credentialsScanDisabledBody: 'Add a credential to this node with the browser OAuth flow, device code, or by pasting a token.',
@@ -225,6 +227,7 @@ const messages = {
     nodePausedNotice: '该节点已暂停，已停止接收请求。请在 Provider 页面恢复节点，然后点击"刷新节点状态"继续。',
     nodeBindingUnavailable: '暂时无法校验 Platform 绑定状态。本机授权凭证会继续显示，但授权状态可能不是最新。',
     platformTemporarilyUnavailable: '平台暂时不可用，请稍后重试。',
+    platformUnreachable: '无法连接平台(已尝试直连入口与回退入口)。请检查本节点网络,确认服务器 IP 或域名从这里可达。',
     credentialsTitle: '授权凭证',
     credentialsBody: '当前节点可使用本机 OAuth 凭证与浏览器 OAuth 流程。',
     credentialsScanDisabledBody: '通过浏览器 OAuth、设备码或粘贴 Token 为当前节点添加授权凭证。',
@@ -802,7 +805,7 @@ async function bindWithCode({ bindingCode, platformBindUrl, resultId = 'unboundR
       history.replaceState(null, '', location.pathname === '/bind' ? '/' : location.pathname || '/');
     }
   } catch (error) {
-    setToast(resultId, error.message, 'error');
+    setToast(resultId, formatApiError(error), 'error');
   } finally {
     if (button) button.disabled = false;
   }
@@ -1399,6 +1402,7 @@ function legacyPlatformCredentialForLocalCredential(item) {
 function formatApiError(error) {
   const message = error?.body?.error || error?.message || String(error || '');
   if (message === 'Invalid provider node credentials') return t('nodeBindingInvalidCredentials');
+  if (message === 'platform_unreachable') return t('platformUnreachable');
   if (message === 'uninstall_confirmation_required') return t('uninstallConfirmRequired');
   if (message === 'anthropic_oauth_start_required') return t('authorizationFlowExpired');
   if (message === 'anthropic_oauth_state_mismatch') return t('authorizationCodeLinkMismatch');

@@ -90,6 +90,30 @@ const MASTER_KEY_SCRYPT_SALT = 'wokey-provider-node:master-key:v1';
 // default before the node receives that instruction.
 const DEFAULT_PLATFORM_WS_URL = 'wss://node.wokey.ai:8443/internal/provider/connect';
 
+// The default endpoint is the direct-IP origin primary. Some networks — notably
+// mainland China ISPs that block the bare origin IP but not the domain — cannot
+// reach it, so the bridge and bind path retry through a CDN-proxied host that
+// resolves to non-blocked edge IPs. This is a runtime fallback only: the primary
+// stays the persisted source of truth (see migrateLegacyPlatformWsUrl), so the
+// proxied host is never written to config.
+const PLATFORM_PRIMARY_HOST = 'node.wokey.ai';
+const PLATFORM_FALLBACK_HOST = 'nodey.wokey.ai';
+
+// Returns the CDN-proxied fallback for a primary platform URL (ws/wss or
+// http/https — host swap only, scheme/port/path preserved), or null when the URL
+// is not the production primary host (custom/local-dev hosts have no fallback).
+export function platformFallbackUrl(rawUrl: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  if (url.hostname !== PLATFORM_PRIMARY_HOST) return null;
+  url.hostname = PLATFORM_FALLBACK_HOST;
+  return url.toString();
+}
+
 export function defaultConfig(): ProviderNodeConfig {
   const buildInfo = getProviderNodeBuildInfo();
   return {

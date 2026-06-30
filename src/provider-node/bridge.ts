@@ -13,11 +13,16 @@ import type {
   ProviderHello,
 } from '../shared/protocol.js';
 import { sha256Json } from '../shared/crypto.js';
-import type { ProviderNodeConfig } from './config.js';
+import { type ProviderNodeConfig, platformFallbackUrl } from './config.js';
 import { ProviderRiskController, type ProviderRiskSnapshot } from './risk.js';
 import { ProviderOfficialExitTunnelManager } from './official-exit.js';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
+// Low-level WebSocket ping to keep the relay warm through intermediaries that
+// idle out quiet connections (a CDN-proxied fallback path typically cuts idle
+// sockets at ~100s). A bound official-exit node sends no business heartbeat, so
+// without this an idle node on the fallback would be dropped and reconnect-churn.
+const KEEPALIVE_PING_INTERVAL_MS = 30_000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_JITTER_RATIO = 0.25;
@@ -62,9 +67,11 @@ export function shouldSuppressProviderBridgeReconnect(reason: string): boolean {
 
 export function buildProviderBridgeWebSocketConnection(
   config: Pick<ProviderNodeConfig, 'platformWsUrl' | 'nodeId' | 'providerNodeSecret'>,
+  useFallback = false,
 ): { url: string; options: WebSocket.ClientOptions } {
+  const fallbackUrl = useFallback ? platformFallbackUrl(config.platformWsUrl) : null;
   return {
-    url: config.platformWsUrl,
+    url: fallbackUrl ?? config.platformWsUrl,
     options: {
       headers: {
         'x-provider-node-id': config.nodeId,
@@ -78,6 +85,7 @@ export class ProviderBridge {
   private socket: WebSocket | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
+  private keepaliveTimer: NodeJS.Timeout | null = null;
   private readonly pendingMirrorUpdates = new Map<string, {
     credentialBindingId: string;
     timer: NodeJS.Timeout;
@@ -85,6 +93,12 @@ export class ProviderBridge {
     reject: (error: Error) => void;
   }>();
   private reconnectAttempt = 0;
+  // Which endpoint the next connect() targets: false = direct primary, true =
+  // CDN-proxied fallback. We only flip after a connect attempt fails outright,
+  // so once an endpoint connects the bridge sticks to it (a drop on a healthy
+  // link retries the same endpoint first) and direct-reachable nodes never touch
+  // the fallback. Nodes on networks that block the primary IP settle on fallback.
+  private useFallback = false;
   private lastSentCapabilitiesHash: string | null = null;
   private stopped = false;
   private readonly risk = new ProviderRiskController();
@@ -109,8 +123,10 @@ export class ProviderBridge {
     this.stopped = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
+    this.keepaliveTimer = null;
     this.officialExitTunnels.closeAll();
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_stopped'));
     this.socket?.close();
@@ -159,17 +175,24 @@ export class ProviderBridge {
     const config = this.getConfig();
     // Node identity and secret travel in headers, not the query string, so they
     // do not land in proxy access logs or request URL telemetry.
-    const connection = buildProviderBridgeWebSocketConnection(config);
+    const connection = buildProviderBridgeWebSocketConnection(config, this.useFallback);
     const socket = new WebSocket(connection.url, connection.options);
     this.socket = socket;
+    let opened = false;
 
     socket.on('open', () => {
       const config = this.getConfig();
+      opened = true;
       this.state.connected = true;
       this.state.lastConnectedAt = new Date().toISOString();
       this.state.lastError = undefined;
       this.reconnectAttempt = 0;
       this.sendHello();
+      if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) socket.ping();
+      }, KEEPALIVE_PING_INTERVAL_MS);
+      this.keepaliveTimer.unref?.();
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
       if (this.shouldSendBusinessHeartbeat(config)) {
@@ -185,22 +208,30 @@ export class ProviderBridge {
     });
 
     socket.on('close', (_code, reason) => {
-      if (this.socket === socket) this.scheduleReconnect(normalizeProviderBridgeCloseReason(reason));
+      if (this.socket === socket) this.scheduleReconnect(normalizeProviderBridgeCloseReason(reason), opened);
     });
     socket.on('error', (error) => {
-      if (this.socket === socket) this.scheduleReconnect(error.message);
+      if (this.socket === socket) this.scheduleReconnect(error.message, opened);
     });
   }
 
-  private scheduleReconnect(reason: string) {
+  private scheduleReconnect(reason: string, wasConnected = true) {
     if (this.stopped) return;
     this.state.connected = false;
     this.state.lastError = reason;
+    // Connect attempt failed before ever opening → try the other endpoint next
+    // (direct ↔ CDN-proxied fallback). A drop after a healthy session is not an
+    // endpoint problem, so we keep the same endpoint and just reconnect.
+    if (!wasConnected && platformFallbackUrl(this.getConfig().platformWsUrl)) {
+      this.useFallback = !this.useFallback;
+    }
     this.state.reconnectSuppressedReason = undefined;
     this.officialExitTunnels.closeAll('platform_connection_closed');
     this.rejectPendingMirrorUpdates(new Error(`provider_bridge_${reason}`));
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
     this.heartbeatTimer = null;
+    this.keepaliveTimer = null;
     if (shouldSuppressProviderBridgeReconnect(reason)) {
       this.state.reconnectSuppressedReason = reason;
       return;

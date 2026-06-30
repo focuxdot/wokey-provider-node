@@ -13,6 +13,7 @@ import {
   defaultConfig,
   applyRuntimeBuildInfo,
   loadConfig,
+  platformFallbackUrl,
   redactConfig,
   saveConfig,
   type ProviderNodeConfig,
@@ -382,28 +383,47 @@ app.post('/api/platform/bind', async (request, reply) => {
     return { ok: false, error: 'binding_code_required' };
   }
 
-  const bindUrl = body.platformBindUrl?.trim() || platformHttpUrl(config.platformWsUrl, '/internal/provider/bind');
-  try {
-    assertAllowedPlatformUrl(bindUrl, ['http', 'https'], ['https']);
-  } catch (error) {
-    reply.code(400);
-    return { ok: false, error: error instanceof Error ? error.message : 'platform_url_not_allowed' };
-  }
-  const response = await fetch(bindUrl, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      bindingCode: body.bindingCode.trim(),
-      nodeId: config.nodeId,
-      nodeVersion: config.nodeVersion,
-    }),
+  const primaryBindUrl = body.platformBindUrl?.trim() || platformHttpUrl(config.platformWsUrl, '/internal/provider/bind');
+  // Try the direct origin endpoint first, then its CDN-proxied fallback if
+  // the direct one is unreachable (e.g. the bare origin IP is blocked). A real
+  // platform rejection (bad/expired code, version too old) is returned verbatim —
+  // we never retry it on the fallback, and the user sees the true reason instead
+  // of a generic internal_error.
+  const bindUrls = [primaryBindUrl, platformFallbackUrl(primaryBindUrl)].filter(
+    (url): url is string => Boolean(url),
+  );
+  const bindPayload = JSON.stringify({
+    bindingCode: body.bindingCode.trim(),
+    nodeId: config.nodeId,
+    nodeVersion: config.nodeVersion,
   });
-  const data = await parseJsonResponse<{
-    providerId: string;
-    nodeId?: string;
-    providerNodeSecret: string;
-    platformWsUrl: string;
-  }>(response);
+
+  let data: BindRedemptionData | undefined;
+  let lastUnreachable: string | undefined;
+  for (const bindUrl of bindUrls) {
+    try {
+      assertAllowedPlatformUrl(bindUrl, ['http', 'https'], ['https']);
+    } catch (error) {
+      reply.code(400);
+      return { ok: false, error: error instanceof Error ? error.message : 'platform_url_not_allowed' };
+    }
+    const attempt = await redeemBindingCode(bindUrl, bindPayload);
+    if (attempt.kind === 'ok') {
+      data = attempt.data;
+      break;
+    }
+    if (attempt.kind === 'platform_error') {
+      reply.code(attempt.status >= 400 && attempt.status < 500 ? attempt.status : 400);
+      return { ok: false, error: attempt.error };
+    }
+    lastUnreachable = attempt.detail;
+  }
+  if (!data) {
+    request.log.warn({ detail: lastUnreachable, tried: bindUrls.length }, 'platform bind unreachable');
+    reply.code(502);
+    return { ok: false, error: 'platform_unreachable' };
+  }
+
   try {
     assertAllowedPlatformUrl(data.platformWsUrl, ['ws', 'wss'], ['wss']);
   } catch (error) {
@@ -1316,6 +1336,44 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
     throw new Error(message);
   }
   return data;
+}
+
+type BindRedemptionData = { providerId: string; nodeId?: string; providerNodeSecret: string; platformWsUrl: string };
+type BindRedemptionResult =
+  | { kind: 'ok'; data: BindRedemptionData }
+  | { kind: 'platform_error'; error: string; status: number }
+  | { kind: 'unreachable'; detail: string };
+
+// Redeems a binding code at one platform endpoint, distinguishing three outcomes:
+// a clean success, a real platform rejection (reached the platform, got a
+// structured error — surface it as-is), and an unreachable endpoint (connect
+// failure or a non-JSON gateway/reset page — caller should try the next URL).
+async function redeemBindingCode(url: string, body: string): Promise<BindRedemptionResult> {
+  let response: Response;
+  try {
+    response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+  } catch (error) {
+    return { kind: 'unreachable', detail: error instanceof Error ? error.message : 'fetch_failed' };
+  }
+  const text = await response.text();
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    // A non-JSON body is a CDN/gateway error page or a connection-reset stub, not
+    // a real platform answer — treat it as unreachable so the fallback is tried.
+    return { kind: 'unreachable', detail: `bad_response_${response.status}` };
+  }
+  if (!response.ok) {
+    const error = asObject(parsed).error;
+    const message = typeof error === 'object' && error && 'message' in error
+      ? String((error as { message?: unknown }).message)
+      : typeof error === 'string'
+        ? error
+        : `request_failed:${response.status}`;
+    return { kind: 'platform_error', error: message, status: response.status };
+  }
+  return { kind: 'ok', data: parsed as BindRedemptionData };
 }
 
 function asObject(value: unknown): Record<string, unknown> {

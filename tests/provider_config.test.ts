@@ -3,7 +3,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getProviderNodeBuildInfo } from '../src/provider-node/build-info.js';
-import { defaultConfig, deriveProviderNodeId, loadConfig, redactConfig, saveConfig } from '../src/provider-node/config.js';
+import { defaultConfig, deriveProviderNodeId, loadConfig, platformFallbackUrl, redactConfig, saveConfig } from '../src/provider-node/config.js';
+
+describe('platform fallback url', () => {
+  it('swaps the direct primary host for the CDN-proxied fallback, preserving scheme/port/path', () => {
+    expect(platformFallbackUrl('wss://node.wokey.ai:8443/internal/provider/connect')).toBe(
+      'wss://nodey.wokey.ai:8443/internal/provider/connect',
+    );
+    expect(platformFallbackUrl('https://node.wokey.ai:8443/internal/provider/bind')).toBe(
+      'https://nodey.wokey.ai:8443/internal/provider/bind',
+    );
+  });
+
+  it('returns null for non-primary hosts so custom/local-dev endpoints have no fallback', () => {
+    expect(platformFallbackUrl('wss://staging.example.com:9443/internal/provider/connect')).toBeNull();
+    expect(platformFallbackUrl('ws://127.0.0.1:8780/internal/provider/connect')).toBeNull();
+    expect(platformFallbackUrl('wss://nodey.wokey.ai:8443/internal/provider/connect')).toBeNull();
+    expect(platformFallbackUrl('not a url')).toBeNull();
+  });
+});
 
 describe('provider node config', () => {
   it('derives stable machine-bound node ids without exposing the machine id', () => {
