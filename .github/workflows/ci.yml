@@ -38,7 +38,7 @@ jobs:
           echo "commit_short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
           echo "built_at=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')" >> "$GITHUB_OUTPUT"
       - name: Build multi-arch image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -48,7 +48,7 @@ jobs:
             PROVIDER_NODE_GIT_DIRTY=0
             PROVIDER_NODE_BUILD_AT=${{ steps.meta.outputs.built_at }}
       - name: Build local smoke image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
