@@ -44,7 +44,7 @@ jobs:
         env:
           PROVIDER_NODE_SKIP_VERSION_BUMP: '1'
         run: npm run package:macos
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-macos
           path: release/macos/*
@@ -73,7 +73,7 @@ jobs:
         env:
           PROVIDER_NODE_SKIP_VERSION_BUMP: '1'
         run: npm run package:windows
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-unix
           path: |
@@ -117,7 +117,7 @@ jobs:
           find release -maxdepth 3 -type f -print0 | while IFS= read -r -d '' file; do
             cp "$file" "release-assets/$(basename "$file")"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-assets
           path: release-assets/*
