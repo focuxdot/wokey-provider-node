@@ -1,0 +1,364 @@
+#!/bin/sh
+set -eu
+
+APP_DIR="${PROVIDER_NODE_APP_DIR:-/usr/local/wokey-provider-node/app}"
+DEFAULT_DATA_DIR="${HOME}/Library/Application Support/Wokey Provider Node"
+DEFAULT_CONFIG_PATH="${DEFAULT_DATA_DIR}/provider-node.json"
+DEFAULT_CONSOLE_PORT="16888"
+DEFAULT_CONSOLE_HOST="127.0.0.1"
+DEFAULT_DOWNLOAD_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/latest/download"
+LABEL="ai.wokey.provider-node"
+PLIST="/Library/LaunchAgents/${LABEL}.plist"
+# Must match StandardOutPath/StandardErrorPath in ai.wokey.provider-node.plist.
+LOG_OUT="/tmp/wokey-provider-node.out.log"
+LOG_ERR="/tmp/wokey-provider-node.err.log"
+# Records the Node interpreter `wokey-node restart` resolved, so the
+# launchd-managed `serve` (which starts with a minimal PATH that excludes
+# version managers like nvm/fnm/volta) can reuse the very same binary.
+NODE_HINT_FILE="${DEFAULT_DATA_DIR}/node-path"
+CONSOLE_READY_TIMEOUT_SECONDS="${PROVIDER_CONSOLE_READY_TIMEOUT:-15}"
+
+find_node() {
+  if [ -n "${PROVIDER_NODE_NODE:-}" ] && [ -x "${PROVIDER_NODE_NODE}" ]; then
+    printf '%s\n' "${PROVIDER_NODE_NODE}"
+    return 0
+  fi
+
+  # Prefer the interpreter a prior `restart` recorded. This is what lets the
+  # background service find a Node that only exists on the user's interactive
+  # PATH (nvm/fnm/volta) — launchd does not load the login shell environment.
+  if [ -r "${NODE_HINT_FILE}" ]; then
+    hint_node="$(cat "${NODE_HINT_FILE}" 2>/dev/null || true)"
+    if [ -n "${hint_node}" ] && [ -x "${hint_node}" ]; then
+      printf '%s\n' "${hint_node}"
+      return 0
+    fi
+  fi
+
+  for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+    if [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_node() {
+  NODE_BIN="$(find_node || true)"
+  if [ -z "${NODE_BIN}" ]; then
+    echo "Provider Node requires Node.js 20 or newer. Install Node.js, then run: wokey-node restart" >&2
+    exit 70
+  fi
+
+  NODE_MAJOR="$("${NODE_BIN}" -p "Number(process.versions.node.split('.')[0])")"
+  if [ "${NODE_MAJOR}" -lt 20 ]; then
+    echo "Provider Node requires Node.js 20 or newer. Found $("${NODE_BIN}" --version)." >&2
+    exit 70
+  fi
+}
+
+provider_env() {
+  mkdir -p "${DEFAULT_DATA_DIR}"
+  export PROVIDER_CONFIG_PATH="${PROVIDER_CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}"
+  export PROVIDER_CONSOLE_HOST="${PROVIDER_CONSOLE_HOST:-${DEFAULT_CONSOLE_HOST}}"
+  export PROVIDER_CONSOLE_PORT="${PROVIDER_CONSOLE_PORT:-${DEFAULT_CONSOLE_PORT}}"
+  export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
+  export LOG_LEVEL="${LOG_LEVEL:-info}"
+}
+
+# Persist the interpreter ensure_node just resolved (NODE_BIN) so the
+# launchd-managed `serve` reuses it instead of failing to find Node. Run from
+# the user's interactive context, where nvm/fnm/volta are on PATH.
+persist_node_hint() {
+  [ -n "${NODE_BIN:-}" ] || return 0
+  mkdir -p "${DEFAULT_DATA_DIR}" 2>/dev/null || true
+  printf '%s\n' "${NODE_BIN}" > "${NODE_HINT_FILE}" 2>/dev/null || true
+}
+
+# Poll the console until it answers or the timeout elapses. Uses the resolved
+# Node (always available here) so we don't depend on curl being installed.
+wait_for_console() {
+  PROVIDER_CONSOLE_READY_TIMEOUT="${CONSOLE_READY_TIMEOUT_SECONDS}" "${NODE_BIN}" -e '
+const http = require("node:http");
+const host = process.env.PROVIDER_CONSOLE_HOST || "127.0.0.1";
+const port = Number(process.env.PROVIDER_CONSOLE_PORT || "16888");
+const deadline = Date.now() + Number(process.env.PROVIDER_CONSOLE_READY_TIMEOUT || "15") * 1000;
+const probe = () => {
+  const req = http.get({ host, port, path: "/api/status", timeout: 1500 }, (res) => {
+    res.resume();
+    process.exit(res.statusCode && res.statusCode < 500 ? 0 : 1);
+  });
+  req.on("timeout", () => req.destroy(new Error("timeout")));
+  req.on("error", () => {
+    if (Date.now() >= deadline) process.exit(1);
+    setTimeout(probe, 300);
+  });
+};
+probe();
+'
+}
+
+serve() {
+  ensure_node
+  provider_env
+  cd "${APP_DIR}"
+  exec "${NODE_BIN}" dist/provider-node/server.js
+}
+
+open_console() {
+  provider_env
+  open "http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}/"
+}
+
+service_target() {
+  printf 'gui/%s/%s\n' "$(id -u)" "${LABEL}"
+}
+
+service_domain() {
+  printf 'gui/%s\n' "$(id -u)"
+}
+
+service_loaded() {
+  launchctl print "$(service_target)" >/dev/null 2>&1
+}
+
+active_user_uid() {
+  if [ -n "${SUDO_UID:-}" ] && [ "${SUDO_UID}" != "0" ]; then
+    printf '%s\n' "${SUDO_UID}"
+    return 0
+  fi
+
+  console_user="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+  if [ -n "${console_user}" ] && [ "${console_user}" != "root" ]; then
+    /usr/bin/id -u "${console_user}" 2>/dev/null && return 0
+  fi
+
+  id -u
+}
+
+active_user_home() {
+  if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
+    home_dir="$(/usr/bin/dscl . -read "/Users/${SUDO_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+    if [ -n "${home_dir}" ]; then
+      printf '%s\n' "${home_dir}"
+      return 0
+    fi
+  fi
+
+  console_user="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+  if [ -n "${console_user}" ] && [ "${console_user}" != "root" ]; then
+    home_dir="$(/usr/bin/dscl . -read "/Users/${console_user}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}')"
+    if [ -n "${home_dir}" ]; then
+      printf '%s\n' "${home_dir}"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "${HOME}"
+}
+
+bootstrap_service() {
+  if [ ! -f "${PLIST}" ]; then
+    echo "LaunchAgent not found at ${PLIST}. Reinstall Wokey Provider Node." >&2
+    exit 66
+  fi
+
+  if ! service_loaded; then
+    launchctl bootstrap "$(service_domain)" "${PLIST}" >/dev/null 2>&1 || true
+  fi
+  launchctl enable "$(service_target)" >/dev/null 2>&1 || true
+}
+
+restart_service() {
+  ensure_node
+  provider_env
+  persist_node_hint
+  bootstrap_service
+  launchctl kickstart -k "$(service_target)"
+  if wait_for_console; then
+    echo "Wokey Provider Node started."
+    echo "Console: http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}/"
+  else
+    echo "Wokey Provider Node was launched but its console did not come up at http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}/ within ${CONSOLE_READY_TIMEOUT_SECONDS}s." >&2
+    echo "The background service most likely failed to start. Recent errors:" >&2
+    if [ -s "${LOG_ERR}" ]; then
+      echo "--- ${LOG_ERR} (last 20 lines) ---" >&2
+      tail -n 20 "${LOG_ERR}" >&2 2>/dev/null || true
+    else
+      echo "(no error log at ${LOG_ERR} yet)" >&2
+    fi
+    echo "Fix the cause above, then run: wokey-node restart" >&2
+    exit 75
+  fi
+}
+
+update_node() {
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required to update Wokey Provider Node." >&2
+    exit 69
+  fi
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "bash is required to update Wokey Provider Node." >&2
+    exit 69
+  fi
+  if ! command -v mktemp >/dev/null 2>&1; then
+    echo "mktemp is required to update Wokey Provider Node." >&2
+    exit 69
+  fi
+
+  base_url="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_DOWNLOAD_BASE_URL}}"
+  base_url="${base_url%/}"
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "${tmpdir}"' EXIT
+  installer="${tmpdir}/install.sh"
+
+  echo "Downloading Wokey Provider Node installer from ${base_url}/install.sh"
+  curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${base_url}/install.sh?update=$(date +%s)" -o "${installer}"
+  chmod 755 "${installer}"
+  WOKEY_PROVIDER_NODE_BASE_URL="${base_url}" bash "${installer}"
+}
+
+uninstall_node() {
+  purge_data="0"
+  if [ "${1:-}" = "--purge" ]; then
+    purge_data="1"
+  elif [ -n "${1:-}" ]; then
+    echo "Usage: provider-node uninstall [--purge]" >&2
+    exit 64
+  fi
+
+  target_uid="$(active_user_uid)"
+  target_domain="gui/${target_uid}"
+  target_service="${target_domain}/${LABEL}"
+  target_home="$(active_user_home)"
+  target_data_dir="${target_home}/Library/Application Support/Wokey Provider Node"
+
+  launchctl bootout "${target_service}" >/dev/null 2>&1 || true
+  launchctl bootout "${target_domain}" "${PLIST}" >/dev/null 2>&1 || true
+
+  if [ "$(id -u)" -eq 0 ]; then
+    rm -rf "${PLIST}" /usr/local/bin/wokey-node /usr/local/wokey-provider-node
+    if [ "${purge_data}" = "1" ]; then
+      rm -rf "${target_data_dir}"
+    fi
+  else
+    sudo rm -rf "${PLIST}" /usr/local/bin/wokey-node /usr/local/wokey-provider-node
+    if [ "${purge_data}" = "1" ]; then
+      sudo rm -rf "${target_data_dir}"
+    fi
+  fi
+
+  echo "Wokey Provider Node has been removed."
+  if [ "${purge_data}" = "1" ]; then
+    echo "User data was removed from: ${target_data_dir}"
+  else
+    echo "User data was kept at: ${target_data_dir}"
+  fi
+}
+
+service_status() {
+  provider_env
+  if service_loaded; then
+    echo "Wokey Provider Node: loaded"
+  else
+    echo "Wokey Provider Node: not loaded"
+  fi
+  echo "Console: http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}/"
+}
+
+service_logs() {
+  provider_env
+  lines="${PROVIDER_NODE_LOG_LINES:-120}"
+  shown=0
+  if [ -s "${LOG_ERR}" ]; then
+    echo "== stderr (${LOG_ERR}) =="
+    tail -n "${lines}" "${LOG_ERR}"
+    shown=1
+  fi
+  if [ -s "${LOG_OUT}" ]; then
+    [ "${shown}" -eq 1 ] && echo
+    echo "== stdout (${LOG_OUT}) =="
+    tail -n "${lines}" "${LOG_OUT}"
+    shown=1
+  fi
+  if [ "${shown}" -eq 0 ]; then
+    echo "No logs yet at ${LOG_ERR} or ${LOG_OUT}."
+    echo "Start the node with: wokey-node restart"
+  fi
+}
+
+auth_cli() {
+  ensure_node
+  provider_env
+  export PROVIDER_NODE_CLI_BASE_URL="${PROVIDER_NODE_CLI_BASE_URL:-http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}}"
+  exec "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" "$@"
+}
+
+print_cli_status() {
+  export PROVIDER_NODE_CLI_BASE_URL="${PROVIDER_NODE_CLI_BASE_URL:-http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}}"
+  if "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" api-status >/dev/null 2>&1; then
+    echo
+    "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" api-status || true
+  fi
+}
+
+case "${1:-menu}" in
+  serve)
+    serve
+    ;;
+  open)
+    open_console
+    ;;
+  start|restart)
+    restart_service
+    ;;
+  update)
+    update_node
+    ;;
+  uninstall)
+    shift
+    uninstall_node "$@"
+    ;;
+  status)
+    ensure_node
+    service_status
+    print_cli_status
+    ;;
+  logs)
+    service_logs
+    ;;
+  menu)
+    auth_cli menu
+    ;;
+  add|bind|list|scan|import|authorize|login|paste|help|--help|-h)
+    auth_cli "$@"
+    ;;
+  auth)
+    shift
+    auth_cli "$@"
+    ;;
+  version)
+    ensure_node
+    cd "${APP_DIR}"
+    "${NODE_BIN}" -e "const pkg=require('./package.json'); console.log(pkg.version)"
+    ;;
+  doctor)
+    ensure_node
+    provider_env
+    echo "node=${NODE_BIN}"
+    echo "app=${APP_DIR}"
+    echo "config=${PROVIDER_CONFIG_PATH}"
+    echo "console=http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}/"
+    ;;
+  *)
+    echo "Usage: provider-node [menu|serve|open|start|restart|update|uninstall|status|logs|add|bind|list|import|login|paste|version|doctor]" >&2
+    exit 64
+    ;;
+esac

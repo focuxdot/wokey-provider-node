@@ -1,0 +1,61 @@
+{
+  "name": "wokey-provider-node",
+  "version": "0.1.33",
+  "description": "Wokey Provider Node runtime, local console, CLI, and installers.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/focuxdot/wokey-provider-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/focuxdot/wokey-provider-node/issues"
+  },
+  "homepage": "https://github.com/focuxdot/wokey-provider-node#readme",
+  "files": [
+    "dist",
+    "packaging",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node scripts/clean-dist.mjs",
+    "build": "npm run clean && tsc && node scripts/build-console.mjs && node scripts/write-provider-build-info.mjs",
+    "build:console": "node scripts/build-console.mjs",
+    "prepack": "npm run build",
+    "dev": "node scripts/build-console.mjs && tsx watch src/provider-node/server.ts",
+    "start": "node --env-file-if-exists=.env.local dist/provider-node/server.js",
+    "package:provider-node": "bash scripts/package-provider-node.sh",
+    "package:macos": "bash scripts/package-macos.sh",
+    "package:linux": "bash scripts/package-linux.sh",
+    "package:windows": "bash scripts/package-windows.sh",
+    "release:checksums": "bash scripts/generate-release-checksums.sh",
+    "release:assert-installers": "node scripts/assert-installer-version.mjs",
+    "audit:oss": "bash scripts/audit-oss-boundary.sh",
+    "lint": "biome lint src tests scripts web",
+    "format": "biome format --write src tests scripts web",
+    "format:check": "biome format src tests scripts web",
+    "test": "vitest run",
+    "verify": "npm run lint && npm run build && npm test && npm run release:assert-installers && npm run audit:oss && npm audit --omit=dev"
+  },
+  "dependencies": {
+    "fastify": "^5.6.2",
+    "nanoid": "^5.1.6",
+    "pino": "^10.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.0",
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  }
+}

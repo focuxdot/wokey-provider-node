@@ -1,0 +1,460 @@
+#!/bin/sh
+set -eu
+
+APP_DIR="${PROVIDER_NODE_APP_DIR:-/opt/wokey-provider-node/app}"
+DATA_DIR="${PROVIDER_NODE_DATA_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/wokey-provider-node}"
+DEFAULT_CONFIG_PATH="${DATA_DIR}/provider-node.json"
+DEFAULT_CONSOLE_PORT="16888"
+DEFAULT_CONSOLE_HOST="127.0.0.1"
+DEFAULT_DOWNLOAD_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/latest/download"
+SERVICE_NAME="wokey-provider-node.service"
+UNIT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+UNIT_PATH="${UNIT_DIR}/${SERVICE_NAME}"
+# Records the Node interpreter `wokey-node restart` resolved, so the
+# systemd-managed `serve` (which starts with a minimal PATH that excludes
+# version managers like nvm/fnm/volta) can reuse the very same binary.
+NODE_HINT_FILE="${DATA_DIR}/node-path"
+CONSOLE_READY_TIMEOUT_SECONDS="${PROVIDER_CONSOLE_READY_TIMEOUT:-15}"
+
+is_docker() {
+  [ "${PROVIDER_NODE_DOCKER:-0}" = "1" ] || [ -f /.dockerenv ]
+}
+
+find_node() {
+  if [ -n "${PROVIDER_NODE_NODE:-}" ] && [ -x "${PROVIDER_NODE_NODE}" ]; then
+    printf '%s\n' "${PROVIDER_NODE_NODE}"
+    return 0
+  fi
+
+  # Prefer the interpreter a prior `restart` recorded. This is what lets the
+  # background service find a Node that only exists on the user's interactive
+  # PATH (nvm/fnm/volta) — systemd does not load the login shell environment.
+  if [ -r "${NODE_HINT_FILE}" ]; then
+    hint_node="$(cat "${NODE_HINT_FILE}" 2>/dev/null || true)"
+    if [ -n "${hint_node}" ] && [ -x "${hint_node}" ]; then
+      printf '%s\n' "${hint_node}"
+      return 0
+    fi
+  fi
+
+  for candidate in /usr/bin/node /usr/local/bin/node /opt/node/bin/node; do
+    if [ -x "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_node() {
+  NODE_BIN="$(find_node || true)"
+  if [ -z "${NODE_BIN}" ]; then
+    echo "Provider Node requires Node.js 20 or newer. Install Node.js, then run: wokey-node restart" >&2
+    exit 70
+  fi
+
+  NODE_MAJOR="$("${NODE_BIN}" -p "Number(process.versions.node.split('.')[0])")"
+  if [ "${NODE_MAJOR}" -lt 20 ]; then
+    echo "Provider Node requires Node.js 20 or newer. Found $("${NODE_BIN}" --version)." >&2
+    exit 70
+  fi
+}
+
+provider_env() {
+  mkdir -p "${DATA_DIR}"
+  export PROVIDER_CONFIG_PATH="${PROVIDER_CONFIG_PATH:-${DEFAULT_CONFIG_PATH}}"
+  export PROVIDER_CONSOLE_HOST="${PROVIDER_CONSOLE_HOST:-${DEFAULT_CONSOLE_HOST}}"
+  export PROVIDER_CONSOLE_PORT="${PROVIDER_CONSOLE_PORT:-${DEFAULT_CONSOLE_PORT}}"
+  export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
+  export LOG_LEVEL="${LOG_LEVEL:-info}"
+}
+
+# Persist the interpreter ensure_node just resolved (NODE_BIN) so the
+# systemd-managed `serve` reuses it instead of failing to find Node. Run from
+# the user's interactive context, where nvm/fnm/volta are on PATH.
+persist_node_hint() {
+  [ -n "${NODE_BIN:-}" ] || return 0
+  mkdir -p "${DATA_DIR}" 2>/dev/null || true
+  printf '%s\n' "${NODE_BIN}" > "${NODE_HINT_FILE}" 2>/dev/null || true
+}
+
+# Poll the console until it answers or the timeout elapses. Uses the resolved
+# Node (always available here) so we don't depend on curl being installed.
+wait_for_console() {
+  PROVIDER_CONSOLE_READY_TIMEOUT="${CONSOLE_READY_TIMEOUT_SECONDS}" "${NODE_BIN}" -e '
+const http = require("node:http");
+const host = process.env.PROVIDER_CONSOLE_HOST || "127.0.0.1";
+const port = Number(process.env.PROVIDER_CONSOLE_PORT || "16888");
+const probeHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+const deadline = Date.now() + Number(process.env.PROVIDER_CONSOLE_READY_TIMEOUT || "15") * 1000;
+const probe = () => {
+  const req = http.get({ host: probeHost, port, path: "/api/status", timeout: 1500 }, (res) => {
+    res.resume();
+    process.exit(res.statusCode && res.statusCode < 500 ? 0 : 1);
+  });
+  req.on("timeout", () => req.destroy(new Error("timeout")));
+  req.on("error", () => {
+    if (Date.now() >= deadline) process.exit(1);
+    setTimeout(probe, 300);
+  });
+};
+probe();
+'
+}
+
+# Print a short tail of the service log to explain a failed start.
+print_recent_errors() {
+  if command -v journalctl >/dev/null 2>&1; then
+    echo "--- journalctl --user-unit ${SERVICE_NAME} (last 20 lines) ---" >&2
+    journalctl --user-unit "${SERVICE_NAME}" -n 20 --no-pager 2>/dev/null >&2 || true
+  fi
+}
+
+serve() {
+  ensure_node
+  provider_env
+  cd "${APP_DIR}"
+  exec "${NODE_BIN}" dist/provider-node/server.js
+}
+
+console_url() {
+  provider_env
+  case "${PROVIDER_CONSOLE_HOST}" in
+    0.0.0.0|::)
+      printf 'http://127.0.0.1:%s/\n' "${PROVIDER_CONSOLE_PORT}"
+      ;;
+    *)
+      printf 'http://%s:%s/\n' "${PROVIDER_CONSOLE_HOST}" "${PROVIDER_CONSOLE_PORT}"
+      ;;
+  esac
+}
+
+cli_base_url() {
+  provider_env
+  case "${PROVIDER_CONSOLE_HOST}" in
+    0.0.0.0|::)
+      printf 'http://127.0.0.1:%s\n' "${PROVIDER_CONSOLE_PORT}"
+      ;;
+    *)
+      printf 'http://%s:%s\n' "${PROVIDER_CONSOLE_HOST}" "${PROVIDER_CONSOLE_PORT}"
+      ;;
+  esac
+}
+
+open_console() {
+  url="$(console_url)"
+  if command -v xdg-open >/dev/null 2>&1 && [ -n "${DISPLAY:-}" ]; then
+    xdg-open "${url}" >/dev/null 2>&1 || true
+  fi
+  echo "Console: ${url}"
+}
+
+write_user_unit() {
+  mkdir -p "${UNIT_DIR}" "${DATA_DIR}"
+  cat > "${UNIT_PATH}" <<EOF
+[Unit]
+Description=Wokey Provider Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${APP_DIR}
+ExecStart=/usr/local/bin/wokey-node serve
+Restart=always
+RestartSec=5
+Environment=PROVIDER_NODE_APP_DIR=${APP_DIR}
+Environment=PROVIDER_NODE_DATA_DIR=${DATA_DIR}
+Environment=PROVIDER_CONFIG_PATH=${DEFAULT_CONFIG_PATH}
+Environment=PROVIDER_CONSOLE_HOST=${DEFAULT_CONSOLE_HOST}
+Environment=PROVIDER_CONSOLE_PORT=${DEFAULT_CONSOLE_PORT}
+Environment=LOG_LEVEL=info
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+ensure_systemd_user() {
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "systemctl is not available on this host." >&2
+    exit 69
+  fi
+  if ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "systemd --user is not available in this session. Reconnect over SSH or run under a user login session." >&2
+    exit 69
+  fi
+}
+
+try_enable_linger() {
+  if command -v loginctl >/dev/null 2>&1; then
+    loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || \
+      sudo -n loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+  fi
+}
+
+docker_management_hint() {
+  command_name="$1"
+  case "${command_name}" in
+    install-service)
+      echo "Docker mode: Provider Node is managed by the container runtime."
+      echo "Use: docker compose up -d"
+      ;;
+    uninstall-service)
+      echo "Docker mode: remove the container with Docker Compose."
+      echo "Use: docker compose down"
+      echo "User data is kept in the Docker volume unless that volume is removed."
+      ;;
+    start|restart)
+      echo "Docker mode: restart Provider Node with Docker Compose."
+      echo "Use: docker compose restart provider-node"
+      ;;
+    stop)
+      echo "Docker mode: stop Provider Node with Docker Compose."
+      echo "Use: docker compose stop provider-node"
+      ;;
+    update)
+      echo "Docker mode: update by pulling or rebuilding the image, then recreate the container."
+      echo "For source builds, use: docker compose up -d --build"
+      echo "For official images, use: docker compose pull && docker compose up -d"
+      ;;
+    logs)
+      echo "Docker mode: read Provider Node logs with Docker Compose."
+      echo "Use: docker compose logs -f provider-node"
+      ;;
+  esac
+}
+
+install_service() {
+  ensure_node
+  provider_env
+  if is_docker; then
+    docker_management_hint install-service
+    return 0
+  fi
+  persist_node_hint
+  ensure_systemd_user
+  write_user_unit
+  systemctl --user daemon-reload
+  systemctl --user enable "${SERVICE_NAME}"
+  if systemctl --user is-active --quiet "${SERVICE_NAME}"; then
+    systemctl --user restart "${SERVICE_NAME}"
+  else
+    systemctl --user start "${SERVICE_NAME}"
+  fi
+  try_enable_linger
+  if wait_for_console; then
+    echo "Wokey Provider Node installed for user $(id -un)."
+    echo "Console: $(console_url)"
+    echo "Logs: journalctl --user-unit ${SERVICE_NAME} -f"
+  else
+    echo "Wokey Provider Node was installed but its console did not come up at $(console_url) within ${CONSOLE_READY_TIMEOUT_SECONDS}s." >&2
+    print_recent_errors
+    echo "Fix the cause above, then run: wokey-node restart" >&2
+    exit 75
+  fi
+}
+
+restart_service() {
+  ensure_node
+  provider_env
+  if is_docker; then
+    docker_management_hint restart
+    return 0
+  fi
+  persist_node_hint
+  ensure_systemd_user
+  if [ ! -f "${UNIT_PATH}" ]; then
+    install_service
+    return 0
+  fi
+  systemctl --user daemon-reload
+  systemctl --user restart "${SERVICE_NAME}"
+  if wait_for_console; then
+    echo "Wokey Provider Node restarted."
+    echo "Console: $(console_url)"
+  else
+    echo "Wokey Provider Node was restarted but its console did not come up at $(console_url) within ${CONSOLE_READY_TIMEOUT_SECONDS}s." >&2
+    print_recent_errors
+    echo "Fix the cause above, then run: wokey-node restart" >&2
+    exit 75
+  fi
+}
+
+update_node() {
+  if is_docker; then
+    docker_management_hint update
+    return 0
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required to update Wokey Provider Node." >&2
+    exit 69
+  fi
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "bash is required to update Wokey Provider Node." >&2
+    exit 69
+  fi
+  if ! command -v mktemp >/dev/null 2>&1; then
+    echo "mktemp is required to update Wokey Provider Node." >&2
+    exit 69
+  fi
+
+  base_url="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_DOWNLOAD_BASE_URL}}"
+  base_url="${base_url%/}"
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "${tmpdir}"' EXIT
+  installer="${tmpdir}/install.sh"
+
+  echo "Downloading Wokey Provider Node installer from ${base_url}/install.sh"
+  curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${base_url}/install.sh?update=$(date +%s)" -o "${installer}"
+  chmod 755 "${installer}"
+  WOKEY_PROVIDER_NODE_BASE_URL="${base_url}" bash "${installer}"
+}
+
+stop_service() {
+  if is_docker; then
+    docker_management_hint stop
+    return 0
+  fi
+  ensure_systemd_user
+  systemctl --user stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  echo "Wokey Provider Node stopped."
+}
+
+uninstall_service() {
+  if is_docker; then
+    docker_management_hint uninstall-service
+    return 0
+  fi
+  ensure_systemd_user
+  systemctl --user disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
+  rm -f "${UNIT_PATH}"
+  systemctl --user daemon-reload
+  echo "Wokey Provider Node user service removed."
+  echo "User data was kept at: ${DATA_DIR}"
+}
+
+service_status() {
+  provider_env
+  if is_docker; then
+    echo "Wokey Provider Node: Docker-managed foreground service"
+    echo "Use: docker compose ps provider-node"
+    echo "Console: $(console_url)"
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    if systemctl --user list-unit-files "${SERVICE_NAME}" 2>/dev/null | grep -q "${SERVICE_NAME}"; then
+      systemctl --user --no-pager --full status "${SERVICE_NAME}" | sed -n '1,18p' || true
+    else
+      echo "Wokey Provider Node: user service not installed"
+    fi
+  else
+    echo "Wokey Provider Node: systemd --user unavailable"
+  fi
+  echo "Console: $(console_url)"
+}
+
+service_logs() {
+  if is_docker; then
+    docker_management_hint logs
+    return 0
+  fi
+  ensure_systemd_user
+  journalctl --user-unit "${SERVICE_NAME}" -n "${PROVIDER_NODE_LOG_LINES:-120}" -f
+}
+
+auth_cli() {
+  ensure_node
+  provider_env
+  export PROVIDER_NODE_CLI_BASE_URL="${PROVIDER_NODE_CLI_BASE_URL:-$(cli_base_url)}"
+  exec "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" "$@"
+}
+
+print_cli_status() {
+  export PROVIDER_NODE_CLI_BASE_URL="${PROVIDER_NODE_CLI_BASE_URL:-$(cli_base_url)}"
+  if "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" api-status >/dev/null 2>&1; then
+    echo
+    "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" api-status || true
+  fi
+}
+
+doctor() {
+  ensure_node
+  provider_env
+  echo "node=${NODE_BIN}"
+  echo "app=${APP_DIR}"
+  echo "data=${DATA_DIR}"
+  echo "config=${PROVIDER_CONFIG_PATH}"
+  echo "unit=${UNIT_PATH}"
+  echo "console=$(console_url)"
+  if is_docker; then
+    echo "docker_mode=enabled"
+  else
+    echo "docker_mode=disabled"
+  fi
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    echo "systemd_user=available"
+  else
+    echo "systemd_user=unavailable"
+  fi
+}
+
+case "${1:-menu}" in
+  serve)
+    serve
+    ;;
+  open)
+    open_console
+    ;;
+  install-service)
+    install_service
+    ;;
+  uninstall-service)
+    uninstall_service
+    ;;
+  start|restart)
+    restart_service
+    ;;
+  update)
+    update_node
+    ;;
+  stop)
+    stop_service
+    ;;
+  status)
+    ensure_node
+    service_status
+    print_cli_status
+    ;;
+  logs)
+    service_logs
+    ;;
+  menu)
+    auth_cli menu
+    ;;
+  add|bind|list|scan|import|authorize|login|paste|help|--help|-h)
+    auth_cli "$@"
+    ;;
+  auth)
+    shift
+    auth_cli "$@"
+    ;;
+  version)
+    ensure_node
+    cd "${APP_DIR}"
+    "${NODE_BIN}" -e "const pkg=require('./package.json'); console.log(pkg.version)"
+    ;;
+  doctor)
+    doctor
+    ;;
+  *)
+    echo "Usage: provider-node [menu|serve|open|install-service|uninstall-service|start|restart|update|stop|status|logs|add|bind|list|import|login|paste|version|doctor]" >&2
+    exit 64
+    ;;
+esac

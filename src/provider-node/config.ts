@@ -1,0 +1,401 @@
+import { createHash, createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { platform } from 'node:os';
+import { dirname } from 'node:path';
+import { formatDerivedNodeId, generateNodeId } from '../shared/ids.js';
+import type { ProviderCapabilityVendor } from '../shared/protocol.js';
+import { getProviderNodeBuildInfo } from './build-info.js';
+
+export type ProviderUpstreamMode = 'mock' | 'openai-compatible' | 'anthropic-oauth' | 'codex-oauth';
+export type ProviderNodeRuntimeMode = 'development' | 'official_exit';
+
+export interface ProviderOAuthConfig {
+  accessToken?: string;
+  refreshToken?: string;
+  idToken?: string;
+  tokenType?: string;
+  expiresAt?: number;
+  scope?: string;
+  organizationId?: string;
+  accountEmail?: string;
+  subscriptionType?: string;
+  subscriptionDisplayName?: string;
+  claudeCodeUserId?: string;
+  claudeCodeAccountUuid?: string;
+  accessTokenReceivedAt?: string;
+  accessTokenSource?: string;
+  lastRefreshAt?: string;
+}
+
+export interface ProviderUpstreamConfig {
+  mode: ProviderUpstreamMode;
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  oauth?: ProviderOAuthConfig;
+}
+
+export interface ProviderOfficialExitConfig {
+  enabled: boolean;
+}
+
+export interface ProviderLocalAuthConfig {
+  codexAuthJsonMirror?: {
+    enabled: boolean;
+    credentialBindingId?: string;
+    path?: string;
+    tokenFingerprint?: string;
+    authIdentityFingerprint?: string;
+    organizationId?: string;
+    accountEmail?: string;
+    lastCheckedAt?: string;
+    lastSyncedAt?: string;
+    lastError?: string;
+  };
+}
+
+export interface ProviderNodeConfig {
+  nodeId: string;
+  providerId: string;
+  platformWsUrl: string;
+  providerNodeSecret: string;
+  nodeVersion: string;
+  nodeBuildHash?: string;
+  runtimeMode?: ProviderNodeRuntimeMode;
+  officialExit?: ProviderOfficialExitConfig;
+  localAuth?: ProviderLocalAuthConfig;
+  autoUpdate?: boolean;
+  upstream: ProviderUpstreamConfig;
+  capability: {
+    model: string;
+    vendor: ProviderCapabilityVendor;
+    routeMode?: 'dev_mock' | 'dev_compatible' | 'official_exit';
+    supportsStreaming: boolean;
+    supportsTools: boolean;
+  };
+}
+
+const ENCRYPTED_PREFIX = 'enc:v1:';
+type OAuthSecretField = 'accessToken' | 'refreshToken' | 'idToken';
+const SECRET_FIELDS: OAuthSecretField[] = ['accessToken', 'refreshToken', 'idToken'];
+
+// Fixed salt for deriving the at-rest key from an operator-supplied passphrase.
+// An env-provided key has nowhere to persist a per-install random salt, so the
+// scrypt work factor (not salt uniqueness) is what protects a low-entropy value.
+const MASTER_KEY_SCRYPT_SALT = 'wokey-provider-node:master-key:v1';
+
+// Default Platform bridge endpoint for a fresh install. A bound node may be told
+// to use a different endpoint at runtime; this constant is only the bootstrap
+// default before the node receives that instruction.
+const DEFAULT_PLATFORM_WS_URL = 'wss://node.wokey.ai:8443/internal/provider/connect';
+
+export function defaultConfig(): ProviderNodeConfig {
+  const buildInfo = getProviderNodeBuildInfo();
+  return {
+    nodeId: generateProviderNodeId(),
+    providerId: 'dev',
+    platformWsUrl: DEFAULT_PLATFORM_WS_URL,
+    providerNodeSecret: 'dev-provider-secret',
+    nodeVersion: buildInfo.version,
+    nodeBuildHash: buildInfo.buildHash,
+    runtimeMode: 'development',
+    officialExit: {
+      enabled: false,
+    },
+    upstream: {
+      mode: 'mock',
+    },
+    capability: {
+      model: 'claude-code-max',
+      vendor: 'mock',
+      supportsStreaming: true,
+      supportsTools: false,
+    },
+  };
+}
+
+export function generateProviderNodeId(): string {
+  return deterministicProviderNodeId() ?? generateNodeId();
+}
+
+export function deriveProviderNodeId(osName: string, machineId: string): string | undefined {
+  const normalized = normalizeMachineId(machineId);
+  if (!normalized) return undefined;
+  const digest = createHash('sha256')
+    .update(`wokey-provider-node:v1:${osName}:${normalized}`)
+    .digest('base64url');
+  return formatDerivedNodeId(digest.slice(0, 10));
+}
+
+function deterministicProviderNodeId(): string | undefined {
+  const osName = platform();
+  const machineId = readMachineId(osName);
+  return machineId ? deriveProviderNodeId(osName, machineId) : undefined;
+}
+
+function readMachineId(osName: NodeJS.Platform): string | undefined {
+  if (osName === 'darwin') return readMacOsMachineId();
+  if (osName === 'win32') return readWindowsMachineId();
+  if (osName === 'linux') return readLinuxMachineId();
+  return readUnixMachineId();
+}
+
+function readMacOsMachineId(): string | undefined {
+  const output = execFileText('/usr/sbin/ioreg', ['-rd1', '-c', 'IOPlatformExpertDevice']);
+  return output?.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/)?.[1];
+}
+
+function readWindowsMachineId(): string | undefined {
+  const output = execFileText('reg', ['query', 'HKLM\\SOFTWARE\\Microsoft\\Cryptography', '/v', 'MachineGuid']);
+  return output?.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i)?.[1];
+}
+
+function readLinuxMachineId(): string | undefined {
+  return readFirstTextFile(['/etc/machine-id', '/var/lib/dbus/machine-id']);
+}
+
+function readUnixMachineId(): string | undefined {
+  const hostUuid = execFileText('sysctl', ['-n', 'kern.hostuuid']);
+  return hostUuid || readFirstTextFile(['/etc/hostid']);
+}
+
+function execFileText(command: string, args: string[]): string | undefined {
+  try {
+    return normalizeMachineId(execFileSync(command, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 1000,
+      windowsHide: true,
+    }));
+  } catch {
+    return undefined;
+  }
+}
+
+function readFirstTextFile(paths: string[]): string | undefined {
+  for (const path of paths) {
+    try {
+      const value = normalizeMachineId(readFileSync(path, 'utf8'));
+      if (value) return value;
+    } catch {
+      // Try the next OS-specific machine-id path.
+    }
+  }
+  return undefined;
+}
+
+function normalizeMachineId(value: string): string | undefined {
+  const normalized = value.trim().replace(/\0/g, '').toLowerCase();
+  if (!normalized || normalized === 'uninitialized') return undefined;
+  if (!/[a-z0-9]/.test(normalized)) return undefined;
+  if (/^[0-]+$/.test(normalized)) return undefined;
+  return normalized;
+}
+
+export function loadConfig(path: string): ProviderNodeConfig {
+  if (!existsSync(path)) {
+    const config = defaultConfig();
+    saveConfig(path, config);
+    return config;
+  }
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<ProviderNodeConfig>;
+  return decryptConfig(path, applyRuntimeBuildInfo(migrateLegacyPlatformWsUrl(mergeConfig(defaultConfig(), parsed))));
+}
+
+export function saveConfig(path: string, config: ProviderNodeConfig): void {
+  // The config holds the node↔Platform secret (providerNodeSecret) and account
+  // metadata. Keep it owner-only so other local users on a shared host cannot
+  // read it; chmod after write so an existing loose-permission file is tightened.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, `${JSON.stringify(encryptConfig(path, config), null, 2)}\n`, { mode: 0o600 });
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Best effort; non-POSIX filesystems may not support chmod.
+  }
+}
+
+export function redactConfig(value: ProviderNodeConfig): ProviderNodeConfig {
+  return {
+    ...value,
+    providerNodeSecret: value.providerNodeSecret ? '***' : '',
+    upstream: {
+      ...value.upstream,
+      apiKey: value.upstream.apiKey ? '***' : undefined,
+      oauth: redactOAuth(value.upstream.oauth),
+    },
+  };
+}
+
+function redactOAuth(oauth?: ProviderOAuthConfig): ProviderOAuthConfig | undefined {
+  if (!oauth) return undefined;
+  return {
+    ...oauth,
+    accessToken: oauth.accessToken ? '***' : undefined,
+    refreshToken: oauth.refreshToken ? '***' : undefined,
+    idToken: oauth.idToken ? '***' : undefined,
+  };
+}
+
+function mergeConfig(defaults: ProviderNodeConfig, parsed: Partial<ProviderNodeConfig> & Record<string, unknown>): ProviderNodeConfig {
+  const {
+    region: _region,
+    exitRegion: _exitRegion,
+    maxConcurrency: _maxConcurrency,
+    nodeMaxConcurrency: _nodeMaxConcurrency,
+    ...parsedWithoutLegacyLocation
+  } = parsed;
+  // Carry forward only known official-exit fields; any legacy Platform-pushed keys
+  // are dropped by allowlist, so their names need not be enumerated here.
+  const parsedOfficialExit: ProviderOfficialExitConfig | undefined = parsed.officialExit
+    ? (() => {
+      const source = parsed.officialExit as unknown as Record<string, unknown>;
+      const enabled = typeof source.enabled === 'boolean' ? source.enabled : Boolean(defaults.officialExit?.enabled);
+      return { enabled };
+    })()
+    : undefined;
+  const parsedCapability = parsed.capability
+    ? (() => {
+      const source = parsed.capability as Partial<ProviderNodeConfig['capability']>;
+      const capability: Partial<ProviderNodeConfig['capability']> = {};
+      if (source.model !== undefined) capability.model = source.model;
+      if (source.vendor !== undefined) capability.vendor = source.vendor;
+      if (source.routeMode !== undefined) capability.routeMode = source.routeMode;
+      if (source.supportsStreaming !== undefined) capability.supportsStreaming = source.supportsStreaming;
+      if (source.supportsTools !== undefined) capability.supportsTools = source.supportsTools;
+      return capability;
+    })()
+    : undefined;
+  return {
+    ...defaults,
+    ...parsedWithoutLegacyLocation,
+    upstream: {
+      ...defaults.upstream,
+      ...parsed.upstream,
+      oauth: {
+        ...defaults.upstream.oauth,
+        ...parsed.upstream?.oauth,
+      },
+    },
+    officialExit: parsedOfficialExit ? {
+      ...defaults.officialExit,
+      ...parsedOfficialExit,
+    } : defaults.officialExit,
+    capability: {
+      ...defaults.capability,
+      ...parsedCapability,
+    },
+    localAuth: parsed.localAuth ? {
+      ...defaults.localAuth,
+      codexAuthJsonMirror: parsed.localAuth.codexAuthJsonMirror ? {
+        ...parsed.localAuth.codexAuthJsonMirror,
+      } : defaults.localAuth?.codexAuthJsonMirror,
+    } : defaults.localAuth,
+  };
+}
+
+export function applyRuntimeBuildInfo(config: ProviderNodeConfig): ProviderNodeConfig {
+  const buildInfo = getProviderNodeBuildInfo();
+  return {
+    ...config,
+    nodeVersion: buildInfo.version,
+    nodeBuildHash: buildInfo.buildHash,
+  };
+}
+
+// A node may have persisted an older wokey.ai control-plane host and must move to
+// the direct node endpoint. We match the wokey.ai domain (apex or any subdomain)
+// rather than "anything that isn't node.wokey.ai" on purpose: local-dev
+// (127.0.0.1) and explicitly configured custom Platform hosts must be left alone, never
+// silently repointed. node.wokey.ai is already the target, so it falls outside
+// the match.
+function isLegacyPlatformWsHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === 'node.wokey.ai') return false;
+  return host === 'wokey.ai' || host.endsWith('.wokey.ai');
+}
+
+export function migrateLegacyPlatformWsUrl(config: ProviderNodeConfig): ProviderNodeConfig {
+  let parsed: URL;
+  try {
+    parsed = new URL(config.platformWsUrl);
+  } catch {
+    return config;
+  }
+  if (parsed.pathname !== '/internal/provider/connect') return config;
+  if (!isLegacyPlatformWsHost(parsed.hostname)) return config;
+  return { ...config, platformWsUrl: DEFAULT_PLATFORM_WS_URL };
+}
+
+function encryptConfig(path: string, config: ProviderNodeConfig): ProviderNodeConfig {
+  const copy = structuredClone(config);
+  if (copy.providerNodeSecret) copy.providerNodeSecret = encryptSecret(path, copy.providerNodeSecret);
+  encryptUpstreamSecrets(path, copy.upstream);
+  return copy;
+}
+
+function decryptConfig(path: string, config: ProviderNodeConfig): ProviderNodeConfig {
+  const copy = structuredClone(config);
+  if (copy.providerNodeSecret) copy.providerNodeSecret = decryptSecret(path, copy.providerNodeSecret);
+  decryptUpstreamSecrets(path, copy.upstream);
+  return copy;
+}
+
+function encryptUpstreamSecrets(path: string, upstream: ProviderUpstreamConfig): void {
+  if (upstream.apiKey) upstream.apiKey = encryptSecret(path, upstream.apiKey);
+  if (!upstream.oauth) return;
+  for (const field of SECRET_FIELDS) {
+    const value = upstream.oauth[field];
+    if (value) upstream.oauth[field] = encryptSecret(path, value);
+  }
+}
+
+function decryptUpstreamSecrets(path: string, upstream: ProviderUpstreamConfig): void {
+  if (upstream.apiKey) upstream.apiKey = decryptSecret(path, upstream.apiKey);
+  if (!upstream.oauth) return;
+  for (const field of SECRET_FIELDS) {
+    const value = upstream.oauth[field];
+    if (value) upstream.oauth[field] = decryptSecret(path, value);
+  }
+}
+
+function encryptSecret(path: string, value: string): string {
+  if (value.startsWith(ENCRYPTED_PREFIX)) return value;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', getMasterKey(path), iv);
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${ENCRYPTED_PREFIX}${Buffer.concat([iv, tag, encrypted]).toString('base64url')}`;
+}
+
+function decryptSecret(path: string, value: string): string {
+  if (!value.startsWith(ENCRYPTED_PREFIX)) return value;
+  const raw = Buffer.from(value.slice(ENCRYPTED_PREFIX.length), 'base64url');
+  const iv = raw.subarray(0, 12);
+  const tag = raw.subarray(12, 28);
+  const encrypted = raw.subarray(28);
+  const decipher = createDecipheriv('aes-256-gcm', getMasterKey(path), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+}
+
+function getMasterKey(configPath: string): Buffer {
+  // Operator-supplied key: derive via scrypt rather than a bare hash so a
+  // human-chosen passphrase still costs real work to brute-force. Prefer
+  // supplying 32 bytes of high-entropy material (see .env.example).
+  const envKey = process.env.PROVIDER_NODE_MASTER_KEY;
+  if (envKey) return scryptSync(envKey, MASTER_KEY_SCRYPT_SALT, 32);
+
+  // Auto-generated key file: the stored material is already 32 random bytes, so
+  // a single hash is sufficient. The file is owner-only (0600) in its 0700 dir.
+  const keyPath = `${configPath}.key`;
+  if (existsSync(keyPath)) {
+    return createHash('sha256').update(readFileSync(keyPath, 'utf8').trim()).digest();
+  }
+
+  mkdirSync(dirname(keyPath), { recursive: true, mode: 0o700 });
+  const keyMaterial = randomBytes(32).toString('base64url');
+  writeFileSync(keyPath, `${keyMaterial}\n`, { mode: 0o600 });
+  return createHash('sha256').update(keyMaterial).digest();
+}

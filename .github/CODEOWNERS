@@ -1,0 +1,9 @@
+# Default owners for everything in this repo.
+* @focuxdot
+
+# Security-sensitive areas warrant extra review.
+/src/provider-node/official-exit.ts @focuxdot
+/src/provider-node/console-security.ts @focuxdot
+/src/provider-node/config.ts @focuxdot
+/scripts/audit-oss-boundary.sh @focuxdot
+/.github/workflows/ @focuxdot

@@ -1,0 +1,5 @@
+services:
+  provider-node:
+    image: ${WOKEY_PROVIDER_NODE_IMAGE:-wokey-provider-node:local}
+    build:
+      context: .

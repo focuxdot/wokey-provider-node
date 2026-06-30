@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.wokey.provider-node</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/wokey-provider-node/bin/provider-node</string>
+    <string>serve</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PROVIDER_CONSOLE_HOST</key>
+    <string>127.0.0.1</string>
+    <key>PROVIDER_CONSOLE_PORT</key>
+    <string>16888</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>WorkingDirectory</key>
+  <string>/usr/local/wokey-provider-node/app</string>
+  <key>StandardOutPath</key>
+  <string>/tmp/wokey-provider-node.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/wokey-provider-node.err.log</string>
+</dict>
+</plist>

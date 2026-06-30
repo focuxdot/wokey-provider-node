@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+
+BIN="/opt/wokey-provider-node/bin/provider-node"
+
+chmod 755 "${BIN}" /usr/local/bin/wokey-node || true
+
+cat <<'EOF'
+Wokey Provider Node for Linux is installed.
+
+Start it for the current SSH/login user:
+  wokey-node install-service
+
+Common commands:
+  wokey-node
+  wokey-node add
+  wokey-node bind --value bind_...
+  wokey-node list
+  wokey-node status
+  wokey-node restart
+  wokey-node update
+  wokey-node doctor
+  wokey-node logs
+EOF
+
+exit 0

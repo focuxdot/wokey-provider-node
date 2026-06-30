@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+LABEL="ai.wokey.provider-node"
+PLIST="/Library/LaunchAgents/${LABEL}.plist"
+INSTALL_DIR="/usr/local/wokey-provider-node"
+BIN="${INSTALL_DIR}/bin/provider-node"
+CONSOLE_URL="http://127.0.0.1:16888/"
+CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+
+wait_for_console() {
+  attempt=0
+  while [ "${attempt}" -lt 40 ]; do
+    if /usr/bin/curl -fsS "${CONSOLE_URL}api/status" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    /bin/sleep 0.25
+  done
+  return 1
+}
+
+open_console_for_user() {
+  if [ -z "${CONSOLE_UID:-}" ] || [ -z "${CONSOLE_USER:-}" ]; then
+    return 0
+  fi
+  /bin/launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -u "${CONSOLE_USER}" /usr/bin/open "${CONSOLE_URL}" >/dev/null 2>&1 || true
+}
+
+/bin/chmod 755 "${BIN}" || true
+/bin/chmod 644 "${PLIST}" || true
+
+if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
+  CONSOLE_UID="$(/usr/bin/id -u "${CONSOLE_USER}" 2>/dev/null || true)"
+  USER_HOME="$(/usr/bin/dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}' || true)"
+
+  if [ -n "${USER_HOME}" ]; then
+    DATA_DIR="${USER_HOME}/Library/Application Support/Wokey Provider Node"
+    /bin/mkdir -p "${DATA_DIR}"
+    /usr/sbin/chown -R "${CONSOLE_USER}:staff" "${DATA_DIR}" || true
+  fi
+
+  if [ -n "${CONSOLE_UID}" ]; then
+    /bin/launchctl bootout "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
+    /bin/launchctl bootstrap "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
+    /bin/launchctl enable "gui/${CONSOLE_UID}/${LABEL}" >/dev/null 2>&1 || true
+    /bin/launchctl kickstart -k "gui/${CONSOLE_UID}/${LABEL}" >/dev/null 2>&1 || true
+    wait_for_console || true
+    open_console_for_user
+  fi
+fi
+
+exit 0

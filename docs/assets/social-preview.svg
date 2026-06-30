@@ -1,0 +1,26 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fcfcfd"/>
+      <stop offset="0.58" stop-color="#f5f5f8"/>
+      <stop offset="1" stop-color="#eeeafe"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <path d="M906 0H1280V640H688L906 0Z" fill="#6230eb" opacity="0.08"/>
+  <path d="M1112 0H1280V640H1012L1112 0Z" fill="#6230eb" opacity="0.10"/>
+
+  <g transform="translate(92 194)">
+    <text x="0" y="0" fill="#16171d" font-family="Space Grotesk, Manrope, Inter, sans-serif" font-size="86" font-weight="700">Wokey Provider Node</text>
+    <text x="0" y="92" fill="#515259" font-family="Inter, sans-serif" font-size="38" font-weight="500">Share idle AI subscription capacity</text>
+    <text x="0" y="144" fill="#515259" font-family="Inter, sans-serif" font-size="38" font-weight="500">through Wokey.</text>
+    <text x="0" y="232" fill="#6230eb" font-family="Inter, sans-serif" font-size="34" font-weight="700">Claude / OpenAI / Kimi / 智谱(z.ai)</text>
+  </g>
+
+  <rect x="0" y="606" width="1280" height="34" fill="#6230eb"/>
+  <rect x="782" y="606" width="164" height="34" fill="#9477fc"/>
+  <rect x="946" y="606" width="136" height="34" fill="#10b981"/>
+  <rect x="1082" y="606" width="80" height="34" fill="#191c1d"/>
+  <rect x="1162" y="606" width="118" height="34" fill="#cc4204"/>
+</svg>

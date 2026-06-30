@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Wokey Node Management</title>
+  <script>
+    // Resolve the theme before first paint (no flash): saved choice, else OS preference.
+    (function () {
+      try {
+        var saved = localStorage.getItem('providerConsoleTheme');
+        var dark = saved === 'dark' || (saved !== 'light' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand" data-i18n="appTitle">Wokey Node Management</div>
+      <div class="top-actions">
+        <div class="status-pill" id="topStatus"><span class="dot"></span><span data-i18n="loading">Loading</span></div>
+        <button class="theme-toggle" id="themeToggle" type="button" onclick="toggleTheme(event)" data-i18n-aria-label="themeToggle" aria-label="Toggle light / dark theme" aria-pressed="false">
+          <svg class="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+          <svg class="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+          </svg>
+        </button>
+        <div class="language-switch" id="languageSwitch">
+          <button class="language-toggle" id="languageToggle" type="button" onclick="toggleLanguageMenu(event)" data-i18n-aria-label="languageToggle" aria-label="Switch language" aria-haspopup="listbox" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M2 12h20"></path>
+              <path d="M12 2a15.3 15.3 0 0 1 0 20"></path>
+              <path d="M12 2a15.3 15.3 0 0 0 0 20"></path>
+            </svg>
+          </button>
+          <div class="language-menu" role="listbox" data-i18n-aria-label="languageToggle" aria-label="Switch language">
+            <button class="language-option" data-locale-option="en" role="option" type="button" onclick="setLocale('en', event)">
+              <span class="language-option-main"><strong data-i18n="english">English</strong></span>
+              <span class="language-check">✓</span>
+            </button>
+            <button class="language-option" data-locale-option="zh" role="option" type="button" onclick="setLocale('zh', event)">
+              <span class="language-option-main"><strong data-i18n="simplifiedChinese">中文</strong></span>
+              <span class="language-check">✓</span>
+            </button>
+          </div>
+        </div>
+        <div class="settings-switch" id="settingsSwitch">
+          <button class="settings-toggle" id="settingsToggle" type="button" onclick="toggleSettingsMenu(event)" data-i18n-aria-label="settingsToggle" aria-label="Node settings" aria-haspopup="menu" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"></path>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 8.92 4a1.65 1.65 0 0 0 1-1.51V2a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.31.49 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"></path>
+            </svg>
+          </button>
+          <div class="settings-menu" role="menu" data-i18n-aria-label="settingsToggle" aria-label="Node settings">
+            <button class="settings-option" id="settingsUnbindButton" type="button" role="menuitem" onclick="unbindNodeFromMenu(event)" data-i18n="unbindAction" disabled>Unbind Node</button>
+            <button class="settings-option danger" type="button" role="menuitem" onclick="requestUninstallNode(event)" data-i18n="uninstallAction">Uninstall Node</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="unbound" class="center">
+      <div class="stack">
+        <section class="hero">
+          <h1 data-i18n="appTitle">Wokey Node Management</h1>
+          <p data-i18n="heroSubtitle">Connect this node to the platform first, then bind credentials.</p>
+        </section>
+        <section class="card local-card">
+          <div class="icon">↔</div>
+          <div>
+            <h2 data-i18n="localReadyTitle">Local service connected</h2>
+            <p data-i18n="localReadyBody">Local node details are ready for platform binding.</p>
+            <span class="mono" id="localNodeId">Node ID: loading</span>
+          </div>
+        </section>
+        <section class="card bind-card">
+          <h2 data-i18n="bindTitle">Connect from Provider page</h2>
+          <p data-i18n="bindBody">Use the Provider page to generate a one-time binding code and return here automatically.</p>
+          <a class="primary-btn primary-cta" href="https://wokey.ai/provider?bindLocalNode=1"><span data-i18n="openProviderPage">Open Provider page</span> <span>→</span></a>
+          <details class="manual-bind">
+            <summary data-i18n="manualBindingSummary">Use a binding code instead</summary>
+            <p class="manual-copy" data-i18n="manualBindingBody">If automatic binding cannot open the local console, paste the binding code here.</p>
+            <div class="form">
+              <input id="bindingCode" autocomplete="off" data-i18n-placeholder="bindingPlaceholder" placeholder="Paste the binding code starting with bind_">
+              <button class="secondary-btn" id="bindButton" onclick="bindNode()"><span data-i18n="bindAction">Bind manually</span> <span>→</span></button>
+            </div>
+          </details>
+        </section>
+        <nav class="footer-links">
+          <a href="#" onclick="showBindingHelp(); return false;" data-i18n="bindingHelpLink">I cannot find the binding code</a>
+          <a href="#" onclick="refreshStatusFromAction(); return false;" data-i18n="refreshNodeStatus">Refresh node status</a>
+        </nav>
+        <div id="unboundResult" class="toast"></div>
+      </div>
+    </main>
+
+    <main id="bound" class="dashboard">
+      <div class="meta-row">
+        <div><span id="providerMeta">Provider: loading</span> · <span id="nodeMeta">Node: loading</span></div>
+        <span id="syncMeta">Loading</span>
+      </div>
+
+      <section>
+        <div class="section-head">
+          <div>
+            <h2 data-i18n="credentialsTitle">Credentials</h2>
+            <p data-i18n="credentialsBody">Local credentials available to this node.</p>
+          </div>
+          <button class="secondary-btn" id="authScanButton" onclick="rescanCredentials()" data-i18n="scanAgain">Scan auth</button>
+        </div>
+        <div class="credential-grid" id="credentialGrid">
+          <div class="credential-empty"><strong data-i18n="noCredentialsTitle">No local auth detected yet</strong><span data-i18n="noCredentialsBody">No importable local auth was found yet.</span></div>
+        </div>
+        <div id="credentialResult" class="toast"></div>
+
+        <section class="card add-card" aria-label="Add credential">
+          <div class="add-head">
+            <h3 data-i18n="addCredentialTitle">Add a credential manually (Recommended for personal use and sharing)</h3>
+            <p class="muted" data-i18n="addCredentialBody">Use this recommended authorization method for a more stable connection and easier ongoing use.</p>
+          </div>
+          <div class="add-body">
+            <div class="auth-tab-stack">
+              <p class="step-title" data-i18n="chooseProvider">Choose account type</p>
+              <div class="provider-tabs" role="tablist" data-i18n-aria-label="chooseProvider" aria-label="Choose account type">
+                <button class="provider-option selected" id="claudeProviderTab" type="button" role="tab" aria-selected="true" aria-controls="claudeAuthPanel" onclick="selectProvider('claude')">
+                  <svg class="provider-icon claude-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="currentColor" d="m4.714 15.956l4.718-2.648l.079-.23l-.08-.128h-.23l-.79-.048l-2.695-.073l-2.337-.097l-2.265-.122l-.57-.121l-.535-.704l.055-.353l.48-.321l.685.06l1.518.104l2.277.157l1.651.098l2.447.255h.389l.054-.158l-.133-.097l-.103-.098l-2.356-1.596l-2.55-1.688l-1.336-.972l-.722-.491L2 6.223l-.158-1.008l.656-.722l.88.06l.224.061l.893.686l1.906 1.476l2.49 1.833l.364.304l.146-.104l.018-.072l-.164-.274l-1.354-2.446l-1.445-2.49l-.644-1.032l-.17-.619a3 3 0 0 1-.103-.729L6.287.133L6.7 0l.995.134l.42.364l.619 1.415L9.735 4.14l1.555 3.03l.455.898l.243.832l.09.255h.159V9.01l.127-1.706l.237-2.095l.23-2.695l.08-.76l.376-.91l.747-.492l.583.28l.48.685l-.067.444l-.286 1.851l-.558 2.903l-.365 1.942h.213l.243-.242l.983-1.306l1.652-2.064l.728-.82l.85-.904l.547-.431h1.032l.759 1.129l-.34 1.166l-1.063 1.347l-.88 1.142l-1.263 1.7l-.79 1.36l.074.11l.188-.02l2.853-.606l1.542-.28l1.84-.315l.832.388l.09.395l-.327.807l-1.967.486l-2.307.462l-3.436.813l-.043.03l.049.061l1.548.146l.662.036h1.62l3.018.225l.79.522l.473.638l-.08.485l-1.213.62l-1.64-.389l-3.825-.91l-1.31-.329h-.183v.11l1.093 1.068l2.003 1.81l2.508 2.33l.127.578l-.321.455l-.34-.049l-2.204-1.657l-.85-.747l-1.925-1.62h-.127v.17l.443.649l2.343 3.521l.122 1.08l-.17.353l-.607.213l-.668-.122l-1.372-1.924l-1.415-2.168l-1.141-1.943l-.14.08l-.674 7.254l-.316.37l-.728.28l-.607-.461l-.322-.747l.322-1.476l.388-1.924l.316-1.53l.285-1.9l.17-.632l-.012-.042l-.14.018l-1.432 1.967l-2.18 2.945l-1.724 1.845l-.413.164l-.716-.37l.066-.662l.401-.589l2.386-3.036l1.439-1.882l.929-1.086l-.006-.158h-.055L4.138 18.56l-1.13.146l-.485-.456l.06-.746l.231-.243l1.907-1.312Z"></path>
+                  </svg>
+                  <span class="provider-copy"><b>Claude</b><span data-i18n="claudeOAuth">Sign in with Claude OAuth</span></span>
+                </button>
+                <button class="provider-option" id="codexProviderTab" type="button" role="tab" aria-selected="false" aria-controls="codexAuthPanel" onclick="selectProvider('codex')">
+                  <svg class="provider-icon codex-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="currentColor" d="M22.282 9.821a6 6 0 0 0-.516-4.91a6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9a6.05 6.05 0 0 0 .743 7.097a5.98 5.98 0 0 0 .51 4.911a6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206a6 6 0 0 0 3.997-2.9a6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081l4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085l4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354l-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023l-.141-.085l-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365l2.602-1.5l2.607 1.5v2.999l-2.597 1.5l-2.607-1.5Z"></path>
+                  </svg>
+                  <span class="provider-copy"><b>Codex</b><span data-i18n="codexOAuth">Use device code authorization</span></span>
+                </button>
+              </div>
+              <div class="auth-options">
+              <div class="provider-panel" id="claudeAuthPanel" role="tabpanel" aria-labelledby="claudeProviderTab">
+                <div class="auth-option primary">
+                  <div class="auth-row">
+                    <div>
+                      <h4 data-i18n="claudeOAuthTitle">Claude OAuth authorization</h4>
+                      <p class="muted" data-i18n="claudeOAuthBody">Authorize in Claude, then paste the returned URL or code here.</p>
+                    </div>
+                    <div class="button-row">
+                      <button class="primary-btn" type="button" onclick="startClaudeOAuth()" data-i18n="openClaudeAuthorize">Authorize on Claude.ai</button>
+                      <button class="secondary-btn" type="button" onclick="copyClaudeAuthorizationLink()" data-i18n="copyAuthorizationLink">Copy link</button>
+                    </div>
+                  </div>
+                  <div class="auth-row exchange-row oauth-code-row">
+                    <input id="claudeAuthorizationCodeInput" data-i18n-placeholder="redirectCodePlaceholder" placeholder="Paste callback URL or code...">
+                    <button class="secondary-btn" id="claudeAuthorizationSubmitButton" type="button" onclick="submitClaudeAuthorizationCode()" data-i18n="submitAuthorizationCode">Submit</button>
+                  </div>
+                  <div id="claudeAuthorizationCodeResult" class="toast" aria-live="polite"></div>
+                </div>
+              </div>
+              <div class="provider-panel hidden" id="codexAuthPanel" role="tabpanel" aria-labelledby="codexProviderTab">
+                <div class="auth-option primary">
+                  <div class="auth-row">
+                    <div>
+                      <h4 data-i18n="useDeviceCode">Use device code</h4>
+                      <p class="muted" data-i18n="deviceCodeBody">Use this on a server or when the browser cannot open.</p>
+                    </div>
+                    <button class="primary-btn" onclick="startCodexDevice()" data-i18n="startDeviceCode">Authorize in ChatGPT</button>
+                  </div>
+                  <div class="code-label" data-i18n="deviceCodeLabel">Code to enter on the ChatGPT page</div>
+                  <div class="code-row">
+                    <div class="code-box" id="codexDeviceUserCodeLabel">--------</div>
+                    <button class="icon-btn" type="button" onclick="copyCodexDeviceCode()" data-i18n-aria-label="copyDeviceCode" aria-label="Copy device code">⧉</button>
+                  </div>
+                  <p class="code-hint muted" data-i18n="deviceCodeHint">When ChatGPT asks for the code shown in your terminal, use this code.</p>
+                </div>
+              </div>
+              <details class="advanced-oauth">
+                <summary data-i18n="pasteOAuthTokenTitle">Other option: paste OAuth credential</summary>
+                <div class="advanced-oauth-body">
+                  <p class="muted" data-i18n="pasteOAuthTokenBody">Use this only if you already have a complete token or auth.json. This is similar to importing a detected local credential.</p>
+                  <textarea id="manualOAuthTokenInput" rows="4" spellcheck="false" autocomplete="off" data-i18n-placeholder="oauthTokenPlaceholder" placeholder='{"access_token":"...","refresh_token":"..."}'></textarea>
+                  <div class="advanced-actions">
+                    <button class="secondary-btn" type="button" onclick="submitManualOAuthToken()" data-i18n="importOAuthToken">Import token</button>
+                  </div>
+                </div>
+              </details>
+              </div>
+            </div>
+            <div id="oauthResult" class="toast" data-i18n="oauthResultPlaceholder">OAuth operation results will appear here.</div>
+          </div>
+        </section>
+      </section>
+      <div id="boundResult" class="toast"></div>
+    </main>
+
+    <footer class="bottom-bar">
+      <span data-i18n="footerBrand">Wokey Provider Node</span>
+    </footer>
+  </div>
+
+  <script>window.__WOKEY_CSRF__ = __WOKEY_CSRF_JSON__;</script>
+  <script src="./app.js"></script>
+</body>
+</html>

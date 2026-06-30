@@ -1,0 +1,260 @@
+name: Release Provider Node
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: Create the GitHub release as a draft
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+
+  build-macos:
+    needs: verify
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build macOS package
+        env:
+          PROVIDER_NODE_SKIP_VERSION_BUMP: '1'
+        run: npm run package:macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: release/macos/*
+          if-no-files-found: error
+
+  build-unix:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build Linux x64 package
+        env:
+          PROVIDER_NODE_SKIP_VERSION_BUMP: '1'
+        run: npm run package:linux
+      - name: Build Linux arm64 package
+        env:
+          PROVIDER_NODE_SKIP_VERSION_BUMP: '1'
+          WOKEY_TARGET_ARCH: arm64
+        run: npm run package:linux
+      - name: Build Windows package
+        env:
+          PROVIDER_NODE_SKIP_VERSION_BUMP: '1'
+        run: npm run package:windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-unix
+          path: |
+            release/linux/*
+            release/windows/*
+          if-no-files-found: error
+
+  prepare-release-assets:
+    needs: [verify, build-macos, build-unix]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sigstore/cosign-installer@v3
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-macos
+          path: release/macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-unix
+          path: release
+      - name: Add installer scripts
+        run: |
+          mkdir -p release/installers
+          cp packaging/install.sh release/installers/install.sh
+          cp packaging/install.ps1 release/installers/install.ps1
+      - name: Generate and sign checksums
+        env:
+          WOKEY_PROVIDER_NODE_COSIGN_KEYLESS: '1'
+        run: bash scripts/generate-release-checksums.sh
+      - name: Assert release is signed
+        run: |
+          test -f release/checksums.txt.sig || { echo "missing checksums.txt.sig — signing did not run" >&2; exit 1; }
+          test -f release/checksums.txt.pem || { echo "missing checksums.txt.pem — signing did not run" >&2; exit 1; }
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find release -maxdepth 3 -type f -print0 | while IFS= read -r -d '' file; do
+            cp "$file" "release-assets/$(basename "$file")"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  docker-release:
+    needs: [verify, prepare-release-assets]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: sigstore/cosign-installer@v3
+      - name: Resolve image metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${VERSION}"
+          fi
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "commit_short=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "built_at=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')" >> "$GITHUB_OUTPUT"
+      - name: Build local smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: wokey-provider-node:release-smoke
+          build-args: |
+            PROVIDER_NODE_GIT_COMMIT=${{ steps.meta.outputs.commit_short }}
+            PROVIDER_NODE_GIT_DIRTY=0
+            PROVIDER_NODE_BUILD_AT=${{ steps.meta.outputs.built_at }}
+      - name: Smoke test Docker image
+        run: |
+          set -euo pipefail
+          docker rm -f wokey-provider-node-release-smoke >/dev/null 2>&1 || true
+          trap 'docker rm -f wokey-provider-node-release-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name wokey-provider-node-release-smoke -p 127.0.0.1:16888:16888 wokey-provider-node:release-smoke
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:16888/api/status >/dev/null; then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              docker logs wokey-provider-node-release-smoke
+              exit 1
+            fi
+            sleep 1
+          done
+          docker exec wokey-provider-node-release-smoke wokey-node status
+          docker exec wokey-provider-node-release-smoke wokey-node restart | grep -q "Docker mode"
+      - uses: docker/login-action@v3
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push Docker image
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          build-args: |
+            PROVIDER_NODE_GIT_COMMIT=${{ steps.meta.outputs.commit_short }}
+            PROVIDER_NODE_GIT_DIRTY=0
+            PROVIDER_NODE_BUILD_AT=${{ steps.meta.outputs.built_at }}
+      - name: Sign Docker image
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+  publish:
+    needs: [prepare-release-assets, docker-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${VERSION}"
+          fi
+          DRAFT="${{ inputs.draft || 'false' }}"
+          if [[ "${GITHUB_REF}" != refs/tags/v* && "${DRAFT}" != "true" ]]; then
+            echo "Ready releases must be created from a v*.*.* tag push. Use draft=true for manual dry runs." >&2
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "draft=${DRAFT}" >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DRAFT: ${{ steps.meta.outputs.draft }}
+        run: |
+          set -euo pipefail
+          draft_flag=()
+          if [ "${DRAFT}" = "true" ]; then
+            draft_flag=(--draft)
+          fi
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-assets/* --clobber
+          else
+            gh release create "${TAG}" release-assets/* "${draft_flag[@]}" --title "Wokey Provider Node ${TAG}" --notes "Provider Node release ${TAG}."
+          fi

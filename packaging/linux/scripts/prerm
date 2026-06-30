@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+cat <<'EOF'
+Removing Wokey Provider Node package.
+
+Per-user systemd services and user data are not removed automatically.
+Before removing the package, each Provider Node user can run:
+  wokey-node uninstall-service
+EOF
+
+exit 0

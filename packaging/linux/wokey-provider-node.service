@@ -1,0 +1,20 @@
+[Unit]
+Description=Wokey Provider Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wokey-provider-node/app
+ExecStart=/usr/local/bin/wokey-node serve
+Restart=always
+RestartSec=5
+Environment=PROVIDER_NODE_APP_DIR=/opt/wokey-provider-node/app
+Environment=PROVIDER_NODE_DATA_DIR=%h/.config/wokey-provider-node
+Environment=PROVIDER_CONFIG_PATH=%h/.config/wokey-provider-node/provider-node.json
+Environment=PROVIDER_CONSOLE_HOST=127.0.0.1
+Environment=PROVIDER_CONSOLE_PORT=16888
+Environment=LOG_LEVEL=info
+
+[Install]
+WantedBy=default.target

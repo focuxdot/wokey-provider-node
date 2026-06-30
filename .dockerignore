@@ -1,0 +1,16 @@
+.git
+.gstack
+.tmp
+.tmp-*
+coverage
+data
+dist
+node_modules
+release
+
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store

@@ -1,0 +1,26 @@
+name: wokey-provider-node
+
+services:
+  provider-node:
+    image: ${WOKEY_PROVIDER_NODE_IMAGE:-ghcr.io/focuxdot/wokey-provider-node:latest}
+    init: true
+    restart: unless-stopped
+    environment:
+      PROVIDER_NODE_DOCKER: "1"
+      PROVIDER_CONSOLE_HOST: 0.0.0.0
+      PROVIDER_CONSOLE_PORT: "16888"
+      PROVIDER_NODE_CLI_BASE_URL: http://127.0.0.1:16888
+      PROVIDER_NODE_DATA_DIR: /data
+      PROVIDER_CONFIG_PATH: /data/provider-node.json
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PROVIDER_NODE_MASTER_KEY: ${PROVIDER_NODE_MASTER_KEY:-}
+      PROVIDER_PLATFORM_HOST_ALLOWLIST: ${PROVIDER_PLATFORM_HOST_ALLOWLIST:-}
+      PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS: ${PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS:-}
+    ports:
+      - "127.0.0.1:${PROVIDER_CONSOLE_PORT:-16888}:16888"
+    volumes:
+      - wokey-provider-node-data:/data
+
+volumes:
+  wokey-provider-node-data:
+    name: wokey-provider-node-data
