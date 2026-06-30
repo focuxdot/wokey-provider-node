@@ -46,6 +46,9 @@ export interface ProviderBridgeOptions {
   onPlatformReady?: () => void;
   onPlatformCredentialRefreshHint?: (message: PlatformCredentialRefreshHint) => void;
   onPlatformUpgradeAvailable?: (message: PlatformUpgradeAvailable) => void;
+  // Called when the bridge settles on a different endpoint than config recorded,
+  // so the host can persist the preference (direct vs fallback) for next start.
+  onEndpointPreferenceChange?: (preferFallback: boolean) => void;
 }
 
 type CredentialMirrorUpdateInput = Omit<ProviderCredentialMirrorUpdate, 'type' | 'requestId'>;
@@ -125,6 +128,7 @@ export class ProviderBridge {
   start() {
     this.stopped = false;
     this.state.reconnectSuppressedReason = undefined;
+    this.useFallback = Boolean(this.getConfig().preferFallbackEndpoint);
     this.connect();
   }
 
@@ -145,6 +149,7 @@ export class ProviderBridge {
     this.stopped = false;
     this.risk.reset();
     this.reconnectAttempt = 0;
+    this.useFallback = Boolean(this.getConfig().preferFallbackEndpoint);
     this.state.reconnectSuppressedReason = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -196,6 +201,11 @@ export class ProviderBridge {
       this.state.lastConnectedAt = new Date().toISOString();
       this.state.lastError = undefined;
       this.reconnectAttempt = 0;
+      // Remember the endpoint that actually connected so the next start skips a
+      // dead primary (or recovers to it) without paying a handshake timeout.
+      if (Boolean(config.preferFallbackEndpoint) !== this.useFallback) {
+        this.options.onEndpointPreferenceChange?.(this.useFallback);
+      }
       this.sendHello();
       if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
       this.keepaliveTimer = setInterval(() => {

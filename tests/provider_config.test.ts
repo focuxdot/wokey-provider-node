@@ -115,6 +115,19 @@ describe('provider node config', () => {
     }
   });
 
+  it('persists the preferred platform endpoint across save/load', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'provider-config-'));
+    try {
+      const path = join(dir, 'provider-node.json');
+      const config = defaultConfig();
+      config.preferFallbackEndpoint = true;
+      saveConfig(path, config);
+      expect(loadConfig(path).preferFallbackEndpoint).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reports runtime package build info instead of stale persisted versions', () => {
     const dir = mkdtempSync(join(tmpdir(), 'provider-config-'));
     try {

@@ -302,6 +302,11 @@ const bridge = new ProviderBridge(
       }
       void autoUpgrade.handleUpgradeAvailable(msg);
     },
+    onEndpointPreferenceChange: (preferFallback: boolean) => {
+      if (config.preferFallbackEndpoint === preferFallback) return;
+      config = { ...config, preferFallbackEndpoint: preferFallback };
+      persistConfig(); // no reconnect — we are already connected on this endpoint
+    },
   },
 );
 
@@ -399,8 +404,9 @@ app.post('/api/platform/bind', async (request, reply) => {
   });
 
   let data: BindRedemptionData | undefined;
+  let boundViaFallback = false;
   let lastUnreachable: string | undefined;
-  for (const bindUrl of bindUrls) {
+  for (const [i, bindUrl] of bindUrls.entries()) {
     try {
       assertAllowedPlatformUrl(bindUrl, ['http', 'https'], ['https']);
     } catch (error) {
@@ -410,6 +416,7 @@ app.post('/api/platform/bind', async (request, reply) => {
     const attempt = await redeemBindingCode(bindUrl, bindPayload);
     if (attempt.kind === 'ok') {
       data = attempt.data;
+      boundViaFallback = i > 0; // index 0 = direct primary, >0 = CDN-proxied fallback
       break;
     }
     if (attempt.kind === 'platform_error') {
@@ -437,6 +444,9 @@ app.post('/api/platform/bind', async (request, reply) => {
     nodeId: data.nodeId || config.nodeId,
     providerNodeSecret: data.providerNodeSecret,
     platformWsUrl: data.platformWsUrl,
+    // Bind already learned which endpoint is reachable — seed the bridge so it
+    // skips a dead direct endpoint on the very first relay connect.
+    preferFallbackEndpoint: boundViaFallback,
     runtimeMode: config.runtimeMode === 'development' ? 'official_exit' : config.runtimeMode,
     officialExit: {
       ...config.officialExit,

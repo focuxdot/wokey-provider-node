@@ -66,6 +66,12 @@ export interface ProviderNodeConfig {
   officialExit?: ProviderOfficialExitConfig;
   localAuth?: ProviderLocalAuthConfig;
   autoUpdate?: boolean;
+  // Which platform endpoint to try first: false/undefined = direct primary,
+  // true = CDN-proxied fallback. Set when bind learns the direct endpoint is
+  // unreachable, and updated whenever the bridge settles on an endpoint, so a
+  // node on a network that blocks the direct IP skips the dead primary on every
+  // (re)connect instead of eating a handshake timeout each time.
+  preferFallbackEndpoint?: boolean;
   upstream: ProviderUpstreamConfig;
   capability: {
     model: string;
