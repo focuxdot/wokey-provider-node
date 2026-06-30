@@ -23,6 +23,10 @@ const HEARTBEAT_INTERVAL_MS = 10_000;
 // sockets at ~100s). A bound official-exit node sends no business heartbeat, so
 // without this an idle node on the fallback would be dropped and reconnect-churn.
 const KEEPALIVE_PING_INTERVAL_MS = 30_000;
+// Max time for a single connect+upgrade attempt. Keeps a blocked/blackholed
+// endpoint from hanging on the OS TCP timeout so the primary↔fallback flip is
+// quick. Must stay well under the reconnect cadence.
+const PLATFORM_HANDSHAKE_TIMEOUT_MS = 10_000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_JITTER_RATIO = 0.25;
@@ -73,6 +77,11 @@ export function buildProviderBridgeWebSocketConnection(
   return {
     url: fallbackUrl ?? config.platformWsUrl,
     options: {
+      // Bound handshake time so a blocked/blackholed endpoint (e.g. a primary IP
+      // that a firewall silently drops, where TCP would otherwise hang on the OS
+      // connect timeout for ~2 minutes) fails fast and the bridge flips to the
+      // other endpoint within seconds instead of appearing dead.
+      handshakeTimeout: PLATFORM_HANDSHAKE_TIMEOUT_MS,
       headers: {
         'x-provider-node-id': config.nodeId,
         'x-provider-node-secret': config.providerNodeSecret,

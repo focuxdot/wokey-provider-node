@@ -66,6 +66,16 @@ describe('ProviderBridge reconnect policy', () => {
     expect(fallback.options.headers).toMatchObject({ 'x-provider-node-id': 'node_123' });
   });
 
+  it('bounds the handshake so a blocked endpoint fails fast and flips', () => {
+    const connection = buildProviderBridgeWebSocketConnection({
+      platformWsUrl: 'wss://node.wokey.ai:8443/internal/provider/connect',
+      nodeId: 'node_123',
+      providerNodeSecret: 'secret_123',
+    });
+    expect(connection.options.handshakeTimeout).toBeGreaterThan(0);
+    expect(connection.options.handshakeTimeout).toBeLessThanOrEqual(15_000);
+  });
+
   it('falls back to the primary url when a custom host has no fallback', () => {
     const connection = buildProviderBridgeWebSocketConnection(
       {
