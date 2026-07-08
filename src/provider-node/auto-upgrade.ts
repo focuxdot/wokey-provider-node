@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { platform, arch } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -15,7 +15,9 @@ interface UpgradeState {
   targetVersion: string;
   upgradedAt: string;
   startCount: number;
-  status: 'pending' | 'verified' | 'rolled_back';
+  status: 'pending' | 'verified' | 'rolled_back' | 'failed';
+  failureReason?: string;
+  observedVersion?: string;
 }
 
 export interface AutoUpgradeOptions {
@@ -54,8 +56,10 @@ function isNewerVersion(target: string, current: string): boolean {
   const c = parseSemver(current);
   if (!t || !c) return false;
   for (let i = 0; i < 3; i++) {
-    if (t[i]! > c[i]!) return true;
-    if (t[i]! < c[i]!) return false;
+    const targetPart = t[i] ?? 0;
+    const currentPart = c[i] ?? 0;
+    if (targetPart > currentPart) return true;
+    if (targetPart < currentPart) return false;
   }
   return false;
 }
@@ -68,7 +72,7 @@ function isDocker(): boolean {
   return process.env.PROVIDER_NODE_DOCKER === '1' || existsSync('/.dockerenv');
 }
 
-function spawnUpdate(version: string): void {
+function spawnUpdate(version: string): ChildProcess | undefined {
   const env = { ...process.env, WOKEY_PROVIDER_NODE_VERSION: version };
   const plat = platform();
   let cmd: string;
@@ -85,11 +89,51 @@ function spawnUpdate(version: string): void {
     const scriptPath = join(process.env.LOCALAPPDATA || '', 'WokeyProviderNode', 'bin', 'wokey-node.ps1');
     args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, 'update'];
   } else {
-    return;
+    return undefined;
   }
 
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env });
-  child.unref();
+  return spawn(cmd, args, { stdio: 'ignore', env });
+}
+
+function hasRootPrivileges(): boolean {
+  return typeof process.getuid === 'function' && process.getuid() === 0;
+}
+
+function canRunPrivilegedInstallerNonInteractively(): boolean {
+  if (hasRootPrivileges()) return true;
+  return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore' }).status === 0;
+}
+
+function updateReadiness(): { ok: true } | { ok: false; reason: string } {
+  const plat = platform();
+  if (plat !== 'darwin' && plat !== 'linux' && plat !== 'win32') {
+    return { ok: false, reason: 'unsupported_platform' };
+  }
+  if ((plat === 'darwin' || plat === 'linux') && !canRunPrivilegedInstallerNonInteractively()) {
+    return { ok: false, reason: 'sudo_noninteractive_unavailable' };
+  }
+  return { ok: true };
+}
+
+function markUpgradeFailed(
+  configPath: string,
+  state: UpgradeState,
+  currentVersion: string,
+  reason: string,
+  log: AutoUpgradeOptions['log'],
+): void {
+  writeUpgradeState(configPath, {
+    ...state,
+    status: 'failed',
+    failureReason: reason,
+    observedVersion: currentVersion,
+  });
+  log.error({
+    targetVersion: state.targetVersion,
+    previousVersion: state.previousVersion,
+    currentVersion,
+    reason,
+  }, 'auto-upgrade: upgrade target was not installed');
 }
 
 export class AutoUpgradeController {
@@ -122,6 +166,18 @@ export class AutoUpgradeController {
     }
     this.options.log.info({ key, expectedHash }, 'auto-upgrade: platform-provided artifact hash (verified by install script checksums.txt)');
 
+    const lastState = readUpgradeState(this.options.configPath);
+    if (lastState?.status === 'failed' && lastState.targetVersion === message.version) {
+      this.options.log.warn({ targetVersion: message.version, failureReason: lastState.failureReason }, 'auto-upgrade: previous attempt for target failed, skipping retry');
+      return;
+    }
+
+    const readiness = updateReadiness();
+    if (!readiness.ok) {
+      this.options.log.warn({ targetVersion: message.version, reason: readiness.reason }, 'auto-upgrade: cannot run update command non-interactively, skipping');
+      return;
+    }
+
     if (this.upgradeInProgress) {
       this.options.log.info({}, 'auto-upgrade: upgrade already in progress, skipping');
       return;
@@ -143,17 +199,44 @@ export class AutoUpgradeController {
     this.options.log.info({ targetVersion }, 'auto-upgrade: draining in-flight requests');
     await this.drain();
 
-    writeUpgradeState(this.options.configPath, {
+    const pendingState: UpgradeState = {
       previousVersion: currentVersion,
       targetVersion,
       upgradedAt: new Date().toISOString(),
       startCount: 0,
       status: 'pending',
-    });
+    };
+    writeUpgradeState(this.options.configPath, pendingState);
 
     this.options.log.info({ targetVersion }, 'auto-upgrade: spawning update process');
-    spawnUpdate(targetVersion);
-    process.exit(0);
+    const child = spawnUpdate(targetVersion);
+    if (!child) {
+      markUpgradeFailed(this.options.configPath, pendingState, currentVersion, 'spawn_update_unsupported_platform', this.options.log);
+      process.exit(1);
+      return;
+    }
+
+    child.on('error', (err) => {
+      const state = readUpgradeState(this.options.configPath);
+      if (state?.status === 'pending') {
+        markUpgradeFailed(this.options.configPath, state, currentVersion, 'spawn_update_failed', this.options.log);
+      }
+      this.options.log.error({ err, targetVersion }, 'auto-upgrade: update process failed to start');
+      process.exit(1);
+    });
+    child.on('exit', (code, signal) => {
+      if (code === 0) {
+        this.options.log.info({ targetVersion }, 'auto-upgrade: update process exited, restarting service');
+        process.exit(0);
+        return;
+      }
+      const state = readUpgradeState(this.options.configPath);
+      if (state?.status === 'pending') {
+        markUpgradeFailed(this.options.configPath, state, currentVersion, 'update_process_failed', this.options.log);
+      }
+      this.options.log.error({ targetVersion, code, signal }, 'auto-upgrade: update process exited with failure');
+      process.exit(1);
+    });
   }
 
   private drain(): Promise<void> {
@@ -176,7 +259,13 @@ export class AutoUpgradeController {
 
 export function checkCrashLoopOnStartup(configPath: string, log: AutoUpgradeOptions['log']): void {
   const state = readUpgradeState(configPath);
-  if (!state || state.status !== 'pending') return;
+  if (state?.status !== 'pending') return;
+
+  const currentVersion = getProviderNodeBuildInfo().version;
+  if (currentVersion !== state.targetVersion) {
+    markUpgradeFailed(configPath, state, currentVersion, 'target_version_not_installed', log);
+    return;
+  }
 
   state.startCount++;
   writeUpgradeState(configPath, state);
@@ -194,11 +283,16 @@ export function checkCrashLoopOnStartup(configPath: string, log: AutoUpgradeOpti
 
 export function scheduleUpgradeVerification(configPath: string, log: AutoUpgradeOptions['log']): void {
   const state = readUpgradeState(configPath);
-  if (!state || state.status !== 'pending') return;
+  if (state?.status !== 'pending') return;
 
   setTimeout(() => {
     const current = readUpgradeState(configPath);
     if (current && current.status === 'pending') {
+      const currentVersion = getProviderNodeBuildInfo().version;
+      if (currentVersion !== current.targetVersion) {
+        markUpgradeFailed(configPath, current, currentVersion, 'target_version_not_installed', log);
+        return;
+      }
       writeUpgradeState(configPath, { ...current, status: 'verified' });
       log.info({ targetVersion: current.targetVersion }, 'auto-upgrade: version verified stable');
     }
