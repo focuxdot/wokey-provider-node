@@ -15,6 +15,18 @@ function assertMatch(path, pattern, label) {
   }
 }
 
+function assertNoAmbiguousPowerShellQueryInterpolation(path) {
+  const source = readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+  const match = /\$[A-Za-z_][A-Za-z0-9_]*\?/.exec(source);
+  if (match) {
+    throw new Error(
+      `${path} contains ambiguous PowerShell interpolation before ?: ${match[0]}. ` +
+        'Use $' +
+        '{var}? or $($var)? so the query marker is not parsed as part of the variable name.',
+    );
+  }
+}
+
 assertMatch(
   'packaging/install.sh',
   /VERSION="\$\{WOKEY_PROVIDER_NODE_VERSION:-(\d+\.\d+\.\d+)\}"/,
@@ -25,5 +37,6 @@ assertMatch(
   /\$Version = if \(\$env:WOKEY_PROVIDER_NODE_VERSION\) \{ \$env:WOKEY_PROVIDER_NODE_VERSION \} else \{ "(\d+\.\d+\.\d+)" \}/,
   'PowerShell installer',
 );
+assertNoAmbiguousPowerShellQueryInterpolation('packaging/install.ps1');
 
 console.log(`Installer defaults match package version ${expectedVersion}`);

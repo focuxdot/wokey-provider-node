@@ -14,7 +14,7 @@ try {
     [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
 } catch {}
 
-$Version = if ($env:WOKEY_PROVIDER_NODE_VERSION) { $env:WOKEY_PROVIDER_NODE_VERSION } else { "0.1.38" }
+$Version = if ($env:WOKEY_PROVIDER_NODE_VERSION) { $env:WOKEY_PROVIDER_NODE_VERSION } else { "0.1.39" }
 $PackageRevision = if ($env:WOKEY_PROVIDER_NODE_PACKAGE_REVISION) { $env:WOKEY_PROVIDER_NODE_PACKAGE_REVISION } else { $Version }
 $DefaultBaseUrl = "https://github.com/focuxdot/wokey-provider-node/releases/download/v$Version"
 $BaseUrl = if ($env:WOKEY_PROVIDER_NODE_BASE_URL) { $env:WOKEY_PROVIDER_NODE_BASE_URL.TrimEnd("/") } else { $DefaultBaseUrl }
@@ -292,7 +292,7 @@ try {
   $checksumsPath = Join-Path $tempDir "checksums.txt"
   Download-File "$BaseUrl/checksums.txt?v=$PackageRevision" $checksumsPath
   Verify-ChecksumsSignature $checksumsPath $tempDir
-  Download-File "$BaseUrl/$zipName?v=$PackageRevision" $zipPath
+  Download-File "${BaseUrl}/${zipName}?v=${PackageRevision}" $zipPath
   Verify-Artifact $zipPath $checksumsPath
 
   Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force

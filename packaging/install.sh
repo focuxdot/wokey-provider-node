@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.38}"
+VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.39}"
 PACKAGE_REVISION="${WOKEY_PROVIDER_NODE_PACKAGE_REVISION:-${VERSION}}"
 DEFAULT_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/download/v${VERSION}"
 BASE_URL="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_BASE_URL}}"
