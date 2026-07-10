@@ -43,8 +43,11 @@ import {
   parseAnthropicAuthorizationCode,
   pollCodexDeviceCode,
   requestCodexDeviceCode,
+  pollXaiDeviceCode,
+  requestXaiDeviceCode,
   verifyState,
   type CodexDeviceCode,
+  type XaiDeviceCode,
   type OAuthStart,
   type OAuthTokenResponse,
 } from './oauth.js';
@@ -189,6 +192,7 @@ try {
 const pendingCodexOAuth = new Map<string, OAuthStart>();
 const pendingAnthropicOAuth = new Map<string, OAuthStart>();
 const pendingCodexDeviceCodes = new Map<string, CodexDeviceCode>();
+const pendingXaiDeviceCodes = new Map<string, XaiDeviceCode>();
 let codexBrowserAttempt: {
   flow: OAuthStart;
   port: number;
@@ -568,7 +572,8 @@ app.post('/api/platform/credentials/authorize-token', async (request, reply) => 
   }
   await assertPlatformBindingIsUsable();
   const body = request.body as Record<string, unknown>;
-  const vendor: 'openai' | 'anthropic' = body.vendor === 'anthropic' ? 'anthropic' : 'openai';
+  const vendor: 'openai' | 'anthropic' | 'xai' =
+    body.vendor === 'anthropic' ? 'anthropic' : body.vendor === 'xai' ? 'xai' : 'openai';
   const oauth = providerOAuthConfigFromManualTokenBody(body, vendor);
   oauth.accessTokenSource = 'manual_token';
   try {
@@ -578,7 +583,8 @@ app.post('/api/platform/credentials/authorize-token', async (request, reply) => 
     return { ok: false, error: error instanceof Error ? error.message : 'invalid_oauth_token' };
   }
   const authorization = await authorizeOAuthCredential(oauth, vendor, body);
-  config.upstream = { ...config.upstream, mode: vendor === 'anthropic' ? 'anthropic-oauth' : 'codex-oauth', oauth };
+  const mode = vendor === 'anthropic' ? 'anthropic-oauth' : vendor === 'xai' ? 'xai-oauth' : 'codex-oauth';
+  config.upstream = { ...config.upstream, mode, oauth };
   persistConfig();
   return authorization;
 });
@@ -699,6 +705,36 @@ app.post('/api/oauth/codex/device/poll', async (request) => {
   });
   pendingCodexDeviceCodes.delete(body.deviceAuthId);
   const authorization = await authorizeOAuthCredential(oauth, 'openai', {});
+  return { ok: true, status: 'succeeded', authorization };
+});
+
+app.post('/api/oauth/xai/device/start', async () => {
+  const deviceCode = await requestXaiDeviceCode();
+  pendingXaiDeviceCodes.set(deviceCode.deviceCode, deviceCode);
+  return { ok: true, ...deviceCode };
+});
+
+app.post('/api/oauth/xai/device/poll', async (request) => {
+  const body = request.body as { deviceCode?: string };
+  if (!body.deviceCode) throw new Error('device_code_required');
+  const deviceCode = pendingXaiDeviceCodes.get(body.deviceCode);
+  if (!deviceCode) throw new Error('device_code_not_found');
+  if (Date.now() > deviceCode.expiresAt) {
+    pendingXaiDeviceCodes.delete(body.deviceCode);
+    return { ok: false, status: 'expired' };
+  }
+  const result = await pollXaiDeviceCode({ deviceCode: deviceCode.deviceCode });
+  if (result.status === 'pending') return { ok: true, status: 'pending' };
+  const receivedAt = new Date().toISOString();
+  const oauth = setOAuthToken('xai-oauth', result.token, {
+    accessTokenReceivedAt: receivedAt,
+    accessTokenSource: 'xai_device_code',
+    lastRefreshAt: receivedAt,
+  });
+  // 先授权、成功后再从待办表删 device code。若平台推送失败(如节点密钥失配),真实错误得以透传,
+  // 而不是被下一次重试的 device_code_not_found 盖掉(codex 分支因生产一贯成功从未暴露此顺序问题)。
+  const authorization = await authorizeOAuthCredential(oauth, 'xai', {});
+  pendingXaiDeviceCodes.delete(body.deviceCode);
   return { ok: true, status: 'succeeded', authorization };
 });
 
@@ -903,10 +939,11 @@ function parseExpiresAt(value: number | string | undefined): number | undefined 
   return Number.isFinite(time) ? time : undefined;
 }
 
-function setOAuthToken(mode: 'codex-oauth' | 'anthropic-oauth', token: OAuthTokenResponse, extra?: Partial<ProviderOAuthConfig>): ProviderOAuthConfig {
+function setOAuthToken(mode: 'codex-oauth' | 'anthropic-oauth' | 'xai-oauth', token: OAuthTokenResponse, extra?: Partial<ProviderOAuthConfig>): ProviderOAuthConfig {
   const previousOAuth = config.upstream.mode === mode ? config.upstream.oauth : undefined;
   const oauth = oauthConfigFromToken(token, { ...previousOAuth, ...extra });
   if (mode === 'anthropic-oauth') enrichAnthropicOAuthFromClaudeMetadata(oauth);
+  else if (mode === 'xai-oauth') enrichXaiOAuthFromToken(oauth);
   else enrichOpenAIOAuthFromToken(oauth);
   config.upstream = { ...config.upstream, mode, oauth };
   persistConfig();
@@ -934,6 +971,21 @@ function enrichOpenAIOAuthFromToken(oauth: ProviderOAuthConfig): void {
     scope: oauth.scope,
   }, 'openai');
   oauth.organizationId = derived.organizationId || oauth.organizationId;
+  oauth.accountEmail = derived.accountEmail || oauth.accountEmail;
+  oauth.subscriptionType = derived.subscriptionType || oauth.subscriptionType;
+  oauth.subscriptionDisplayName = derived.subscriptionDisplayName || oauth.subscriptionDisplayName;
+}
+
+// xAI:身份/档位(email/tier)权威值由 relay 写入期解 access token JWT 决定,节点本地仅做轻量回填(展示用)。
+function enrichXaiOAuthFromToken(oauth: ProviderOAuthConfig): void {
+  const derived = providerOAuthConfigFromManualTokenBody({
+    accessToken: oauth.accessToken,
+    refreshToken: oauth.refreshToken,
+    idToken: oauth.idToken,
+    tokenType: oauth.tokenType,
+    expiresAt: oauth.expiresAt,
+    scope: oauth.scope,
+  }, 'xai');
   oauth.accountEmail = derived.accountEmail || oauth.accountEmail;
   oauth.subscriptionType = derived.subscriptionType || oauth.subscriptionType;
   oauth.subscriptionDisplayName = derived.subscriptionDisplayName || oauth.subscriptionDisplayName;
@@ -968,7 +1020,7 @@ function currentOAuthCredentialBody(body: Record<string, unknown>): Record<strin
 
 function oAuthCredentialBody(
   oauth: ProviderOAuthConfig,
-  vendor: 'openai' | 'anthropic',
+  vendor: 'openai' | 'anthropic' | 'xai',
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!oauth.accessToken) throw new Error('oauth_access_token_missing');
@@ -1003,7 +1055,7 @@ function oAuthCredentialBody(
 
 async function authorizeOAuthCredential(
   oauth: ProviderOAuthConfig,
-  vendor: 'openai' | 'anthropic',
+  vendor: 'openai' | 'anthropic' | 'xai',
   body: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   if (!isNodeBound(config)) throw new Error('node_not_bound');

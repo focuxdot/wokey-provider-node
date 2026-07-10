@@ -117,8 +117,8 @@ const zhText = {
   wokey-node bind --value bind_...
   wokey-node list
   wokey-node import [候选编号]
-  wokey-node login codex
-  wokey-node paste token --vendor <openai|anthropic> [--file 路径|--value token]
+  wokey-node login <codex|grok>
+  wokey-node paste token --vendor <openai|anthropic|xai> [--file 路径|--value token]
 
 服务命令：
   wokey-node restart
@@ -226,8 +226,8 @@ const enText = {
   wokey-node bind --value bind_...
   wokey-node list
   wokey-node import [candidate-number]
-  wokey-node login codex
-  wokey-node paste token --vendor <openai|anthropic> [--file path|--value token]
+  wokey-node login <codex|grok>
+  wokey-node paste token --vendor <openai|anthropic|xai> [--file path|--value token]
 
 Service commands:
   wokey-node restart
@@ -434,7 +434,8 @@ async function importCommand(args) {
 async function loginCommand(args) {
   const provider = args[0];
   if (provider === 'codex' || provider === 'openai') return codexDeviceCommand();
-  throw new Error('Usage: wokey-node login codex');
+  if (provider === 'grok' || provider === 'xai') return xaiDeviceCommand();
+  throw new Error('Usage: wokey-node login <codex|grok>');
 }
 
 async function pasteCommand(args) {
@@ -444,7 +445,7 @@ async function pasteCommand(args) {
     const vendor = readVendor(tail);
     return tokenCommand(vendor, removeVendorArgs(tail));
   }
-  throw new Error('Usage: wokey-node paste token --vendor <openai|anthropic>');
+  throw new Error('Usage: wokey-node paste token --vendor <openai|anthropic|xai>');
 }
 
 async function apiStatusCommand(options = {}) {
@@ -586,7 +587,7 @@ async function tokenCommand(vendor, args) {
   const raw = await readPayload(args, text.oauthPrompt);
   const parsed = parseManualOAuthTokenInput(raw);
   if (!parsed?.accessToken) throw new Error(text.oauthAccessTokenRequired);
-  if (vendor === 'openai' && !parsed.refreshToken) throw new Error(text.oauthRefreshTokenRequired);
+  if ((vendor === 'openai' || vendor === 'xai') && !parsed.refreshToken) throw new Error(text.oauthRefreshTokenRequired);
   const result = await api('/api/platform/credentials/authorize-token', {
     method: 'POST',
     body: { ...parsed, vendor },
@@ -598,7 +599,7 @@ async function pasteTokenInteractive(rl, vendor) {
   const token = await readInteractiveOAuthPayload(rl);
   const parsed = parseManualOAuthTokenInput(token);
   if (!parsed?.accessToken) throw new Error(text.oauthAccessTokenRequired);
-  if (vendor === 'openai' && !parsed.refreshToken) throw new Error(text.oauthRefreshTokenRequired);
+  if ((vendor === 'openai' || vendor === 'xai') && !parsed.refreshToken) throw new Error(text.oauthRefreshTokenRequired);
   const result = await api('/api/platform/credentials/authorize-token', {
     method: 'POST',
     body: { ...parsed, vendor },
@@ -630,6 +631,37 @@ async function codexDeviceCommand() {
     if (polled.status === 'succeeded') {
       process.stdout.write('\n');
       printAuthorizationResult(polled.authorization || polled, 'openai');
+      return;
+    }
+    throw new Error(`Device authorization ${polled.status || 'failed'}.`);
+  }
+  throw new Error('Device authorization expired.');
+}
+
+async function xaiDeviceCommand() {
+  const started = await api('/api/oauth/xai/device/start', {
+    method: 'POST',
+    body: {},
+  });
+  console.log(`${text.codexOpen} ${started.verificationUrl}`);
+  console.log(`${blue(text.code)} ${green(started.userCode)}`);
+  console.log(yellow(text.waitingAuthorization));
+
+  const intervalMs = Math.max(2, Number(started.interval) || 5) * 1000;
+  const expiresAt = Number(started.expiresAt) || Date.now() + 30 * 60 * 1000;
+  while (Date.now() < expiresAt) {
+    await sleep(intervalMs);
+    const polled = await api('/api/oauth/xai/device/poll', {
+      method: 'POST',
+      body: { deviceCode: started.deviceCode },
+    });
+    if (polled.status === 'pending') {
+      process.stdout.write('.');
+      continue;
+    }
+    if (polled.status === 'succeeded') {
+      process.stdout.write('\n');
+      printAuthorizationResult(polled.authorization || polled, 'xai');
       return;
     }
     throw new Error(`Device authorization ${polled.status || 'failed'}.`);
@@ -856,12 +888,14 @@ function parseManualOAuthTokenInput(value) {
 function normalizeVendor(value) {
   if (value === 'openai' || value === 'codex') return 'openai';
   if (value === 'anthropic' || value === 'claude') return 'anthropic';
+  if (value === 'xai' || value === 'grok') return 'xai';
   throw new Error(text.vendorRequired);
 }
 
 function vendorLabel(vendor) {
   if (vendor === 'anthropic') return 'Claude';
   if (vendor === 'openai') return 'OpenAI/Codex';
+  if (vendor === 'xai') return 'Grok';
   return vendor || 'OAuth';
 }
 

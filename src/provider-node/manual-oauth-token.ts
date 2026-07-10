@@ -5,7 +5,7 @@ type AnyRecord = Record<string, unknown>;
 
 export function providerOAuthConfigFromManualTokenBody(
   body: AnyRecord,
-  vendor: 'openai' | 'anthropic',
+  vendor: 'openai' | 'anthropic' | 'xai',
 ): ProviderOAuthConfig {
   const tokens = nestedRecord(body.tokens);
   const accessToken = stringValue(body.accessToken) || stringValue(body.access_token) || stringValue(tokens?.access_token);
@@ -49,15 +49,16 @@ export function providerOAuthConfigFromManualTokenBody(
 
 export function validateManualOAuthConfigForAuthorization(
   oauth: ProviderOAuthConfig,
-  vendor: 'openai' | 'anthropic',
+  vendor: 'openai' | 'anthropic' | 'xai',
 ): void {
   if (!oauth.accessToken) throw new Error('oauth_access_token_missing');
-  if (vendor === 'openai' && !oauth.refreshToken) throw new Error('oauth_refresh_token_required');
+  // xAI 刷新归 relay 自有,必须带 refresh_token(与 openai 同)。
+  if ((vendor === 'openai' || vendor === 'xai') && !oauth.refreshToken) throw new Error('oauth_refresh_token_required');
 }
 
 function manualTokenSubscriptionType(
   body: AnyRecord,
-  vendor: 'openai' | 'anthropic',
+  vendor: 'openai' | 'anthropic' | 'xai',
   accessClaims: AnyRecord,
   idClaims: AnyRecord,
 ): string | undefined {

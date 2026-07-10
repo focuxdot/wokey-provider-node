@@ -449,7 +449,8 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 4p
 .step-title { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 
 /* ── Provider tabs ── */
-.provider-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; align-items: end; border-bottom: 1px solid var(--accent-line); }
+/* 固定 3 列并排(Claude / Codex / Grok);container-type 让下方容器查询按「这一行的实际宽度」决策。 */
+.provider-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-items: end; border-bottom: 1px solid var(--accent-line); container-type: inline-size; }
 .provider-option {
   position: relative;
   min-height: 64px;
@@ -477,6 +478,12 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 4p
 .provider-option.selected { z-index: 1; border-color: var(--accent-line); border-bottom-color: var(--primary-soft); background: var(--primary-soft); color: var(--primary); }
 .provider-option.selected::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--primary-soft); }
 .provider-option.selected b { color: var(--primary); }
+/* 三列一行放不下副标题时(容器宽度阈值),隐藏副标题,只留图标+标题,保证三个仍并排一行。 */
+@container (max-width: 560px) {
+  .provider-copy span { display: none; }
+  .provider-option { min-height: 52px; padding: 8px 12px; gap: 8px; }
+  .provider-option b { font-size: 15px; }
+}
 .provider-option.selected .provider-icon { color: var(--primary); opacity: 1; }
 .provider-tabs + .auth-options { margin-top: -1px; }
 

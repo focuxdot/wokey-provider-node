@@ -144,6 +144,12 @@
                   </svg>
                   <span class="provider-copy"><b>Codex</b><span data-i18n="codexOAuth">Use device code authorization</span></span>
                 </button>
+                <button class="provider-option" id="grokProviderTab" type="button" role="tab" aria-selected="false" aria-controls="xaiAuthPanel" onclick="selectProvider('grok')">
+                  <svg class="provider-icon grok-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="currentColor" d="M12 2l2.6 6.8L21.5 12l-6.9 3.2L12 22l-2.6-6.8L2.5 12l6.9-3.2z"></path>
+                  </svg>
+                  <span class="provider-copy"><b>Grok</b><span data-i18n="grokOAuth">Use device code authorization</span></span>
+                </button>
               </div>
               <div class="auth-options">
               <div class="provider-panel" id="claudeAuthPanel" role="tabpanel" aria-labelledby="claudeProviderTab">
@@ -180,6 +186,23 @@
                     <button class="icon-btn" type="button" onclick="copyCodexDeviceCode()" data-i18n-aria-label="copyDeviceCode" aria-label="Copy device code">⧉</button>
                   </div>
                   <p class="code-hint muted" data-i18n="deviceCodeHint">When ChatGPT asks for the code shown in your terminal, use this code.</p>
+                </div>
+              </div>
+              <div class="provider-panel hidden" id="xaiAuthPanel" role="tabpanel" aria-labelledby="grokProviderTab">
+                <div class="auth-option primary">
+                  <div class="auth-row">
+                    <div>
+                      <h4 data-i18n="useDeviceCode">Use device code</h4>
+                      <p class="muted" data-i18n="grokDeviceCodeBody">Use this on a server or when the browser cannot open.</p>
+                    </div>
+                    <button class="primary-btn" onclick="startXaiDevice()" data-i18n="startGrokDeviceCode">Authorize in Grok</button>
+                  </div>
+                  <div class="code-label" data-i18n="grokDeviceCodeLabel">Code to enter on the Grok page</div>
+                  <div class="code-row">
+                    <div class="code-box" id="xaiDeviceUserCodeLabel">--------</div>
+                    <button class="icon-btn" type="button" onclick="copyXaiDeviceCode()" data-i18n-aria-label="copyDeviceCode" aria-label="Copy device code">⧉</button>
+                  </div>
+                  <p class="code-hint muted" data-i18n="grokDeviceCodeHint">When Grok asks for the code shown in your terminal, use this code.</p>
                 </div>
               </div>
               <details class="advanced-oauth">

@@ -30,6 +30,18 @@ export const ANTHROPIC_OAUTH = {
   userAgent: 'axios/1.13.6',
 } as const;
 
+// xAI (Grok) — RFC 8628 设备码流,复用官方 Grok CLI 的公共 client。access_token 是带 api:access 的 JWT,
+// 直接当 Bearer 打 api.x.ai/v1(OpenAI 兼容)。与 Codex 不同:直接用 device_code 换 token,无额外 code 兑换步。
+export const XAI_OAUTH = {
+  clientId: 'b1a00492-073a-47ea-816f-4c329264a828',
+  issuer: 'https://auth.x.ai',
+  deviceCodeUrl: 'https://auth.x.ai/oauth2/device/code',
+  tokenUrl: 'https://auth.x.ai/oauth2/token',
+  scope: 'openid profile email offline_access grok-cli:access api:access',
+  deviceCodeGrant: 'urn:ietf:params:oauth:grant-type:device_code',
+  userAgent: 'grok-cli/0.2.93',
+} as const;
+
 export interface OAuthStart {
   authorizationUrl: string;
   state: string;
@@ -59,6 +71,23 @@ export interface CodexDeviceCode {
   deviceAuthId: string;
   interval: number;
   expiresAt: number;
+}
+
+export interface XaiDeviceCode {
+  verificationUrl: string;
+  userCode: string;
+  deviceCode: string;
+  interval: number;
+  expiresAt: number;
+}
+
+interface XaiDeviceCodeResponse {
+  device_code?: string;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string;
+  interval?: string | number;
+  expires_in?: string | number;
 }
 
 interface CodexDeviceUserCodeResponse {
@@ -220,6 +249,57 @@ export async function pollCodexDeviceCode(input: {
     redirectUri: `${issuer}/deviceauth/callback`,
   });
   return { status: 'succeeded', token };
+}
+
+export async function requestXaiDeviceCode(): Promise<XaiDeviceCode> {
+  const response = await fetch(XAI_OAUTH.deviceCodeUrl, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/x-www-form-urlencoded',
+      'user-agent': XAI_OAUTH.userAgent,
+    },
+    body: new URLSearchParams({ client_id: XAI_OAUTH.clientId, scope: XAI_OAUTH.scope }).toString(),
+  });
+  const raw = await parseResponse<XaiDeviceCodeResponse>(response);
+  const deviceCode = raw.device_code;
+  const userCode = raw.user_code;
+  const verificationUri = raw.verification_uri;
+  if (!deviceCode || !userCode || !verificationUri) throw new Error('xai_device_missing_fields');
+  const interval = Number(raw.interval || 5);
+  const expiresIn = Number(raw.expires_in || 1800);
+  return {
+    verificationUrl: raw.verification_uri_complete || verificationUri,
+    userCode,
+    deviceCode,
+    interval: Number.isFinite(interval) && interval > 0 ? interval : 5,
+    expiresAt: Date.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn : 1800) * 1000,
+  };
+}
+
+export async function pollXaiDeviceCode(input: {
+  deviceCode: string;
+}): Promise<{ status: 'pending' } | { status: 'succeeded'; token: OAuthTokenResponse }> {
+  const response = await fetch(XAI_OAUTH.tokenUrl, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/x-www-form-urlencoded',
+      'user-agent': XAI_OAUTH.userAgent,
+    },
+    body: new URLSearchParams({
+      grant_type: XAI_OAUTH.deviceCodeGrant,
+      client_id: XAI_OAUTH.clientId,
+      device_code: input.deviceCode,
+    }).toString(),
+  });
+  const text = await response.text();
+  if (response.ok) return { status: 'succeeded', token: JSON.parse(text) as OAuthTokenResponse };
+  const body = parseJsonRecord(text);
+  const error = stringField(body, 'error');
+  // RFC 8628:未授权/限速 → 继续轮询;拒绝/过期 → 硬错(上层映射为设备码失效)。
+  if (error === 'authorization_pending' || error === 'slow_down') return { status: 'pending' };
+  throw new Error(`oauth_${response.status}:${text.slice(0, 300)}`);
 }
 
 export function createAnthropicOAuthStart(scope: string = ANTHROPIC_OAUTH.scopeOAuth): OAuthStart {

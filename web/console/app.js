@@ -136,6 +136,11 @@ const messages = {
     startDeviceCode: 'Authorize in ChatGPT',
     deviceCodeLabel: 'Code to enter on the ChatGPT page',
     deviceCodeHint: 'When ChatGPT asks for the code shown in your terminal, use this code.',
+    grokOAuth: 'Use device code authorization',
+    grokDeviceCodeBody: 'Click to generate a device code and open the Grok authorization page.',
+    startGrokDeviceCode: 'Authorize in Grok',
+    grokDeviceCodeLabel: 'Code to enter on the Grok page',
+    grokDeviceCodeHint: 'When Grok asks for the code shown in your terminal, use this code.',
     copyDeviceCode: 'Copy device code',
     deviceCodeStartFirst: 'Generate a device code first.',
     deviceCodeOpened:
@@ -313,6 +318,11 @@ const messages = {
     startDeviceCode: '去 ChatGPT 授权',
     deviceCodeLabel: 'ChatGPT 页面要输入的 9 位代码',
     deviceCodeHint: 'ChatGPT 页面提示“终端上显示的代码”时，请使用这里的代码。',
+    grokOAuth: '使用设备码授权',
+    grokDeviceCodeBody: '点击后会生成设备码并打开 Grok 授权页。',
+    startGrokDeviceCode: '去 Grok 授权',
+    grokDeviceCodeLabel: 'Grok 页面要输入的代码',
+    grokDeviceCodeHint: 'Grok 页面提示“终端上显示的代码”时，请使用这里的代码。',
     copyDeviceCode: '复制设备码',
     deviceCodeStartFirst: '请先点击上方按钮生成设备码。',
     deviceCodeOpened: 'ChatGPT 授权页已打开。请把这里的设备码填到 ChatGPT 页面；授权完成后回到本页，节点会自动保存凭证。',
@@ -380,6 +390,7 @@ if (!LOCAL_AUTH_SCAN_ENABLED) {
 let statusState = null;
 let activeDeviceAuthId = null;
 let activeCodexDeviceCode = null;
+let activeXaiDeviceCode = null;
 let activeProvider = 'claude';
 let activeClaudeOAuth = null;
 let platformCredentials = null;
@@ -1433,7 +1444,7 @@ function vendorLabel(vendor) {
 
 function selectProvider(provider) {
   activeProvider = provider;
-  const labels = { claude: 0, codex: 1 };
+  const labels = { claude: 0, codex: 1, grok: 2 };
   document.querySelectorAll('.provider-option').forEach((item, index) => {
     const selected = index === (labels[provider] || 0);
     item.classList.toggle('selected', selected);
@@ -1441,6 +1452,7 @@ function selectProvider(provider) {
   });
   document.getElementById('claudeAuthPanel')?.classList.toggle('hidden', provider !== 'claude');
   document.getElementById('codexAuthPanel')?.classList.toggle('hidden', provider !== 'codex');
+  document.getElementById('xaiAuthPanel')?.classList.toggle('hidden', provider !== 'grok');
   if (provider === 'claude') ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', error.message, 'error'));
 }
 
@@ -1477,6 +1489,7 @@ function stopDevicePolling() {
   devicePollTimer = null;
   activeDeviceAuthId = null;
   activeCodexDeviceCode = null;
+  activeXaiDeviceCode = null;
   devicePollRunId += 1;
 }
 
@@ -1630,6 +1643,85 @@ async function copyCodexDeviceCode() {
   const copied = await copyTextToClipboard(code);
   if (!copied) {
     selectCodexDeviceCode();
+    setToast('oauthResult', t('deviceCodeCopyBlocked'));
+    return;
+  }
+  setToast('oauthResult', t('deviceCodeCopied'));
+}
+
+// ── xAI (Grok) 设备码 —— RFC 8628,直接用 device_code 轮询 token。复用共享轮询计时器/runId。 ──────────
+async function startXaiDevice() {
+  if (activeXaiDeviceCode && Date.now() < activeXaiDeviceCode.expiresAt) {
+    const authWindow = window.open(activeXaiDeviceCode.verificationUrl, 'wokeyXaiDeviceAuth');
+    if (authWindow) authWindow.focus();
+    setToast('oauthResult', t('deviceCodeOpened'));
+    startXaiDevicePolling(activeXaiDeviceCode);
+    return;
+  }
+  stopDevicePolling();
+  const authWindow = window.open('about:blank', 'wokeyXaiDeviceAuth');
+  try {
+    const data = await api('/api/oauth/xai/device/start', { method: 'POST', body: '{}' });
+    activeXaiDeviceCode = data;
+    document.getElementById('xaiDeviceUserCodeLabel').textContent = data.userCode;
+    if (authWindow) { authWindow.location.href = data.verificationUrl; authWindow.focus(); }
+    setToast('oauthResult', t('deviceCodeOpened'));
+    startXaiDevicePolling(data);
+  } catch (error) {
+    if (authWindow && !authWindow.closed) authWindow.close();
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+function startXaiDevicePolling(deviceCode) {
+  if (devicePollTimer) clearTimeout(devicePollTimer);
+  const pollRunId = ++devicePollRunId;
+  const intervalMs = Math.max(2, Number(deviceCode.interval) || 5) * 1000;
+  let transientPollErrors = 0;
+  setToast('oauthResult', t('deviceWaiting'));
+
+  const finish = () => {
+    if (pollRunId !== devicePollRunId) return false;
+    if (devicePollTimer) clearTimeout(devicePollTimer);
+    devicePollTimer = null;
+    activeXaiDeviceCode = null;
+    devicePollRunId += 1;
+    return true;
+  };
+  const schedule = () => {
+    if (pollRunId !== devicePollRunId || !activeXaiDeviceCode) return;
+    devicePollTimer = setTimeout(pollOnce, intervalMs);
+  };
+  const pollOnce = async () => {
+    if (pollRunId !== devicePollRunId || !activeXaiDeviceCode) return;
+    const dc = activeXaiDeviceCode.deviceCode;
+    try {
+      const data = await api('/api/oauth/xai/device/poll', { method: 'POST', body: JSON.stringify({ deviceCode: dc }) });
+      if (pollRunId !== devicePollRunId) return;
+      transientPollErrors = 0;
+      if (data.status === 'pending') { schedule(); return; }
+      if (data.status === 'expired') { if (finish()) setToast('oauthResult', t('deviceAuthorizationExpired'), 'error'); return; }
+      if (data.status !== 'succeeded') { schedule(); return; }
+      if (!finish()) return;
+      setToast('oauthResult', t('deviceAuthorized'), 'success');
+      await refreshStatus();
+    } catch (error) {
+      if (pollRunId !== devicePollRunId) return;
+      if (error?.status >= 500 && transientPollErrors < 5) { transientPollErrors += 1; schedule(); return; }
+      if (finish()) setToast('oauthResult', formatApiError(error), 'error');
+    }
+  };
+  schedule();
+}
+
+async function copyXaiDeviceCode() {
+  const code = document.getElementById('xaiDeviceUserCodeLabel').textContent.trim();
+  if (!code || /^-+$/.test(code)) {
+    setToast('oauthResult', t('deviceCodeStartFirst'));
+    return;
+  }
+  const copied = await copyTextToClipboard(code);
+  if (!copied) {
     setToast('oauthResult', t('deviceCodeCopyBlocked'));
     return;
   }
@@ -1814,6 +1906,7 @@ Object.assign(window, {
   bindNode,
   copyClaudeAuthorizationLink,
   copyCodexDeviceCode,
+  copyXaiDeviceCode,
   importDetectedCredential,
   refreshStatusFromAction,
   requestUninstallNode,
@@ -1823,6 +1916,7 @@ Object.assign(window, {
   showBindingHelp,
   startClaudeOAuth,
   startCodexDevice,
+  startXaiDevice,
   submitClaudeAuthorizationCode,
   submitManualOAuthToken,
   toggleSettingsMenu,
