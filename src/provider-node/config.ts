@@ -190,14 +190,18 @@ function readUnixMachineId(): string | undefined {
   return hostUuid || readFirstTextFile(['/etc/hostid']);
 }
 
+// 返回命令的原始文本输出。切勿在此 normalize/小写化:readMacOsMachineId / readWindowsMachineId 要在原始输出上做
+// 大小写敏感的正则提取(IOPlatformUUID / MachineGuid),提取到的值再由 deriveProviderNodeId 内部 normalize。
+// 旧实现先把整段输出小写化 → 大写正则匹配不到 → machineId 读不到 → macOS/Windows 节点每次回退成随机 nodeId。
 function execFileText(command: string, args: string[]): string | undefined {
   try {
-    return normalizeMachineId(execFileSync(command, args, {
+    const output = execFileSync(command, args, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 1000,
       windowsHide: true,
-    }));
+    });
+    return typeof output === 'string' && output.trim() ? output : undefined;
   } catch {
     return undefined;
   }
