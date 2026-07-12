@@ -1,13 +1,37 @@
 import { describe, expect, it } from 'vitest';
+import { createServer } from 'node:net';
 import {
   DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS,
   OFFICIAL_EXIT_VENDOR_CONFIGS,
   ProviderOfficialExitTunnelManager,
+  classifyConnectError,
+  classifySocketError,
   isOfficialExitHostAllowed,
   parseOfficialExitAllowlist,
 } from '../src/provider-node/official-exit.js';
 import type { ProviderNodeConfig } from '../src/provider-node/config.js';
 import type { OfficialExitOpenRequest } from '../src/shared/protocol.js';
+
+function networkError(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(code), { code });
+}
+
+describe('official-exit transport error classification', () => {
+  it('uses connect-stage errors only before TCP connect', () => {
+    expect(classifyConnectError(networkError('ENOTFOUND'))).toBe('official_exit_dns_failed');
+    expect(classifyConnectError(networkError('EAI_AGAIN'))).toBe('official_exit_dns_failed');
+    expect(classifyConnectError(networkError('ECONNREFUSED'))).toBe('official_exit_connect_refused');
+    expect(classifyConnectError(networkError('ETIMEDOUT'))).toBe('official_exit_connect_timeout');
+    expect(classifyConnectError(networkError('ENETUNREACH'))).toBe('official_exit_connect_failed');
+  });
+
+  it('uses socket-stage errors after TCP connect', () => {
+    expect(classifySocketError(networkError('ETIMEDOUT'))).toBe('official_exit_socket_timeout');
+    expect(classifySocketError(networkError('ECONNRESET'))).toBe('official_exit_socket_reset');
+    expect(classifySocketError(networkError('EPIPE'))).toBe('official_exit_socket_broken_pipe');
+    expect(classifySocketError(networkError('ENETDOWN'))).toBe('official_exit_socket_failed');
+  });
+});
 
 describe('parseOfficialExitAllowlist', () => {
   it('returns the official vendor default list for unset or blank input', () => {
@@ -102,7 +126,7 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
     officialExit: { enabled: true },
   } as unknown as ProviderNodeConfig;
 
-  function openRequest(targetHost: string): OfficialExitOpenRequest {
+  function openRequest(targetHost: string, targetPort = 443): OfficialExitOpenRequest {
     return {
       type: 'official_exit.open',
       sessionId: 'sess_1',
@@ -110,7 +134,7 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
       providerId: 'prov_1',
       nodeId: 'node_1',
       targetHost,
-      targetPort: 443,
+      targetPort,
       deadlineMs: 5_000,
     };
   }
@@ -134,5 +158,45 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
       },
     ]);
     expect(manager.activeSessionCount()).toBe(0);
+  });
+
+  it('reports bounded TCP connection and byte diagnostics on existing frames', async () => {
+    const upstream = createServer((socket) => {
+      socket.write('hello');
+      socket.end();
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message as unknown as Record<string, unknown>),
+      ['127.0.0.1'],
+    );
+
+    await manager.handleMessage(openRequest('127.0.0.1', address.port));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    upstream.close();
+
+    expect(sent[0]).toMatchObject({
+      type: 'official_exit.open_response',
+      accepted: true,
+      transportDiagnostic: {
+        version: 1,
+        stage: 'socket',
+        outcome: 'connected',
+        addressFamily: 'ipv4',
+      },
+    });
+    expect(sent.find((message) => message.type === 'official_exit.close')).toMatchObject({
+      transportDiagnostic: {
+        version: 1,
+        stage: 'socket',
+        outcome: 'closed',
+        bytesFromUpstream: 5,
+        bytesToUpstream: 0,
+      },
+    });
   });
 });

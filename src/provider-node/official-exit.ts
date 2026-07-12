@@ -5,6 +5,7 @@ import type {
   OfficialExitError,
   OfficialExitOpenRequest,
   OfficialExitOpenResponse,
+  OfficialExitTransportDiagnostic,
 } from '../shared/protocol.js';
 import { DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS } from '../shared/official-exit-vendors.js';
 import type { ProviderNodeConfig } from './config.js';
@@ -61,6 +62,10 @@ interface OfficialExitSession {
   closed: boolean;
   maxBytesIn?: number;
   maxBytesOut?: number;
+  connectedAt: number;
+  connectMs: number;
+  addressFamily?: 'ipv4' | 'ipv6';
+  remoteAddress?: string;
 }
 
 export class ProviderOfficialExitTunnelManager {
@@ -107,6 +112,7 @@ export class ProviderOfficialExitTunnelManager {
     }
 
     await new Promise<void>((resolve) => {
+      const connectStartedAt = Date.now();
       const socket = connect({
         host: request.targetHost,
         port: request.targetPort,
@@ -117,7 +123,13 @@ export class ProviderOfficialExitTunnelManager {
         if (settled) return;
         settled = true;
         socket.destroy();
-        this.sendOpenResponse(request.sessionId, false, reasonCode);
+        this.sendOpenResponse(request.sessionId, false, reasonCode, {
+          version: 1,
+          stage: 'connect',
+          outcome: 'failed',
+          reasonCode,
+          connectMs: Date.now() - connectStartedAt,
+        });
         resolve();
       };
 
@@ -125,6 +137,8 @@ export class ProviderOfficialExitTunnelManager {
       socket.once('connect', () => {
         if (settled) return;
         settled = true;
+        const addressFamily = socket.remoteFamily === 'IPv4' ? 'ipv4' : socket.remoteFamily === 'IPv6' ? 'ipv6' : undefined;
+        const connectMs = Date.now() - connectStartedAt;
         const session: OfficialExitSession = {
           socket,
           seqOut: 0,
@@ -133,10 +147,14 @@ export class ProviderOfficialExitTunnelManager {
           closed: false,
           maxBytesIn: request.maxBytesIn,
           maxBytesOut: request.maxBytesOut,
+          connectedAt: Date.now(),
+          connectMs,
+          addressFamily,
+          remoteAddress: socket.remoteAddress,
         };
         this.sessions.set(request.sessionId, session);
         this.attachSocketHandlers(request.sessionId, session);
-        this.sendOpenResponse(request.sessionId, true);
+        this.sendOpenResponse(request.sessionId, true, undefined, this.transportDiagnostic(session, 'connected'));
         resolve();
       });
       socket.once('error', (error) => {
@@ -145,7 +163,7 @@ export class ProviderOfficialExitTunnelManager {
           return;
         }
         const session = this.sessions.get(request.sessionId);
-        if (session) this.sendErrorAndClose(request.sessionId, session, classifyConnectError(error), error.message);
+        if (session) this.sendErrorAndClose(request.sessionId, session, classifySocketError(error), error.message);
       });
       socket.once('timeout', () => {
         if (!settled) {
@@ -218,12 +236,18 @@ export class ProviderOfficialExitTunnelManager {
     this.closeSession(message.sessionId, session, message.reasonCode ?? 'official_exit_platform_closed', false);
   }
 
-  private sendOpenResponse(sessionId: string, accepted: boolean, reasonCode?: string): void {
+  private sendOpenResponse(
+    sessionId: string,
+    accepted: boolean,
+    reasonCode?: string,
+    transportDiagnostic?: OfficialExitTransportDiagnostic,
+  ): void {
     this.send({
       type: 'official_exit.open_response',
       sessionId,
       accepted,
       reasonCode,
+      transportDiagnostic,
     });
   }
 
@@ -239,6 +263,7 @@ export class ProviderOfficialExitTunnelManager {
       errorCode,
       errorMessage,
       retryable: errorCode !== 'official_exit_vendor_not_allowed',
+      transportDiagnostic: this.transportDiagnostic(session, 'failed', errorCode),
     });
     this.closeSession(sessionId, session, errorCode, true);
   }
@@ -258,15 +283,44 @@ export class ProviderOfficialExitTunnelManager {
         type: 'official_exit.close',
         sessionId,
         reasonCode,
+        transportDiagnostic: this.transportDiagnostic(session, 'closed', reasonCode),
       });
     }
   }
+
+  private transportDiagnostic(
+    session: OfficialExitSession,
+    outcome: 'connected' | 'failed' | 'closed',
+    reasonCode?: string,
+  ): OfficialExitTransportDiagnostic {
+    return {
+      version: 1,
+      stage: 'socket',
+      outcome,
+      reasonCode,
+      addressFamily: session.addressFamily,
+      remoteAddress: session.remoteAddress,
+      connectMs: session.connectMs,
+      elapsedMs: Date.now() - session.connectedAt,
+      bytesFromUpstream: session.bytesIn,
+      bytesToUpstream: session.bytesOut,
+    };
+  }
 }
 
-function classifyConnectError(error: Error): string {
+export function classifyConnectError(error: Error): string {
   const code = (error as NodeJS.ErrnoException).code;
   if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'official_exit_dns_failed';
   if (code === 'ECONNREFUSED') return 'official_exit_connect_refused';
   if (code === 'ETIMEDOUT') return 'official_exit_connect_timeout';
   return 'official_exit_connect_failed';
+}
+
+/** Classify failures emitted after the TCP connection has already opened. */
+export function classifySocketError(error: Error): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ETIMEDOUT') return 'official_exit_socket_timeout';
+  if (code === 'ECONNRESET') return 'official_exit_socket_reset';
+  if (code === 'EPIPE') return 'official_exit_socket_broken_pipe';
+  return 'official_exit_socket_failed';
 }

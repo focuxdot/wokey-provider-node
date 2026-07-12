@@ -130,6 +130,20 @@ export interface OfficialExitOpenResponse {
   sessionId: string;
   accepted: boolean;
   reasonCode?: string;
+  transportDiagnostic?: OfficialExitTransportDiagnostic;
+}
+
+export interface OfficialExitTransportDiagnostic {
+  version: 1;
+  stage: 'connect' | 'socket';
+  outcome: 'connected' | 'failed' | 'closed';
+  reasonCode?: string;
+  addressFamily?: 'ipv4' | 'ipv6';
+  remoteAddress?: string;
+  connectMs?: number;
+  elapsedMs?: number;
+  bytesFromUpstream?: number;
+  bytesToUpstream?: number;
 }
 
 export interface OfficialExitDataFrame {
@@ -143,6 +157,7 @@ export interface OfficialExitClose {
   type: 'official_exit.close';
   sessionId: string;
   reasonCode?: string;
+  transportDiagnostic?: OfficialExitTransportDiagnostic;
 }
 
 export interface OfficialExitError {
@@ -151,6 +166,7 @@ export interface OfficialExitError {
   errorCode: string;
   errorMessage?: string;
   retryable?: boolean;
+  transportDiagnostic?: OfficialExitTransportDiagnostic;
 }
 
 export type ProviderToPlatformMessage =
