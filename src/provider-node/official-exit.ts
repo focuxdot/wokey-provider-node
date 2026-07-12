@@ -191,7 +191,7 @@ export class ProviderOfficialExitTunnelManager {
   private attachSocketHandlers(sessionId: string, session: OfficialExitSession): void {
     session.socket.on('data', (chunk) => {
       if (session.closed) return;
-      session.bytesIn += chunk.byteLength;
+      session.bytesIn += Buffer.byteLength(chunk);
       if (session.maxBytesIn !== undefined && session.bytesIn > session.maxBytesIn) {
         this.sendErrorAndClose(sessionId, session, 'official_exit_max_bytes_in_exceeded');
         return;
