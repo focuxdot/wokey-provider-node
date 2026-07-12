@@ -70,11 +70,13 @@ describe('AutoUpgradeController', () => {
     mocks.version = '0.1.37';
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     getuidSpy = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+    delete process.env.INVOCATION_ID;
   });
 
   afterEach(() => {
     exitSpy.mockRestore();
     getuidSpy.mockRestore();
+    delete process.env.INVOCATION_ID;
     vi.useRealTimers();
   });
 
@@ -151,6 +153,43 @@ describe('AutoUpgradeController', () => {
         observedVersion: '0.1.37',
       });
       expect(exitSpy).toHaveBeenCalledWith(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs the Linux updater in a detached systemd scope when running as a unit', async () => {
+    process.env.INVOCATION_ID = 'unit-abc';
+    const child = new FakeChild();
+    mocks.spawn.mockReturnValue(child);
+    const { dir, configPath } = tempConfigPath();
+    const log = logger();
+    const stopBridge = vi.fn();
+    try {
+      const controller = new AutoUpgradeController({
+        configPath,
+        getInFlight: () => 0,
+        stopBridge,
+        log,
+      });
+
+      await controller.handleUpgradeAvailable({
+        type: 'platform.upgrade_available',
+        version: '0.1.38',
+        hashes: { 'linux-x64': 'hash' },
+        urgent: false,
+      });
+
+      // Detached into a transient scope (sibling cgroup) so the .deb postinst's
+      // `systemctl --user restart` cannot SIGKILL the in-flight installer.
+      expect(mocks.spawn).toHaveBeenCalledWith(
+        'systemd-run',
+        ['--user', '--scope', '--collect', '--quiet', '--', '/usr/local/bin/wokey-node', 'update'],
+        expect.objectContaining({
+          env: expect.objectContaining({ WOKEY_PROVIDER_NODE_VERSION: '0.1.38' }),
+          stdio: 'ignore',
+        }),
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

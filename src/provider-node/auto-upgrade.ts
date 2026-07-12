@@ -72,6 +72,10 @@ function isDocker(): boolean {
   return process.env.PROVIDER_NODE_DOCKER === '1' || existsSync('/.dockerenv');
 }
 
+function commandExists(bin: string): boolean {
+  return spawnSync('sh', ['-c', `command -v ${bin} >/dev/null 2>&1`], { stdio: 'ignore' }).status === 0;
+}
+
 function spawnUpdate(version: string): ChildProcess | undefined {
   const env = { ...process.env, WOKEY_PROVIDER_NODE_VERSION: version };
   const plat = platform();
@@ -84,6 +88,17 @@ function spawnUpdate(version: string): ChildProcess | undefined {
   } else if (plat === 'linux') {
     cmd = '/usr/local/bin/wokey-node';
     args = ['update'];
+    // When the node runs as a systemd unit, the updater we spawn is a child in
+    // this unit's cgroup. Installing the new .deb runs a postinst that restarts
+    // wokey-provider-node.service; stopping the unit SIGKILLs the whole cgroup —
+    // including the in-flight apt/dpkg — so the new version never lands and the
+    // node restarts on the old one, re-triggering the upgrade in a loop. Run the
+    // updater in a transient scope (a sibling cgroup) so the service restart
+    // cannot kill it mid-install.
+    if (process.env.INVOCATION_ID && commandExists('systemd-run')) {
+      args = ['--user', '--scope', '--collect', '--quiet', '--', cmd, ...args];
+      cmd = 'systemd-run';
+    }
   } else if (plat === 'win32') {
     cmd = 'powershell.exe';
     const scriptPath = join(process.env.LOCALAPPDATA || '', 'WokeyProviderNode', 'bin', 'wokey-node.ps1');
