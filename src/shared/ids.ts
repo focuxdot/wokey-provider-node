@@ -9,7 +9,3 @@ export function generateProviderId(): string {
 export function generateNodeId(): string {
   return nanoid(SHORT_ID_LENGTH);
 }
-
-export function formatDerivedNodeId(suffix: string): string {
-  return suffix;
-}

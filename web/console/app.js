@@ -812,10 +812,9 @@ async function bindWithCode({ bindingCode, platformBindUrl, resultId = 'unboundR
     });
     await refreshStatus(false);
     if (statusState?.binding?.isBound) await runBoundPageAuthScan(false);
-    if (location.hash || location.search || location.pathname === '/bind') {
-      history.replaceState(null, '', location.pathname === '/bind' ? '/' : location.pathname || '/');
-    }
+    clearLaunchBindingParams();
   } catch (error) {
+    if (auto && isInvalidBindingCodeError(error)) clearLaunchBindingParams();
     setToast(resultId, formatApiError(error), 'error');
   } finally {
     if (button) button.disabled = false;
@@ -834,9 +833,28 @@ function parseLaunchBindingParams() {
   };
 }
 
+function clearLaunchBindingParams() {
+  if (location.hash || location.search || location.pathname === '/bind') {
+    history.replaceState(null, '', location.pathname === '/bind' ? '/' : location.pathname || '/');
+  }
+}
+
+function isInvalidBindingCodeError(error) {
+  return error?.message === 'invalid_binding_code' || error?.body?.error?.code === 'invalid_binding_code';
+}
+
 async function consumeLaunchBindingParams() {
   const launch = parseLaunchBindingParams();
   if (!launch) return;
+  // Status is loaded before the normal initial consume. Ignore early focus/
+  // visibility events until then so they cannot race the status request.
+  if (!statusState) return;
+  // A stale one-click binding URL can be reopened or refreshed long after this
+  // node was bound. Do not rotate its secret or repeatedly redeem the old code.
+  if (statusState.binding?.isBound) {
+    clearLaunchBindingParams();
+    return;
+  }
   const launchKey = launch.bindingCode + '|' + (launch.platformBindUrl || '');
   if (launchKey === consumedLaunchBindingKey) return;
   if (launchBindingInFlight) return launchBindingInFlight;

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getProviderNodeBuildInfo } from '../src/provider-node/build-info.js';
-import { defaultConfig, deriveProviderNodeId, loadConfig, platformFallbackUrl, redactConfig, saveConfig } from '../src/provider-node/config.js';
+import { defaultConfig, loadConfig, platformFallbackUrl, redactConfig, saveConfig } from '../src/provider-node/config.js';
 
 describe('platform fallback url', () => {
   it('swaps the direct primary host for the CDN-proxied fallback, preserving scheme/port/path', () => {
@@ -24,21 +24,25 @@ describe('platform fallback url', () => {
 });
 
 describe('provider node config', () => {
-  it('derives stable machine-bound node ids without exposing the machine id', () => {
-    const first = deriveProviderNodeId('darwin', 'ABCDEF12-3456-7890-ABCD-EF1234567890');
-    const second = deriveProviderNodeId('darwin', 'abcdef12-3456-7890-abcd-ef1234567890');
-    const otherOs = deriveProviderNodeId('linux', 'abcdef12-3456-7890-abcd-ef1234567890');
+  it('generates independent random ids for fresh node configs', () => {
+    const nodeIds = Array.from({ length: 32 }, () => defaultConfig().nodeId);
 
-    expect(first).toBe(second);
-    expect(first).toMatch(/^[A-Za-z0-9_-]{10}$/);
-    expect(first).not.toContain('abcdef12');
-    expect(otherOs).not.toBe(first);
+    expect(new Set(nodeIds)).toHaveLength(nodeIds.length);
+    for (const nodeId of nodeIds) expect(nodeId).toMatch(/^[A-Za-z0-9_-]{10}$/);
   });
 
-  it('rejects unusable machine ids for deterministic node id derivation', () => {
-    expect(deriveProviderNodeId('linux', '')).toBeUndefined();
-    expect(deriveProviderNodeId('linux', '00000000000000000000000000000000')).toBeUndefined();
-    expect(deriveProviderNodeId('linux', 'uninitialized')).toBeUndefined();
+  it('persists a fresh random node id across subsequent config loads', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'provider-config-'));
+    try {
+      const firstPath = join(dir, 'first.json');
+      const secondPath = join(dir, 'second.json');
+      const firstNodeId = loadConfig(firstPath).nodeId;
+
+      expect(loadConfig(firstPath).nodeId).toBe(firstNodeId);
+      expect(loadConfig(secondPath).nodeId).not.toBe(firstNodeId);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('keeps an existing persisted node id instead of migrating it', () => {

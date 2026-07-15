@@ -87,6 +87,16 @@ describe('console routes', () => {
     expect(script).toContain("csrfTokenRefresh = fetch('/api/csrf')");
     expect(script).toContain('return api(path, options, false);');
   });
+
+  it('does not repeatedly redeem stale one-click binding URLs', () => {
+    const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
+
+    expect(script).toContain('function clearLaunchBindingParams()');
+    expect(script).toContain("error?.body?.error?.code === 'invalid_binding_code'");
+    expect(script).toContain('if (!statusState) return;');
+    expect(script).toContain('if (statusState.binding?.isBound) {');
+    expect(script).toContain('if (auto && isInvalidBindingCodeError(error)) clearLaunchBindingParams();');
+  });
 });
 
 describe('console security hook', () => {
