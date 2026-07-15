@@ -47,7 +47,7 @@
     "fastify": "^5.10.0",
     "nanoid": "^5.1.16",
     "pino": "^10.1.0",
-    "ws": "^8.18.3"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.1",
