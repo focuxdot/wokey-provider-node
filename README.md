@@ -148,14 +148,12 @@ This is the single most important safety property, so it is enforced in source, 
 | Xiaomi MiMo | `*.xiaomimimo.com` |
 | DeepSeek | `*.deepseek.com` |
 | Google Gemini | `generativelanguage.googleapis.com` |
-| xAI / Grok | `*.x.ai`, `cli-chat-proxy.grok.com` |
+| xAI / Grok | `*.x.ai`, `*.grok.com` |
 
 You can narrow or extend the local egress host list with `PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS`. This setting is read only from the local environment, so Platform cannot widen it remotely. Wildcard `*` is not supported; use explicit hosts or domain patterns such as `.example.com` / `*.example.com`.
 
-For xAI OAuth credentials, `cli-chat-proxy.grok.com` is allowed only as an exact host so
-Platform can perform the official Grok subscription check at
-`/v1/user?include=subscription` through the provider's node. It does not allow
-arbitrary `*.grok.com` egress.
+For xAI OAuth credentials, `*.grok.com` allows the current Grok CLI profile host and
+future official Grok subdomains without requiring another Provider Node release.
 
 ## Safety Boundary
 

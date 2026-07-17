@@ -76,7 +76,10 @@ describe('isOfficialExitHostAllowed', () => {
     }
     expect(isOfficialExitHostAllowed('chatgpt.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('cli-chat-proxy.grok.com', defaults)).toBe(true);
-    expect(isOfficialExitHostAllowed('grok.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('grok.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('future-api.grok.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('notgrok.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('grok.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('anything.example', defaults)).toBe(false);
