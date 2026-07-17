@@ -34,7 +34,8 @@ Each official-exit request names the `targetHost`/`targetPort` to dial. By defau
 - Xiaomi MiMo: `*.xiaomimimo.com`
 - DeepSeek: `*.deepseek.com`
 - Google Gemini: `generativelanguage.googleapis.com`
-- xAI: `*.x.ai`
+- xAI / Grok: `*.x.ai`, exact host `cli-chat-proxy.grok.com` (OAuth subscription lookup at
+  `/v1/user?include=subscription`)
 
 Operators can narrow or extend that local egress allowlist:
 

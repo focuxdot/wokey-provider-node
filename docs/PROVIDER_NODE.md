@@ -35,7 +35,8 @@ By default the node only dials official vendor domains for currently supported o
 - Xiaomi MiMo: `*.xiaomimimo.com`
 - DeepSeek: `*.deepseek.com`
 - Google Gemini: `generativelanguage.googleapis.com`
-- xAI: `*.x.ai`
+- xAI / Grok: `*.x.ai`, exact host `cli-chat-proxy.grok.com` (OAuth subscription lookup at
+  `/v1/user?include=subscription`)
 
 Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS` (see [Official Exit Verification](OFFICIAL_VERIFICATION.md#restricting-egress)); the setting is local-only and cannot be overridden by Platform. Wildcard `*` is not supported; use explicit hosts or domain patterns such as `.example.com` / `*.example.com`.
 
@@ -46,6 +47,7 @@ Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_
 - Manual OAuth token JSON
 - Claude OAuth authorization code flow
 - Codex device code / OAuth flow
+- xAI/Grok device code / OAuth flow
 
 Browser cookie/session import is intentionally unsupported. Provider Node does not scan browser cookie databases and does not read browser safe-storage secrets.
 

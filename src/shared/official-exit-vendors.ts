@@ -65,8 +65,8 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'xai',
     displayName: 'xAI',
-    // grok.com/user?include=subscription is the official Grok CLI subscription check.
-    allowedHosts: ['*.x.ai', 'grok.com'],
+    // The official Grok CLI resolves /v1/user?include=subscription against this exact proxy host.
+    allowedHosts: ['*.x.ai', 'cli-chat-proxy.grok.com'],
   },
 ]);
 
