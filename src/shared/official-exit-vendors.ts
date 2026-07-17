@@ -65,7 +65,8 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'xai',
     displayName: 'xAI',
-    allowedHosts: ['*.x.ai'],
+    // grok.com/user?include=subscription is the official Grok CLI subscription check.
+    allowedHosts: ['*.x.ai', 'grok.com'],
   },
 ]);
 

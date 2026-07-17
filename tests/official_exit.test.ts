@@ -75,6 +75,7 @@ describe('isOfficialExitHostAllowed', () => {
       expect(isOfficialExitHostAllowed(host, defaults)).toBe(true);
     }
     expect(isOfficialExitHostAllowed('chatgpt.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('grok.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('anything.example', defaults)).toBe(false);
