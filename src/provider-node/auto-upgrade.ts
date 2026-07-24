@@ -23,6 +23,7 @@ interface UpgradeState {
 export interface AutoUpgradeOptions {
   configPath: string;
   getInFlight: () => number;
+  beginDrain?: () => void | Promise<void>;
   stopBridge: () => void;
   log: { info: (obj: Record<string, unknown>, msg: string) => void; warn: (obj: Record<string, unknown>, msg: string) => void; error: (obj: Record<string, unknown>, msg: string) => void };
 }
@@ -208,11 +209,13 @@ export class AutoUpgradeController {
   }
 
   private async executeUpgrade(targetVersion: string, currentVersion: string): Promise<void> {
-    this.options.log.info({ targetVersion }, 'auto-upgrade: stopping bridge to reject new requests');
-    this.options.stopBridge();
-
+    this.options.log.info({ targetVersion }, 'auto-upgrade: quiescing bridge to reject new requests');
+    await this.options.beginDrain?.();
     this.options.log.info({ targetVersion }, 'auto-upgrade: draining in-flight requests');
     await this.drain();
+
+    this.options.log.info({ targetVersion }, 'auto-upgrade: stopping drained bridge');
+    this.options.stopBridge();
 
     const pendingState: UpgradeState = {
       previousVersion: currentVersion,

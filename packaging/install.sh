@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.46}"
+VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.47}"
 PACKAGE_REVISION="${WOKEY_PROVIDER_NODE_PACKAGE_REVISION:-${VERSION}}"
 DEFAULT_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/download/v${VERSION}"
 BASE_URL="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_BASE_URL}}"
@@ -54,6 +54,32 @@ node_major() {
 node_ok() {
   command -v node >/dev/null 2>&1 || return 1
   [ "$(node_major)" -ge 20 ]
+}
+
+# Run Debian/Ubuntu package operations without opening debconf/needrestart
+# dialogs. Keep needrestart in list-only mode: installing Provider Node must not
+# restart unrelated VPS services (ssh, networkd, dbus, and similar) on the
+# user's behalf.
+run_debian_noninteractive() {
+  sudo env \
+    DEBIAN_FRONTEND=noninteractive \
+    NEEDRESTART_MODE=l \
+    "$@"
+}
+
+# A Node.js binary in /usr/local satisfies the runtime, but it does not satisfy
+# the Debian package dependency declared by wokey-provider-node.deb. Only use
+# the .deb artifact when dpkg itself records nodejs >= 20; otherwise install the
+# Provider Node tarball alongside the already-working Node.js runtime.
+dpkg_node_package_ok() {
+  command -v dpkg >/dev/null 2>&1 || return 1
+  command -v dpkg-query >/dev/null 2>&1 || return 1
+  local status version
+  status="$(dpkg-query -W -f='${Status}' nodejs 2>/dev/null || true)"
+  [ "${status}" = "install ok installed" ] || return 1
+  version="$(dpkg-query -W -f='${Version}' nodejs 2>/dev/null || true)"
+  [ -n "${version}" ] || return 1
+  dpkg --compare-versions "${version}" ge 20
 }
 
 # Newest Node.js LTS version string (e.g. v22.11.0) from nodejs.org. The dist
@@ -109,8 +135,10 @@ install_node_linux() {
   # the .deb install. NodeSource ships a current-LTS `nodejs` apt package.
   if command -v apt-get >/dev/null 2>&1; then
     log "Installing Node.js (current LTS) via the NodeSource apt repository"
-    if curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - \
-       && sudo apt-get install -y nodejs; then
+    local setup_script="${INSTALLER_TMPDIR}/nodesource-setup.sh"
+    if download "https://deb.nodesource.com/setup_lts.x" "${setup_script}" \
+       && run_debian_noninteractive bash "${setup_script}" \
+       && run_debian_noninteractive apt-get install -y nodejs; then
       return 0
     fi
     log "Warning: NodeSource install failed; falling back to the official binaries in /usr/local"
@@ -281,13 +309,19 @@ install_linux_deb() {
   prepare_tmpdir
   ensure_node
 
+  if ! dpkg_node_package_ok; then
+    log "Node.js 20+ is not managed by dpkg; installing the Provider Node tarball instead of the .deb package"
+    install_linux_tarball_artifact x64
+    return 0
+  fi
+
   local deb="${INSTALLER_TMPDIR}/wokey-provider-node_${VERSION}_amd64.deb"
   download "${BASE_URL}/wokey-provider-node_${VERSION}_amd64.deb?v=${PACKAGE_REVISION}" "$deb"
   verify_artifact "$deb"
 
   log "Installing Wokey Provider Node ${VERSION} deb package"
-  if command -v apt >/dev/null 2>&1; then
-    sudo apt install -y "$deb"
+  if command -v apt-get >/dev/null 2>&1; then
+    run_debian_noninteractive apt-get install -y "$deb"
   else
     sudo dpkg -i "$deb"
   fi
@@ -302,6 +336,13 @@ install_linux_tarball() {
   prepare_tmpdir
   need_cmd tar
   ensure_node
+
+  install_linux_tarball_artifact "${artifact_arch}"
+}
+
+install_linux_tarball_artifact() {
+  local artifact_arch="${1:-x64}"
+  need_cmd tar
 
   local tarball="${INSTALLER_TMPDIR}/WokeyProviderNode-linux-${artifact_arch}-${VERSION}.tar.gz"
   download "${BASE_URL}/WokeyProviderNode-linux-${artifact_arch}-${VERSION}.tar.gz?v=${PACKAGE_REVISION}" "$tarball"

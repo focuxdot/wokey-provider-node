@@ -118,23 +118,33 @@ describe('AutoUpgradeController', () => {
     mocks.spawn.mockReturnValue(child);
     const { dir, configPath } = tempConfigPath();
     const log = logger();
+    let acknowledgeDrain!: () => void;
+    const beginDrain = vi.fn(() => new Promise<void>((resolve) => {
+      acknowledgeDrain = resolve;
+    }));
     const stopBridge = vi.fn();
     try {
       const controller = new AutoUpgradeController({
         configPath,
         getInFlight: () => 0,
+        beginDrain,
         stopBridge,
         log,
       });
 
-      await controller.handleUpgradeAvailable({
+      const upgrade = controller.handleUpgradeAvailable({
         type: 'platform.upgrade_available',
         version: '0.1.38',
         hashes: { 'linux-x64': 'hash' },
         urgent: false,
       });
+      await vi.waitFor(() => expect(beginDrain).toHaveBeenCalledTimes(1));
+      expect(stopBridge).not.toHaveBeenCalled();
+      acknowledgeDrain();
+      await upgrade;
 
       expect(stopBridge).toHaveBeenCalledTimes(1);
+      expect(beginDrain.mock.invocationCallOrder[0]).toBeLessThan(stopBridge.mock.invocationCallOrder[0] ?? 0);
       expect(mocks.spawn).toHaveBeenCalledWith(
         '/usr/local/bin/wokey-node',
         ['update'],

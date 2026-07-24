@@ -31,7 +31,12 @@ import {
   isMutatingMethod,
   verifyCsrfToken,
 } from './console-security.js';
-import { detectLocalCredentials } from './local-auth-detect.js';
+import {
+  applyLocalCredentialBindingReference,
+  detectLocalCredentials,
+  localCredentialIdentityFingerprint,
+  type LocalCredentialDetection,
+} from './local-auth-detect.js';
 import { providerOAuthConfigFromManualTokenBody, validateManualOAuthConfigForAuthorization } from './manual-oauth-token.js';
 import {
   applyTokenToOAuthConfig,
@@ -289,7 +294,8 @@ app.setErrorHandler((error: Error, request, reply) => {
 
 const autoUpgrade = new AutoUpgradeController({
   configPath: CONFIG_PATH,
-  getInFlight: () => bridge.state.inFlight,
+  getInFlight: () => bridge.inFlightCount(),
+  beginDrain: () => bridge.beginDrain(),
   stopBridge: () => bridge.stop(),
   log: app.log,
 });
@@ -559,6 +565,7 @@ app.post('/api/platform/credentials/authorize-local', async (request, reply) => 
 
   if (vendor === 'anthropic') enrichAnthropicOAuthFromClaudeMetadata(oauth);
   const authorization = await authorizeOAuthCredential(oauth, vendor, request.body as Record<string, unknown>);
+  rememberLocalCredentialBinding(body.source, body.path, oauth, authorization);
   if (isCodexAuthJsonSource) {
     rememberCodexAuthJsonMirror(body.path, oauth, authorization);
   }
@@ -991,8 +998,22 @@ function enrichXaiOAuthFromToken(oauth: ProviderOAuthConfig): void {
   oauth.subscriptionDisplayName = derived.subscriptionDisplayName || oauth.subscriptionDisplayName;
 }
 
-function localCredentialDetections(): ReturnType<typeof detectLocalCredentials> {
-  return detectLocalCredentials();
+function localCredentialDetections(): LocalCredentialDetection[] {
+  return detectLocalCredentials().map((detection) => applyLocalCredentialBindingReference(
+    detection,
+    localCredentialBindingReference(detection),
+  ));
+}
+
+function localCredentialBindingReference(detection: LocalCredentialDetection) {
+  const configured = config.localAuth?.credentialBindings?.[detection.source];
+  if (configured) return configured;
+  if (detection.source !== 'codex-auth-json') return undefined;
+  const legacyMirror = config.localAuth?.codexAuthJsonMirror;
+  const identityFingerprint = legacyMirror && localCredentialIdentityFingerprint(legacyMirror);
+  return legacyMirror?.credentialBindingId && identityFingerprint
+    ? { credentialBindingId: legacyMirror.credentialBindingId, identityFingerprint }
+    : undefined;
 }
 
 function currentOAuthCredentialBody(body: Record<string, unknown>): Record<string, unknown> {
@@ -1115,6 +1136,31 @@ function rememberCodexAuthJsonMirror(
   };
   persistConfig();
   scheduleCodexAuthJsonMirrorCheck(1_000);
+}
+
+function rememberLocalCredentialBinding(
+  source: string | undefined,
+  path: string | undefined,
+  oauth: ProviderOAuthConfig,
+  authorization: Record<string, unknown>,
+): void {
+  if (source !== 'codex-auth-json' && source !== 'claude-code') return;
+  const credentialBindingId = credentialBindingIdFromAuthorization(authorization);
+  const identityFingerprint = localCredentialIdentityFingerprint(oauth);
+  if (!credentialBindingId || !identityFingerprint) return;
+  config.localAuth = {
+    ...config.localAuth,
+    credentialBindings: {
+      ...config.localAuth?.credentialBindings,
+      [source]: {
+        credentialBindingId,
+        identityFingerprint,
+        path,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  };
+  persistConfig();
 }
 
 function credentialBindingIdFromAuthorization(authorization: Record<string, unknown>): string | undefined {

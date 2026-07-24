@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { detectClaudeCodeAuth } from './claude-code-auth.js';
 import { detectCodexAuthJson } from './codex-auth-json.js';
 
@@ -18,6 +19,12 @@ export interface LocalCredentialDetection {
   subscriptionType?: string;
   subscriptionDisplayName?: string;
   reason?: string;
+  credentialBindingId?: string;
+}
+
+export interface LocalCredentialBindingReference {
+  credentialBindingId: string;
+  identityFingerprint: string;
 }
 
 export function detectLocalCredentials(): LocalCredentialDetection[] {
@@ -25,6 +32,28 @@ export function detectLocalCredentials(): LocalCredentialDetection[] {
     detectCodexCredential(),
     detectClaudeCodeCredential(),
   ];
+}
+
+export function applyLocalCredentialBindingReference(
+  detection: LocalCredentialDetection,
+  binding: LocalCredentialBindingReference | undefined,
+): LocalCredentialDetection {
+  if (!binding || binding.identityFingerprint !== localCredentialIdentityFingerprint(detection)) return detection;
+  return { ...detection, credentialBindingId: binding.credentialBindingId };
+}
+
+export function localCredentialIdentityFingerprint(
+  value: Pick<LocalCredentialDetection, 'claudeCodeAccountUuid' | 'organizationId' | 'accountEmail'>,
+): string | undefined {
+  const identity = [
+    ['claudeCodeAccountUuid', value.claudeCodeAccountUuid],
+    ['organizationId', value.organizationId],
+    ['accountEmail', value.accountEmail],
+  ]
+    .map(([kind, raw]) => [kind, typeof raw === 'string' ? raw.trim().toLowerCase() : ''] as const)
+    .find(([, normalized]) => Boolean(normalized));
+  if (!identity) return undefined;
+  return createHash('sha256').update(`${identity[0]}:${identity[1]}`).digest('hex');
 }
 
 function detectCodexCredential(): LocalCredentialDetection {

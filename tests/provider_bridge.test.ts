@@ -9,11 +9,17 @@ import {
 // (the real `ws` would open real sockets). buildProviderBridgeWebSocketConnection
 // tests above don't instantiate it, so mocking the module is safe for them.
 const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
-  const sockets: Array<{ url: string; readyState: number; emit: (event: string, ...args: unknown[]) => void }> = [];
+  const sockets: Array<{
+    url: string;
+    readyState: number;
+    sent: Array<string | Buffer>;
+    emit: (event: string, ...args: unknown[]) => void;
+  }> = [];
   class FakeWebSocket {
     static OPEN = 1;
     readyState = 0;
     url: string;
+    sent: Array<string | Buffer> = [];
     private handlers: Record<string, Array<(...a: unknown[]) => void>> = {};
     constructor(url: string) {
       this.url = url;
@@ -29,7 +35,9 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
     }
     close() {}
     ping() {}
-    send() {}
+    send(data: string | Buffer) {
+      this.sent.push(data);
+    }
   }
   return { FakeWebSocket, fakeSockets: sockets };
 });
@@ -67,6 +75,8 @@ describe('ProviderBridge reconnect policy', () => {
       'x-provider-node-id': 'node_123',
       'x-provider-node-secret': 'secret_123',
     });
+    expect(connection.options.perMessageDeflate).toBe(false);
+    expect(connection.options.maxPayload).toBe(1024 * 1024);
   });
 
   it('does not add node identity to existing connection query parameters', () => {
@@ -170,6 +180,39 @@ describe('ProviderBridge endpoint failover', () => {
 
       expect(fakeSockets).toHaveLength(2);
       expect(fakeSockets[1].url).toBe('wss://node.wokey.ai:8443/internal/provider/connect');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('publishes draining state and waits for the Platform acknowledgement', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+      const drainPromise = bridge.beginDrain();
+      const messages = fakeSockets[0].sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>);
+      const heartbeat = messages.find((message) => (
+        message.type === 'provider.heartbeat'
+        && message.acceptingSessions === false
+      ));
+      const notice = messages.find((message) => message.type === 'provider.drain');
+
+      expect(heartbeat).toMatchObject({ acceptingSessions: false });
+      expect(notice).toMatchObject({
+        nodeId: expect.any(String),
+        acceptingSessions: false,
+      });
+
+      fakeSockets[0].emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.drain_ack',
+        requestId: notice?.requestId,
+        nodeId: notice?.nodeId,
+      })), false);
+      await drainPromise;
     } finally {
       bridge.stop();
     }

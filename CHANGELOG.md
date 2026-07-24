@@ -4,6 +4,28 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.47]
+
+### Added
+- Dual-stack official-exit transport with explicit binary-frame negotiation,
+  credit-based backpressure, wire/payload byte accounting, and bounded 1 MiB
+  WebSocket messages while retaining JSON compatibility.
+- Drain notice/ack coordination so auto-upgrades wait for the platform to stop
+  assigning work and for the node's in-flight requests to finish.
+
+### Changed
+- Local credential discovery now persists privacy-safe binding references and
+  only displays credentials that were authorized or imported on this node.
+- The local console uses the Deep Current visual treatment and clearer setup,
+  credential, and xAI/Grok guidance.
+
+### Fixed
+- Linux installation now keeps apt and needrestart non-interactive, avoids
+  restarting unrelated services, and falls back to the tarball when the active
+  Node.js runtime is not managed by dpkg.
+- Platform-input and upstream-output backpressure now have independent timeout
+  tracking, preventing activity on one direction from hiding a stalled peer.
+
 ## [0.1.37]
 
 ### Fixed

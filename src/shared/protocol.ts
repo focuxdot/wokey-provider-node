@@ -20,6 +20,15 @@ export type ProviderNodeRuntimeMode = 'development' | 'official_exit';
 
 export interface ProviderOfficialExitMetadata {
   routeMode: 'official_exit';
+  dataProtocols?: OfficialExitDataProtocol[];
+}
+
+export type OfficialExitDataProtocol = 'json_base64_v1' | 'binary_v1';
+
+export interface ProviderTransportCapabilities {
+  officialExitDataProtocols?: OfficialExitDataProtocol[];
+  flowControl?: Array<'credit_v1'>;
+  maxBinaryFrameBytes?: number;
 }
 
 export interface ProviderOfficialExitCapability {
@@ -49,7 +58,9 @@ export interface ProviderHello {
   nodeBuildHash?: string;
   runtimeMode?: ProviderNodeRuntimeMode;
   capabilities: ProviderNodeCapability[];
+  transportCapabilities?: ProviderTransportCapabilities;
   officialExit?: OfficialExitHealth;
+  acceptingSessions?: boolean;
 }
 
 export interface ProviderHeartbeat {
@@ -63,6 +74,14 @@ export interface ProviderHeartbeat {
   consecutiveFailures?: number;
   capabilities?: ProviderNodeCapability[];
   officialExit?: OfficialExitHealth;
+  acceptingSessions?: boolean;
+}
+
+export interface ProviderDrainNotice {
+  type: 'provider.drain';
+  requestId: string;
+  nodeId: string;
+  acceptingSessions: false;
 }
 
 export interface ProviderCredentialMirrorUpdate {
@@ -108,6 +127,23 @@ export interface PlatformUpgradeAvailable {
   urgent: boolean;
 }
 
+export interface PlatformProviderReady {
+  type: 'platform.ready';
+  nodeId: string;
+  transport?: {
+    officialExitDataProtocol: OfficialExitDataProtocol;
+    flowControl?: 'credit_v1';
+    initialWindowBytes?: number;
+    maxBinaryFrameBytes?: number;
+  };
+}
+
+export interface PlatformDrainAck {
+  type: 'platform.drain_ack';
+  requestId: string;
+  nodeId: string;
+}
+
 // Only the fields the node actually consumes to open and bound the relay socket.
 // Platform may send additional routing/policy fields; they are ignored here and
 // deliberately not declared, to keep Platform-internal vocabulary out of the
@@ -123,6 +159,7 @@ export interface OfficialExitOpenRequest {
   deadlineMs: number;
   maxBytesIn?: number;
   maxBytesOut?: number;
+  dataProtocol?: OfficialExitDataProtocol;
 }
 
 export interface OfficialExitOpenResponse {
@@ -144,6 +181,11 @@ export interface OfficialExitTransportDiagnostic {
   elapsedMs?: number;
   bytesFromUpstream?: number;
   bytesToUpstream?: number;
+  dataProtocol?: OfficialExitDataProtocol;
+  webSocketBytesFromPlatform?: number;
+  webSocketBytesToPlatform?: number;
+  backpressureCount?: number;
+  peakBufferedBytes?: number;
 }
 
 export interface OfficialExitDataFrame {
@@ -172,12 +214,15 @@ export interface OfficialExitError {
 export type ProviderToPlatformMessage =
   | ProviderHello
   | ProviderHeartbeat
+  | ProviderDrainNotice
   | ProviderCredentialMirrorUpdate
   | OfficialExitOpenResponse
   | OfficialExitDataFrame
   | OfficialExitClose
   | OfficialExitError;
 export type PlatformToProviderMessage =
+  | PlatformProviderReady
+  | PlatformDrainAck
   | PlatformCredentialMirrorUpdateAck
   | PlatformCredentialRefreshHint
   | PlatformUpgradeAvailable

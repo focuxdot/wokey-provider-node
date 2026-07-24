@@ -24,6 +24,29 @@ Official-exit requests use Provider Node as an encrypted network exit:
 
 During credential onboarding, a provider explicitly authorizes or imports an OAuth credential. The selected OAuth credential bundle is uploaded to Wokey Platform's encrypted credential store so Platform can construct official vendor requests.
 
+### Dual-stack relay transport
+
+Provider Node advertises both legacy `json_base64_v1` and `binary_v1` relay
+support. Platform explicitly selects the connection data plane in
+`platform.ready`; if that selection is absent or unsupported, the node stays on
+JSON/Base64. Binary frames carry raw encrypted TCP bytes and per-session
+`credit_v1` window updates, while control messages remain JSON.
+
+Credit is returned only after bytes are admitted to the local TCP socket or the
+remote consumer. This prevents one slow tunnel from creating an unbounded
+WebSocket queue. Diagnostics report upstream payload bytes separately from
+WebSocket frame bytes, along with backpressure count and peak buffered bytes.
+WebSocket messages are capped at 1 MiB on both peers before protocol decoding.
+During auto-upgrade the node publishes `acceptingSessions: false`, waits for
+Platform acknowledgement, drains active tunnels, then closes the bridge and
+installs the release.
+
+The local console's credential list is intentionally machine-scoped: it shows
+only credentials authorized or imported through this Provider Node. A Provider
+may assign other Provider-owned credentials to this node for routing, but those
+assignments do not expose account, subscription, Usage, earnings, or API-key
+metadata to the node operator.
+
 By default the node only dials official vendor domains for currently supported official-exit vendors:
 
 - OpenAI / Codex: `*.openai.com`, `*.chatgpt.com`
@@ -49,6 +72,13 @@ Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_
 - xAI/Grok device code / OAuth flow
 
 Browser cookie/session import is intentionally unsupported. Provider Node does not scan browser cookie databases and does not read browser safe-storage secrets.
+
+The local console makes Grok authorization one browser action: it opens a local
+placeholder tab from the click, requests the xAI device code, navigates that tab
+to `verification_uri_complete` with the user code prefilled, and polls until the
+credential is ready. Because the console is served from `localhost` (including
+through a loopback SSH tunnel), this navigation does not expose a Wokey public
+web origin. The visible user code remains available only as a recovery control.
 
 ## Local Console Security
 

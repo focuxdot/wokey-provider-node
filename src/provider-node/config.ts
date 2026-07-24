@@ -39,6 +39,12 @@ export interface ProviderOfficialExitConfig {
 }
 
 export interface ProviderLocalAuthConfig {
+  credentialBindings?: Partial<Record<'codex-auth-json' | 'claude-code', {
+    credentialBindingId: string;
+    identityFingerprint: string;
+    path?: string;
+    updatedAt: string;
+  }>>;
   codexAuthJsonMirror?: {
     enabled: boolean;
     credentialBindingId?: string;
@@ -242,6 +248,9 @@ function mergeConfig(defaults: ProviderNodeConfig, parsed: Partial<ProviderNodeC
     },
     localAuth: parsed.localAuth ? {
       ...defaults.localAuth,
+      credentialBindings: parsed.localAuth.credentialBindings ? {
+        ...parsed.localAuth.credentialBindings,
+      } : defaults.localAuth?.credentialBindings,
       codexAuthJsonMirror: parsed.localAuth.codexAuthJsonMirror ? {
         ...parsed.localAuth.codexAuthJsonMirror,
       } : defaults.localAuth?.codexAuthJsonMirror,

@@ -1,14 +1,23 @@
-import WebSocket from 'ws';
+import WebSocket, { type RawData } from 'ws';
 import { nanoid } from 'nanoid';
+import {
+  decodeOfficialExitBinaryFrame,
+  OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
+  OFFICIAL_EXIT_WEBSOCKET_MAX_MESSAGE_BYTES,
+} from '../shared/official-exit-binary.js';
 import type {
   OfficialExitHealth,
   OfficialExitClose,
   OfficialExitDataFrame,
   OfficialExitOpenRequest,
+  OfficialExitDataProtocol,
+  PlatformDrainAck,
   PlatformCredentialMirrorUpdateAck,
   PlatformCredentialRefreshHint,
+  PlatformProviderReady,
   PlatformUpgradeAvailable,
   ProviderCredentialMirrorUpdate,
+  ProviderDrainNotice,
   ProviderHeartbeat,
   ProviderHello,
 } from '../shared/protocol.js';
@@ -31,6 +40,15 @@ const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const RECONNECT_JITTER_RATIO = 0.25;
 const MIRROR_UPDATE_ACK_TIMEOUT_MS = 30_000;
+const DRAIN_ACK_TIMEOUT_MS = 5_000;
+const PROVIDER_WS_BACKPRESSURE_HIGH_WATER_BYTES = positiveEnvNumber(
+  'PROVIDER_WS_BACKPRESSURE_HIGH_WATER_BYTES',
+  4 * 1024 * 1024,
+);
+const PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS = positiveEnvNumber(
+  'PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS',
+  30_000,
+);
 
 export interface BridgeState {
   connected: boolean;
@@ -85,6 +103,8 @@ export function buildProviderBridgeWebSocketConnection(
       // connect timeout for ~2 minutes) fails fast and the bridge flips to the
       // other endpoint within seconds instead of appearing dead.
       handshakeTimeout: PLATFORM_HANDSHAKE_TIMEOUT_MS,
+      perMessageDeflate: false,
+      maxPayload: OFFICIAL_EXIT_WEBSOCKET_MAX_MESSAGE_BYTES,
       headers: {
         'x-provider-node-id': config.nodeId,
         'x-provider-node-secret': config.providerNodeSecret,
@@ -113,10 +133,30 @@ export class ProviderBridge {
   private useFallback = false;
   private lastSentCapabilitiesHash: string | null = null;
   private stopped = false;
+  private acceptingSessions = true;
+  private pendingDrainAck?: {
+    requestId: string;
+    timer: NodeJS.Timeout;
+    promise: Promise<void>;
+    resolve: () => void;
+  };
+  private readonly platformInputBlockedSessions = new Set<string>();
   private readonly risk = new ProviderRiskController();
   private readonly officialExitTunnels = new ProviderOfficialExitTunnelManager(
     () => this.getConfig(),
     (message) => this.send(message),
+    undefined,
+    {
+      webSocketBufferedAmount: () => this.socket?.bufferedAmount ?? 0,
+      webSocketHighWaterBytes: PROVIDER_WS_BACKPRESSURE_HIGH_WATER_BYTES,
+      backpressureTimeoutMs: PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS,
+      setPlatformInputBackpressure: (sessionId, blocked) => {
+        if (blocked) this.platformInputBlockedSessions.add(sessionId);
+        else this.platformInputBlockedSessions.delete(sessionId);
+        if (this.platformInputBlockedSessions.size > 0) this.socket?.pause();
+        else this.socket?.resume();
+      },
+    },
   );
   readonly state: BridgeState = {
     connected: false,
@@ -127,6 +167,8 @@ export class ProviderBridge {
 
   start() {
     this.stopped = false;
+    this.acceptingSessions = true;
+    this.officialExitTunnels.setAcceptingSessions(true);
     this.state.reconnectSuppressedReason = undefined;
     this.useFallback = Boolean(this.getConfig().preferFallbackEndpoint);
     this.connect();
@@ -134,6 +176,7 @@ export class ProviderBridge {
 
   stop() {
     this.stopped = true;
+    this.acceptingSessions = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
@@ -141,21 +184,58 @@ export class ProviderBridge {
     this.heartbeatTimer = null;
     this.keepaliveTimer = null;
     this.officialExitTunnels.closeAll();
+    this.platformInputBlockedSessions.clear();
+    this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_stopped'));
     this.socket?.close();
   }
 
   reconnectNow() {
     this.stopped = false;
+    this.acceptingSessions = true;
     this.risk.reset();
     this.reconnectAttempt = 0;
     this.useFallback = Boolean(this.getConfig().preferFallbackEndpoint);
     this.state.reconnectSuppressedReason = undefined;
+    this.officialExitTunnels.setAcceptingSessions(true);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_reconnecting'));
     this.socket?.close();
     this.connect();
+  }
+
+  beginDrain(): Promise<void> {
+    if (this.pendingDrainAck) return this.pendingDrainAck.promise;
+    this.acceptingSessions = false;
+    this.officialExitTunnels.setAcceptingSessions(false);
+    if (this.socket?.readyState !== WebSocket.OPEN) return Promise.resolve();
+    this.sendHeartbeat(true);
+    let resolvePromise!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      resolvePromise = resolve;
+    });
+    const requestId = nanoid();
+    const timer = setTimeout(() => this.finishPendingDrainAck(requestId), DRAIN_ACK_TIMEOUT_MS);
+    timer.unref?.();
+    this.pendingDrainAck = {
+      requestId,
+      timer,
+      promise,
+      resolve: resolvePromise,
+    };
+    const notice: ProviderDrainNotice = {
+      type: 'provider.drain',
+      requestId,
+      nodeId: this.getConfig().nodeId,
+      acceptingSessions: false,
+    };
+    this.send(notice);
+    return promise;
+  }
+
+  inFlightCount(): number {
+    return this.officialExitTunnels.activeSessionCount();
   }
 
   sendCredentialMirrorUpdate(input: CredentialMirrorUpdateInput): Promise<void> {
@@ -220,8 +300,19 @@ export class ProviderBridge {
       }
     });
 
-    socket.on('message', (raw) => {
-      this.handleMessage(String(raw)).catch((error) => {
+    socket.on('message', (raw, isBinary) => {
+      if (isBinary) {
+        try {
+          const encoded = rawDataBuffer(raw);
+          const frame = decodeOfficialExitBinaryFrame(encoded);
+          this.officialExitTunnels.handleBinaryFrame(frame, encoded.byteLength);
+        } catch {
+          socket.close(1003, 'invalid_binary_frame');
+        }
+        return;
+      }
+      const encoded = rawDataBuffer(raw);
+      this.handleMessage(encoded.toString('utf8'), encoded.byteLength).catch((error) => {
         this.state.lastError = error instanceof Error ? error.message : 'handle_message_failed';
       });
     });
@@ -240,6 +331,7 @@ export class ProviderBridge {
     this.state.lastError = reason;
     this.state.reconnectSuppressedReason = undefined;
     this.officialExitTunnels.closeAll('platform_connection_closed');
+    this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error(`provider_bridge_${reason}`));
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
@@ -278,6 +370,12 @@ export class ProviderBridge {
       runtimeMode: config.runtimeMode,
       capabilities,
       officialExit: this.officialExitHealth(config),
+      acceptingSessions: this.acceptingSessions,
+      transportCapabilities: {
+        officialExitDataProtocols: ['json_base64_v1', 'binary_v1'],
+        flowControl: ['credit_v1'],
+        maxBinaryFrameBytes: OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
+      },
     };
     this.send(hello);
   }
@@ -291,13 +389,14 @@ export class ProviderBridge {
     const heartbeat: ProviderHeartbeat = {
       type: 'provider.heartbeat',
       nodeId: config.nodeId,
-      inFlight: this.state.inFlight,
+      inFlight: this.inFlightCount(),
       healthy: !this.state.lastError && this.risk.canDispatch().allowed,
       lastErrorCode: risk.lastErrorCode || this.state.lastError,
       riskState: risk.state,
       cooldownUntil: risk.cooldownUntil,
       consecutiveFailures: risk.consecutiveFailures,
       officialExit: this.officialExitHealth(config),
+      acceptingSessions: this.acceptingSessions,
     };
     if (forceCapabilities || capabilitiesHash !== this.lastSentCapabilitiesHash) {
       heartbeat.capabilities = capabilities;
@@ -307,10 +406,20 @@ export class ProviderBridge {
     this.send(heartbeat);
   }
 
-  private async handleMessage(raw: string) {
+  private async handleMessage(raw: string, wireBytes?: number) {
     const message = JSON.parse(raw) as OfficialExitOpenRequest | OfficialExitDataFrame | OfficialExitClose | PlatformCredentialMirrorUpdateAck | PlatformCredentialRefreshHint | { type: string };
     if (message.type === 'platform.ready') {
+      const ready = message as PlatformProviderReady;
+      const selected = selectedOfficialExitDataProtocol(ready);
+      this.officialExitTunnels.setNegotiatedDataProtocol(selected);
       this.options.onPlatformReady?.();
+      return;
+    }
+    if (message.type === 'platform.drain_ack') {
+      const ack = message as PlatformDrainAck;
+      if (ack.nodeId === this.getConfig().nodeId) {
+        this.finishPendingDrainAck(ack.requestId);
+      }
       return;
     }
     if (message.type === 'platform.credential_refresh_hint') {
@@ -326,7 +435,7 @@ export class ProviderBridge {
       return;
     }
     if (isOfficialExitPlatformMessage(message)) {
-      await this.officialExitTunnels.handleMessage(message);
+      await this.officialExitTunnels.handleMessage(message, wireBytes);
     }
   }
 
@@ -350,9 +459,21 @@ export class ProviderBridge {
     }
   }
 
+  private finishPendingDrainAck(requestId?: string): void {
+    const pending = this.pendingDrainAck;
+    if (!pending || (requestId && pending.requestId !== requestId)) return;
+    this.pendingDrainAck = undefined;
+    clearTimeout(pending.timer);
+    pending.resolve();
+  }
+
   private send(message: unknown) {
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
+      try {
+        this.socket.send(Buffer.isBuffer(message) ? message : JSON.stringify(message));
+      } catch (error) {
+        this.state.lastError = error instanceof Error ? error.message : 'provider_bridge_send_failed';
+      }
     }
   }
 
@@ -376,6 +497,7 @@ export class ProviderBridge {
         routeMode: 'official_exit' as const,
         officialExit: {
           routeMode: 'official_exit' as const,
+          dataProtocols: ['json_base64_v1' as const, 'binary_v1' as const],
         },
       }];
     }
@@ -405,4 +527,27 @@ function isOfficialExitPlatformMessage(
   return message.type === 'official_exit.open'
     || message.type === 'official_exit.data'
     || message.type === 'official_exit.close';
+}
+
+function selectedOfficialExitDataProtocol(ready: PlatformProviderReady): OfficialExitDataProtocol {
+  const transport = ready.transport;
+  if (
+    transport?.officialExitDataProtocol === 'binary_v1'
+    && transport.flowControl === 'credit_v1'
+    && (transport.maxBinaryFrameBytes ?? 0) >= OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES
+  ) {
+    return 'binary_v1';
+  }
+  return 'json_base64_v1';
+}
+
+function rawDataBuffer(raw: RawData): Buffer {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (Array.isArray(raw)) return Buffer.concat(raw);
+  return Buffer.from(raw);
+}
+
+function positiveEnvNumber(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

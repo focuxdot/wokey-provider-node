@@ -132,6 +132,34 @@ describe('provider node config', () => {
     }
   });
 
+  it('persists local credential binding references without account metadata', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'provider-config-'));
+    try {
+      const path = join(dir, 'provider-node.json');
+      const config = defaultConfig();
+      config.localAuth = {
+        credentialBindings: {
+          'claude-code': {
+            credentialBindingId: '42',
+            identityFingerprint: 'a'.repeat(64),
+            path: '/tmp/claude-credentials.json',
+            updatedAt: '2026-07-20T00:00:00.000Z',
+          },
+        },
+      };
+      saveConfig(path, config);
+
+      expect(loadConfig(path).localAuth?.credentialBindings?.['claude-code']).toEqual({
+        credentialBindingId: '42',
+        identityFingerprint: 'a'.repeat(64),
+        path: '/tmp/claude-credentials.json',
+        updatedAt: '2026-07-20T00:00:00.000Z',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reports runtime package build info instead of stale persisted versions', () => {
     const dir = mkdtempSync(join(tmpdir(), 'provider-config-'));
     try {

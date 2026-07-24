@@ -49,9 +49,9 @@ const messages = {
     platformTemporarilyUnavailable: 'Platform is temporarily unavailable. Please try again in a moment.',
     platformUnreachable:
       "Cannot reach the platform (tried the direct endpoint and the fallback). Check this node's network and that the server IP or domain is reachable from here.",
-    credentialsTitle: 'Credentials',
-    credentialsBody: 'Detected local OAuth credentials and OAuth browser flows available to this node.',
-    credentialsScanDisabledBody: 'Add a credential to this node with the browser OAuth flow, device code, or by pasting a token.',
+    credentialsTitle: 'Local credentials',
+    credentialsBody: 'Only credentials authorized or imported on this node are shown. Provider-assigned routing credentials stay private.',
+    credentialsScanDisabledBody: 'Add a local credential with the browser OAuth flow, device code, or by pasting a token.',
     scanAgain: 'Scan OAuth',
     scanningAuthButton: 'Scanning...',
     credentialsLoading: 'Scanning auth',
@@ -73,6 +73,8 @@ const messages = {
     localCredentialPendingAuthorization: 'Needs authorization',
     localCredentialReadyToAuthorize: 'Ready to authorize',
     localCredentialUnavailable: 'Unavailable',
+    notAssignedBadge: 'Not serving',
+    localAuthorizedAtLabel: 'Authorized locally:',
     startOAuthBrowserFlow: 'Start OAuth flow',
     browserAuthorizationRequired: 'Open the OAuth browser flow before using this credential.',
     pathLabel: 'Path:',
@@ -233,9 +235,9 @@ const messages = {
     nodeBindingUnavailable: '暂时无法校验 Platform 绑定状态。本机授权凭证会继续显示，但授权状态可能不是最新。',
     platformTemporarilyUnavailable: '平台暂时不可用，请稍后重试。',
     platformUnreachable: '无法连接平台(已尝试直连入口与回退入口)。请检查本节点网络,确认服务器 IP 或域名从这里可达。',
-    credentialsTitle: '授权凭证',
-    credentialsBody: '当前节点可使用本机 OAuth 凭证与浏览器 OAuth 流程。',
-    credentialsScanDisabledBody: '通过浏览器 OAuth、设备码或粘贴 Token 为当前节点添加授权凭证。',
+    credentialsTitle: '本机授权凭证',
+    credentialsBody: '仅显示在当前节点授权或导入的凭证；Provider 分配给本节点的路由凭证不会在这里暴露。',
+    credentialsScanDisabledBody: '通过浏览器 OAuth、设备码或粘贴 Token 为当前节点添加本机授权凭证。',
     scanAgain: '扫描授权凭证',
     scanningAuthButton: '正在扫描...',
     credentialsLoading: '正在扫描授权凭证',
@@ -256,6 +258,8 @@ const messages = {
     localCredentialPendingAuthorization: '待授权',
     localCredentialReadyToAuthorize: '可授权',
     localCredentialUnavailable: '不可用',
+    notAssignedBadge: '未参与供给',
+    localAuthorizedAtLabel: '本机授权时间：',
     startOAuthBrowserFlow: '启动 OAuth 流程',
     browserAuthorizationRequired: '需要先打开浏览器 OAuth 流程，才能使用这个凭证。',
     pathLabel: '路径：',
@@ -1076,7 +1080,7 @@ function renderPlatformCredentialCards(credentials) {
         '<article class="credential-card"><div class="cred-head"><div class="cred-name"><div><h3>' +
         escapeHtml(platformCredentialCardTitle(item)) +
         '</h3></div></div><span class="badge ' +
-        escapeHtml(statusClass[item.status] || 'warn') +
+        escapeHtml(item.status === 'active' && item.routeAssigned === false ? 'warn' : statusClass[item.status] || 'warn') +
         '">' +
         escapeHtml(platformCredentialBadgeLabel(item, statusKey)) +
         '</span></div><div class="details"><div><span>' +
@@ -1111,9 +1115,9 @@ function renderPlatformCredentialCards(credentials) {
             '</strong></div>'
           : '') +
         '<div><span>' +
-        escapeHtml(t('statusUpdatedLabel')) +
+        escapeHtml(t(item.localAuthorizedAt ? 'localAuthorizedAtLabel' : 'statusUpdatedLabel')) +
         '</span><strong>' +
-        escapeHtml(dateLabel(item.updatedAt || item.createdAt)) +
+        escapeHtml(dateLabel(item.localAuthorizedAt || item.updatedAt || item.createdAt)) +
         '</strong></div>' +
         (item.cooldownUntil
           ? '<div><span>' +
@@ -1181,6 +1185,7 @@ function revokedCredentialGroupKey(credential) {
 }
 
 function platformCredentialBadgeLabel(item, statusKey) {
+  if (item.status === 'active' && item.routeAssigned === false) return t('notAssignedBadge');
   const base = t(statusKey[item.status] || 'needsAttention');
   return item.revokedCount && item.revokedCount > 1 ? base + ' x' + item.revokedCount : base;
 }
@@ -1300,6 +1305,7 @@ function credentialMatchesLocalCredential(credential, item, options = {}) {
   const requireActive = options.requireActive !== false;
   if (requireActive && credential.status !== 'active') return false;
   if (credential.vendor !== item.vendor) return false;
+  if (item.credentialBindingId) return credential.credentialBindingId === item.credentialBindingId;
   return credentialMatchesLocalIdentity(credential, item);
 }
 
@@ -1385,7 +1391,7 @@ async function importDetectedCredential(index) {
   const credentialBindingId =
     matchedCredential && ['disabled', 'paused'].includes(matchedCredential.status)
       ? matchedCredential.credentialBindingId
-      : legacyCredential?.credentialBindingId;
+      : legacyCredential?.credentialBindingId || item.credentialBindingId;
   const button = document.getElementById('localCredentialButton' + index);
   const oldText = button?.textContent || '';
   if (button) {

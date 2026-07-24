@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:net';
+import {
+  decodeOfficialExitBinaryFrame,
+  encodeOfficialExitBinaryData,
+} from '../src/shared/official-exit-binary.js';
 import {
   DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS,
   OFFICIAL_EXIT_VENDOR_CONFIGS,
@@ -7,6 +11,7 @@ import {
   classifyConnectError,
   classifySocketError,
   isOfficialExitHostAllowed,
+  officialExitConnectTimeoutMs,
   parseOfficialExitAllowlist,
 } from '../src/provider-node/official-exit.js';
 import type { ProviderNodeConfig } from '../src/provider-node/config.js';
@@ -30,6 +35,16 @@ describe('official-exit transport error classification', () => {
     expect(classifySocketError(networkError('ECONNRESET'))).toBe('official_exit_socket_reset');
     expect(classifySocketError(networkError('EPIPE'))).toBe('official_exit_socket_broken_pipe');
     expect(classifySocketError(networkError('ENETDOWN'))).toBe('official_exit_socket_failed');
+  });
+});
+
+describe('official-exit connect deadline', () => {
+  it('leaves ten seconds for open_response delivery before a 300-second Platform deadline', () => {
+    expect(officialExitConnectTimeoutMs(300_000)).toBe(290_000);
+  });
+
+  it('uses a proportional margin for short test and development deadlines', () => {
+    expect(officialExitConnectTimeoutMs(5_000)).toBe(4_500);
   });
 });
 
@@ -203,5 +218,87 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
         bytesToUpstream: 0,
       },
     });
+  });
+
+  it('moves binary-v1 bytes losslessly in both directions and returns credit', async () => {
+    let upstreamReceived = Buffer.alloc(0);
+    const upstream = createServer((socket) => {
+      socket.on('data', (chunk) => {
+        upstreamReceived = Buffer.concat([upstreamReceived, chunk]);
+        socket.write(Buffer.from([0x00, 0xff, 0x41]));
+        socket.end();
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const sent: Array<Record<string, unknown> | Buffer> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message),
+      ['127.0.0.1'],
+    );
+    manager.setNegotiatedDataProtocol('binary_v1');
+
+    await manager.handleMessage({
+      ...openRequest('127.0.0.1', address.port),
+      dataProtocol: 'binary_v1',
+    });
+    const inbound = encodeOfficialExitBinaryData('sess_1', 0, Buffer.from([0x10, 0x00, 0xfe]));
+    manager.handleBinaryFrame(decodeOfficialExitBinaryFrame(inbound), inbound.byteLength);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    upstream.close();
+
+    expect(upstreamReceived).toEqual(Buffer.from([0x10, 0x00, 0xfe]));
+    const binaryFrames = sent.filter(Buffer.isBuffer).map((frame) => decodeOfficialExitBinaryFrame(frame));
+    expect(binaryFrames).toContainEqual({
+      kind: 'window_update',
+      sessionId: 'sess_1',
+      creditBytes: 3,
+    });
+    expect(binaryFrames).toContainEqual({
+      kind: 'data',
+      sessionId: 'sess_1',
+      seq: 0,
+      payload: Buffer.from([0x00, 0xff, 0x41]),
+    });
+    expect(sent.find((message) => !Buffer.isBuffer(message) && message.type === 'official_exit.close')).toMatchObject({
+      transportDiagnostic: {
+        dataProtocol: 'binary_v1',
+        bytesFromUpstream: 3,
+        bytesToUpstream: 3,
+        webSocketBytesFromPlatform: inbound.byteLength,
+      },
+    });
+  });
+
+  it('keeps upstream and platform-input backpressure timers independent', () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new ProviderOfficialExitTunnelManager(
+        () => config,
+        () => undefined,
+        ['127.0.0.1'],
+      );
+      const session = {
+        closed: false,
+      } as Record<string, unknown>;
+      const internals = manager as unknown as {
+        startUpstreamBackpressureTimeout: (sessionId: string, value: Record<string, unknown>) => void;
+        startPlatformInputBackpressureTimeout: (sessionId: string, value: Record<string, unknown>) => void;
+        clearPlatformInputBackpressureTimeout: (value: Record<string, unknown>) => void;
+        clearUpstreamBackpressureTimeout: (value: Record<string, unknown>) => void;
+      };
+
+      internals.startUpstreamBackpressureTimeout('sess_timer', session);
+      internals.startPlatformInputBackpressureTimeout('sess_timer', session);
+      internals.clearPlatformInputBackpressureTimeout(session);
+
+      expect(session.upstreamBackpressureTimer).toBeDefined();
+      expect(session.platformInputBackpressureTimer).toBeUndefined();
+      internals.clearUpstreamBackpressureTimeout(session);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
