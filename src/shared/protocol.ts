@@ -24,9 +24,11 @@ export interface ProviderOfficialExitMetadata {
 }
 
 export type OfficialExitDataProtocol = 'json_base64_v1' | 'binary_v1';
+export type OfficialExitEarlyDataProtocol = 'buffered_v1';
 
 export interface ProviderTransportCapabilities {
   officialExitDataProtocols?: OfficialExitDataProtocol[];
+  officialExitEarlyDataProtocols?: OfficialExitEarlyDataProtocol[];
   flowControl?: Array<'credit_v1'>;
   maxBinaryFrameBytes?: number;
 }
@@ -132,6 +134,7 @@ export interface PlatformProviderReady {
   nodeId: string;
   transport?: {
     officialExitDataProtocol: OfficialExitDataProtocol;
+    officialExitEarlyDataProtocol?: OfficialExitEarlyDataProtocol;
     flowControl?: 'credit_v1';
     initialWindowBytes?: number;
     maxBinaryFrameBytes?: number;
@@ -160,6 +163,7 @@ export interface OfficialExitOpenRequest {
   maxBytesIn?: number;
   maxBytesOut?: number;
   dataProtocol?: OfficialExitDataProtocol;
+  earlyDataProtocol?: OfficialExitEarlyDataProtocol;
 }
 
 export interface OfficialExitOpenResponse {
@@ -186,6 +190,7 @@ export interface OfficialExitTransportDiagnostic {
   webSocketBytesToPlatform?: number;
   backpressureCount?: number;
   peakBufferedBytes?: number;
+  earlyDataBytes?: number;
 }
 
 export interface OfficialExitDataFrame {

@@ -9,6 +9,7 @@ import {
 import type {
   OfficialExitClose,
   OfficialExitDataProtocol,
+  OfficialExitEarlyDataProtocol,
   OfficialExitDataFrame,
   OfficialExitError,
   OfficialExitOpenRequest,
@@ -25,6 +26,7 @@ type OfficialExitProviderOutbound = OfficialExitProviderMessage | Buffer;
 export { DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS, OFFICIAL_EXIT_VENDOR_CONFIGS } from '../shared/official-exit-vendors.js';
 
 export const OFFICIAL_EXIT_ALLOWLIST_ENV = 'PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS';
+export const OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES = 64 * 1024;
 const OFFICIAL_EXIT_OPEN_RESPONSE_MARGIN_MS = 10_000;
 
 // Operator-controlled egress allowlist for the official-exit tunnel. The node
@@ -69,7 +71,9 @@ interface OfficialExitSession {
   seqOut: number;
   bytesIn: number;
   bytesOut: number;
+  platformPayloadBytes: number;
   closed: boolean;
+  connected: boolean;
   maxBytesIn?: number;
   maxBytesOut?: number;
   connectedAt: number;
@@ -77,6 +81,10 @@ interface OfficialExitSession {
   addressFamily?: 'ipv4' | 'ipv6';
   remoteAddress?: string;
   dataProtocol: OfficialExitDataProtocol;
+  earlyDataProtocol?: OfficialExitEarlyDataProtocol;
+  earlyDataBytes: number;
+  pendingToUpstream: Array<{ payload: Buffer; creditBytes: number }>;
+  pendingToUpstreamBytes: number;
   expectedSeqIn: number;
   outboundCredit: number;
   pendingFromUpstream: Buffer[];
@@ -103,6 +111,7 @@ export class ProviderOfficialExitTunnelManager {
 
   private readonly allowedHosts: readonly string[];
   private negotiatedDataProtocol: OfficialExitDataProtocol = 'json_base64_v1';
+  private negotiatedEarlyDataProtocol?: OfficialExitEarlyDataProtocol;
   private acceptingSessions = true;
   private readonly options: Required<Pick<
     ProviderOfficialExitTunnelManagerOptions,
@@ -130,6 +139,10 @@ export class ProviderOfficialExitTunnelManager {
 
   setNegotiatedDataProtocol(dataProtocol: OfficialExitDataProtocol): void {
     this.negotiatedDataProtocol = dataProtocol;
+  }
+
+  setNegotiatedEarlyDataProtocol(earlyDataProtocol: OfficialExitEarlyDataProtocol | undefined): void {
+    this.negotiatedEarlyDataProtocol = earlyDataProtocol;
   }
 
   setAcceptingSessions(accepting: boolean): void {
@@ -184,11 +197,41 @@ export class ProviderOfficialExitTunnelManager {
         host: request.targetHost,
         port: request.targetPort,
       });
+      const session: OfficialExitSession = {
+        socket,
+        seqOut: 0,
+        bytesIn: 0,
+        bytesOut: 0,
+        platformPayloadBytes: 0,
+        closed: false,
+        connected: false,
+        maxBytesIn: request.maxBytesIn,
+        maxBytesOut: request.maxBytesOut,
+        connectedAt: connectStartedAt,
+        connectMs: 0,
+        dataProtocol: request.dataProtocol ?? 'json_base64_v1',
+        earlyDataProtocol: request.earlyDataProtocol,
+        earlyDataBytes: 0,
+        pendingToUpstream: [],
+        pendingToUpstreamBytes: 0,
+        expectedSeqIn: 0,
+        outboundCredit: OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
+        pendingFromUpstream: [],
+        pendingFromUpstreamOffset: 0,
+        webSocketBytesIn: 0,
+        webSocketBytesOut: 0,
+        backpressureCount: 0,
+        peakBufferedBytes: 0,
+        platformInputBlocked: false,
+      };
+      this.sessions.set(request.sessionId, session);
       let settled = false;
 
       const failBeforeConnect = (reasonCode: string) => {
         if (settled) return;
         settled = true;
+        session.closed = true;
+        this.sessions.delete(request.sessionId);
         socket.destroy();
         this.sendOpenResponse(request.sessionId, false, reasonCode, {
           version: 1,
@@ -196,6 +239,9 @@ export class ProviderOfficialExitTunnelManager {
           outcome: 'failed',
           reasonCode,
           connectMs: Date.now() - connectStartedAt,
+          bytesToUpstream: 0,
+          earlyDataBytes: session.earlyDataBytes,
+          webSocketBytesFromPlatform: session.webSocketBytesIn,
         });
         resolve();
       };
@@ -203,37 +249,29 @@ export class ProviderOfficialExitTunnelManager {
       socket.setTimeout(officialExitConnectTimeoutMs(request.deadlineMs));
       socket.once('connect', () => {
         if (settled) return;
+        if (session.closed || this.sessions.get(request.sessionId) !== session) {
+          settled = true;
+          socket.destroy();
+          resolve();
+          return;
+        }
         settled = true;
         // The shorter deadline only governs TCP connect/open_response. Once the
         // tunnel is open, preserve the existing socket inactivity timeout.
         socket.setTimeout(Math.max(1_000, request.deadlineMs));
         const addressFamily = socket.remoteFamily === 'IPv4' ? 'ipv4' : socket.remoteFamily === 'IPv6' ? 'ipv6' : undefined;
         const connectMs = Date.now() - connectStartedAt;
-        const session: OfficialExitSession = {
-          socket,
-          seqOut: 0,
-          bytesIn: 0,
-          bytesOut: 0,
-          closed: false,
-          maxBytesIn: request.maxBytesIn,
-          maxBytesOut: request.maxBytesOut,
-          connectedAt: Date.now(),
-          connectMs,
-          addressFamily,
-          remoteAddress: socket.remoteAddress,
-          dataProtocol: request.dataProtocol ?? 'json_base64_v1',
-          expectedSeqIn: 0,
-          outboundCredit: OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
-          pendingFromUpstream: [],
-          pendingFromUpstreamOffset: 0,
-          webSocketBytesIn: 0,
-          webSocketBytesOut: 0,
-          backpressureCount: 0,
-          peakBufferedBytes: 0,
-          platformInputBlocked: false,
-        };
-        this.sessions.set(request.sessionId, session);
+        session.connected = true;
+        session.connectedAt = Date.now();
+        session.connectMs = connectMs;
+        session.addressFamily = addressFamily;
+        session.remoteAddress = socket.remoteAddress;
         this.attachSocketHandlers(request.sessionId, session);
+        this.flushPendingToUpstream(request.sessionId, session);
+        if (session.closed) {
+          resolve();
+          return;
+        }
         this.sendOpenResponse(request.sessionId, true, undefined, this.transportDiagnostic(session, 'connected'));
         resolve();
       });
@@ -253,6 +291,12 @@ export class ProviderOfficialExitTunnelManager {
         const session = this.sessions.get(request.sessionId);
         if (session) this.sendErrorAndClose(request.sessionId, session, 'official_exit_socket_timeout');
       });
+      socket.once('close', () => {
+        if (settled) return;
+        settled = true;
+        this.sessions.delete(request.sessionId);
+        resolve();
+      });
     });
   }
 
@@ -266,8 +310,12 @@ export class ProviderOfficialExitTunnelManager {
       return 'official_exit_invalid_target_port';
     }
     if (!isOfficialExitHostAllowed(request.targetHost, this.allowedHosts)) return 'official_exit_vendor_not_allowed';
+    if (this.sessions.has(request.sessionId)) return 'official_exit_duplicate_session';
     const requestedDataProtocol = request.dataProtocol ?? 'json_base64_v1';
     if (requestedDataProtocol !== this.negotiatedDataProtocol) return 'official_exit_data_protocol_not_negotiated';
+    if (request.earlyDataProtocol !== undefined && request.earlyDataProtocol !== this.negotiatedEarlyDataProtocol) {
+      return 'official_exit_early_data_protocol_not_negotiated';
+    }
     return undefined;
   }
 
@@ -321,12 +369,16 @@ export class ProviderOfficialExitTunnelManager {
     session.expectedSeqIn += 1;
     const chunk = Buffer.from(frame.payloadBase64, 'base64');
     session.webSocketBytesIn += wireBytes ?? Buffer.byteLength(JSON.stringify(frame));
-    session.bytesOut += chunk.byteLength;
-    if (session.maxBytesOut !== undefined && session.bytesOut > session.maxBytesOut) {
+    session.platformPayloadBytes += chunk.byteLength;
+    if (session.maxBytesOut !== undefined && session.platformPayloadBytes > session.maxBytesOut) {
       this.sendErrorAndClose(frame.sessionId, session, 'official_exit_max_bytes_out_exceeded');
       return;
     }
-    if (!session.socket.write(chunk)) this.blockPlatformInput(frame.sessionId, session);
+    if (!session.connected) {
+      this.queueEarlyData(frame.sessionId, session, chunk, 0);
+      return;
+    }
+    this.writeToUpstream(frame.sessionId, session, chunk, 0);
   }
 
   private writeBinaryData(
@@ -349,21 +401,69 @@ export class ProviderOfficialExitTunnelManager {
     }
     session.expectedSeqIn += 1;
     session.webSocketBytesIn += wireBytes;
-    session.bytesOut += frame.payload.byteLength;
-    if (session.maxBytesOut !== undefined && session.bytesOut > session.maxBytesOut) {
+    session.platformPayloadBytes += frame.payload.byteLength;
+    if (session.maxBytesOut !== undefined && session.platformPayloadBytes > session.maxBytesOut) {
       this.sendErrorAndClose(frame.sessionId, session, 'official_exit_max_bytes_out_exceeded');
       return;
     }
-    const writable = session.socket.write(frame.payload, () => {
+    if (!session.connected) {
+      this.queueEarlyData(frame.sessionId, session, frame.payload, frame.payload.byteLength);
+      return;
+    }
+    this.writeToUpstream(frame.sessionId, session, frame.payload, frame.payload.byteLength);
+  }
+
+  private queueEarlyData(
+    sessionId: string,
+    session: OfficialExitSession,
+    payload: Buffer,
+    creditBytes: number,
+  ): void {
+    if (session.earlyDataProtocol !== 'buffered_v1') {
+      this.sendErrorAndClose(sessionId, session, 'official_exit_early_data_not_negotiated');
+      return;
+    }
+    if (session.pendingToUpstreamBytes + payload.byteLength > OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES) {
+      this.sendErrorAndClose(sessionId, session, 'official_exit_early_data_exceeded');
+      return;
+    }
+    session.pendingToUpstream.push({ payload: Buffer.from(payload), creditBytes });
+    session.pendingToUpstreamBytes += payload.byteLength;
+    session.earlyDataBytes += payload.byteLength;
+  }
+
+  private flushPendingToUpstream(sessionId: string, session: OfficialExitSession): void {
+    const pending = session.pendingToUpstream;
+    session.pendingToUpstream = [];
+    session.pendingToUpstreamBytes = 0;
+    for (const item of pending) {
       if (session.closed) return;
-      const update = encodeOfficialExitBinaryWindowUpdate(frame.sessionId, frame.payload.byteLength);
+      this.writeToUpstream(sessionId, session, item.payload, item.creditBytes);
+    }
+  }
+
+  private writeToUpstream(
+    sessionId: string,
+    session: OfficialExitSession,
+    payload: Buffer,
+    creditBytes: number,
+  ): void {
+    session.bytesOut += payload.byteLength;
+    const writable = session.socket.write(payload, () => {
+      if (session.closed) return;
+      if (creditBytes <= 0) return;
+      const update = encodeOfficialExitBinaryWindowUpdate(sessionId, creditBytes);
       session.webSocketBytesOut += update.byteLength;
       this.send(update);
-      this.applyWebSocketBackpressure(frame.sessionId, session);
+      this.applyWebSocketBackpressure(sessionId, session);
     });
     if (!writable) {
+      if (creditBytes <= 0) {
+        this.blockPlatformInput(sessionId, session);
+        return;
+      }
       session.backpressureCount += 1;
-      this.startPlatformInputBackpressureTimeout(frame.sessionId, session);
+      this.startPlatformInputBackpressureTimeout(sessionId, session);
       session.socket.once('drain', () => {
         if (session.closed || session.platformInputBlocked) return;
         this.clearPlatformInputBackpressureTimeout(session);
@@ -559,6 +659,7 @@ export class ProviderOfficialExitTunnelManager {
       webSocketBytesToPlatform: session.webSocketBytesOut,
       backpressureCount: session.backpressureCount,
       peakBufferedBytes: session.peakBufferedBytes,
+      earlyDataBytes: session.earlyDataBytes,
     };
   }
 }

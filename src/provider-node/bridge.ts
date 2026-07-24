@@ -11,6 +11,7 @@ import type {
   OfficialExitDataFrame,
   OfficialExitOpenRequest,
   OfficialExitDataProtocol,
+  OfficialExitEarlyDataProtocol,
   PlatformDrainAck,
   PlatformCredentialMirrorUpdateAck,
   PlatformCredentialRefreshHint,
@@ -373,6 +374,7 @@ export class ProviderBridge {
       acceptingSessions: this.acceptingSessions,
       transportCapabilities: {
         officialExitDataProtocols: ['json_base64_v1', 'binary_v1'],
+        officialExitEarlyDataProtocols: ['buffered_v1'],
         flowControl: ['credit_v1'],
         maxBinaryFrameBytes: OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
       },
@@ -412,6 +414,9 @@ export class ProviderBridge {
       const ready = message as PlatformProviderReady;
       const selected = selectedOfficialExitDataProtocol(ready);
       this.officialExitTunnels.setNegotiatedDataProtocol(selected);
+      this.officialExitTunnels.setNegotiatedEarlyDataProtocol(
+        selectedOfficialExitEarlyDataProtocol(ready, selected),
+      );
       this.options.onPlatformReady?.();
       return;
     }
@@ -539,6 +544,16 @@ function selectedOfficialExitDataProtocol(ready: PlatformProviderReady): Officia
     return 'binary_v1';
   }
   return 'json_base64_v1';
+}
+
+function selectedOfficialExitEarlyDataProtocol(
+  ready: PlatformProviderReady,
+  dataProtocol: OfficialExitDataProtocol,
+): OfficialExitEarlyDataProtocol | undefined {
+  return dataProtocol === 'binary_v1'
+    && ready.transport?.officialExitEarlyDataProtocol === 'buffered_v1'
+    ? 'buffered_v1'
+    : undefined;
 }
 
 function rawDataBuffer(raw: RawData): Buffer {

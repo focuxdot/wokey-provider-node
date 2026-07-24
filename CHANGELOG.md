@@ -4,6 +4,17 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.48]
+
+### Added
+- Negotiated `buffered_v1` early data for official-exit binary tunnels, with a
+  64 KiB pre-connect limit, ordered flush, cancellation cleanup, and byte
+  diagnostics.
+
+### Fixed
+- Allow Qwen DashScope and Token Plan endpoints through the official-exit
+  allowlist with `*.aliyuncs.com`.
+
 ## [0.1.47]
 
 ### Added

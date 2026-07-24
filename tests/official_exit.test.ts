@@ -6,6 +6,7 @@ import {
 } from '../src/shared/official-exit-binary.js';
 import {
   DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS,
+  OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES,
   OFFICIAL_EXIT_VENDOR_CONFIGS,
   ProviderOfficialExitTunnelManager,
   classifyConnectError,
@@ -97,6 +98,9 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('grok.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('token-plan.cn-beijing.maas.aliyuncs.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('aliyuncs.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('aliyuncs.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('anything.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('127.0.0.1', defaults)).toBe(false);
   });
@@ -270,6 +274,105 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
         webSocketBytesFromPlatform: inbound.byteLength,
       },
     });
+  });
+
+  it('buffers one bounded binary-v1 prefix until TCP connects, then flushes it before open completes', async () => {
+    let upstreamReceived = Buffer.alloc(0);
+    const upstream = createServer((socket) => {
+      socket.on('data', (chunk) => {
+        upstreamReceived = Buffer.concat([upstreamReceived, chunk]);
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const sent: Array<Record<string, unknown> | Buffer> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message),
+      ['127.0.0.1'],
+    );
+    manager.setNegotiatedDataProtocol('binary_v1');
+    manager.setNegotiatedEarlyDataProtocol('buffered_v1');
+
+    const opening = manager.handleMessage({
+      ...openRequest('127.0.0.1', address.port),
+      dataProtocol: 'binary_v1',
+      earlyDataProtocol: 'buffered_v1',
+    });
+    const clientHello = Buffer.from('client-hello');
+    const earlyFrame = encodeOfficialExitBinaryData('sess_1', 0, clientHello);
+    manager.handleBinaryFrame(decodeOfficialExitBinaryFrame(earlyFrame), earlyFrame.byteLength);
+
+    expect(sent).toHaveLength(0);
+    await opening;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(upstreamReceived).toEqual(clientHello);
+    expect(sent[0]).toMatchObject({
+      type: 'official_exit.open_response',
+      accepted: true,
+      transportDiagnostic: {
+        earlyDataBytes: clientHello.byteLength,
+        bytesToUpstream: clientHello.byteLength,
+      },
+    });
+    expect(sent.filter(Buffer.isBuffer).map((frame) => decodeOfficialExitBinaryFrame(frame))).toContainEqual({
+      kind: 'window_update',
+      sessionId: 'sess_1',
+      creditBytes: clientHello.byteLength,
+    });
+
+    manager.closeAll('test_complete');
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  });
+
+  it('rejects unnegotiated or oversized pre-connect data without forwarding it', async () => {
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      () => undefined,
+      ['127.0.0.1'],
+    );
+    manager.setNegotiatedDataProtocol('binary_v1');
+
+    await manager.handleMessage({
+      ...openRequest('127.0.0.1', 9),
+      dataProtocol: 'binary_v1',
+      earlyDataProtocol: 'buffered_v1',
+    });
+    expect(manager.activeSessionCount()).toBe(0);
+
+    const sent: Array<Record<string, unknown> | Buffer> = [];
+    const upstream = createServer();
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const bounded = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message),
+      ['127.0.0.1'],
+    );
+    bounded.setNegotiatedDataProtocol('binary_v1');
+    bounded.setNegotiatedEarlyDataProtocol('buffered_v1');
+    const opening = bounded.handleMessage({
+      ...openRequest('127.0.0.1', address.port),
+      dataProtocol: 'binary_v1',
+      earlyDataProtocol: 'buffered_v1',
+    });
+    const full = encodeOfficialExitBinaryData(
+      'sess_1',
+      0,
+      Buffer.alloc(OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES),
+    );
+    bounded.handleBinaryFrame(decodeOfficialExitBinaryFrame(full), full.byteLength);
+    const overflow = encodeOfficialExitBinaryData('sess_1', 1, Buffer.from([1]));
+    bounded.handleBinaryFrame(decodeOfficialExitBinaryFrame(overflow), overflow.byteLength);
+    await opening;
+
+    expect(sent.find((message) => !Buffer.isBuffer(message) && message.type === 'official_exit.error'))
+      .toMatchObject({ errorCode: 'official_exit_early_data_exceeded' });
+    expect(bounded.activeSessionCount()).toBe(0);
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
   });
 
   it('keeps upstream and platform-input backpressure timers independent', () => {

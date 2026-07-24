@@ -30,7 +30,7 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'qwen',
     displayName: 'Qwen',
-    allowedHosts: ['dashscope.aliyuncs.com', 'dashscope-us.aliyuncs.com'],
+    allowedHosts: ['*.aliyuncs.com'],
   },
   {
     id: 'zhipu',
