@@ -145,8 +145,8 @@ This is the single most important safety property, so it is enforced in source, 
 | Vendor | Default hosts |
 | --- | --- |
 | OpenAI / Codex | `*.openai.com`, `*.chatgpt.com` |
-| Anthropic / Claude | `*.anthropic.com`, `*.claude.com` |
-| Qwen | `dashscope.aliyuncs.com`, `dashscope-us.aliyuncs.com` |
+| Anthropic / Claude | `*.anthropic.com`, `*.claude.com`, `*.claude.ai` |
+| Qwen | `*.aliyuncs.com` |
 | Zhipu AI | `*.bigmodel.cn`, `*.z.ai` |
 | Moonshot / Kimi | `*.kimi.com`, `*.moonshot.ai`, `*.moonshot.cn` |
 | MiniMax | `*.minimax.io`, `*.minimaxi.com` |

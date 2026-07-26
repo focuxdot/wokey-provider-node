@@ -26,8 +26,8 @@ Provider Node must not log raw tunneled bytes.
 Each official-exit request names the `targetHost`/`targetPort` to dial. By default Provider Node only opens outbound TCP connections to official vendor domains for currently supported official-exit vendors:
 
 - OpenAI / Codex: `*.openai.com`, `*.chatgpt.com`
-- Anthropic / Claude: `*.anthropic.com`, `*.claude.com`
-- Qwen: `dashscope.aliyuncs.com`, `dashscope-us.aliyuncs.com`
+- Anthropic / Claude: `*.anthropic.com`, `*.claude.com`, `*.claude.ai`
+- Qwen: `*.aliyuncs.com`
 - Zhipu AI: `*.bigmodel.cn`, `*.z.ai`
 - Moonshot / Kimi: `*.kimi.com`, `*.moonshot.ai`, `*.moonshot.cn`
 - MiniMax: `*.minimax.io`, `*.minimaxi.com`
@@ -39,7 +39,7 @@ Each official-exit request names the `targetHost`/`targetPort` to dial. By defau
 Operators can narrow or extend that local egress allowlist:
 
 ```bash
-PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS=*.openai.com,*.chatgpt.com,*.anthropic.com,*.claude.com
+PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS=*.openai.com,*.chatgpt.com,*.anthropic.com,*.claude.com,*.claude.ai
 ```
 
 The node refuses (`official_exit_vendor_not_allowed`) any official-exit open request whose target host is not on the list, before opening a socket. Entries beginning with `.` or `*.` match a domain and its subdomains; others match exactly. The allowlist is read only from the node's local environment, so Platform cannot widen or disable it. Wildcard `*` is not supported; use explicit hosts or domain patterns such as `.example.com` / `*.example.com`.

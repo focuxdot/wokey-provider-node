@@ -91,6 +91,10 @@ describe('isOfficialExitHostAllowed', () => {
       expect(isOfficialExitHostAllowed(host, defaults)).toBe(true);
     }
     expect(isOfficialExitHostAllowed('chatgpt.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('claude.ai', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('accounts.claude.ai', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('notclaude.ai', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('claude.ai.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('cli-chat-proxy.grok.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('grok.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('future-api.grok.com', defaults)).toBe(true);

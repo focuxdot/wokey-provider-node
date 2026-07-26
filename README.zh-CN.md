@@ -141,8 +141,8 @@ Wokey 平台 -> 出站 WebSocket -> Provider Node -> TCP 套接字 -> 厂商域�
 | 厂商 | 默认域名 |
 | --- | --- |
 | OpenAI / Codex | `*.openai.com`、`*.chatgpt.com` |
-| Anthropic / Claude | `*.anthropic.com`、`*.claude.com` |
-| 通义千问 Qwen | `dashscope.aliyuncs.com`、`dashscope-us.aliyuncs.com` |
+| Anthropic / Claude | `*.anthropic.com`、`*.claude.com`、`*.claude.ai` |
+| 通义千问 Qwen | `*.aliyuncs.com` |
 | 智谱 AI | `*.bigmodel.cn`、`*.z.ai` |
 | Moonshot / Kimi | `*.kimi.com`、`*.moonshot.ai`、`*.moonshot.cn` |
 | MiniMax | `*.minimax.io`、`*.minimaxi.com` |

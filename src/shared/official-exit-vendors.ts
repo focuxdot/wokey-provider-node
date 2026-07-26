@@ -25,7 +25,7 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'anthropic',
     displayName: 'Anthropic / Claude',
-    allowedHosts: ['*.anthropic.com', '*.claude.com'],
+    allowedHosts: ['*.anthropic.com', '*.claude.com', '*.claude.ai'],
   },
   {
     id: 'qwen',
