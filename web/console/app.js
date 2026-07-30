@@ -47,8 +47,17 @@ const messages = {
     nodeBindingUnavailable:
       'Could not verify Platform binding. Local credentials are shown, but authorization state may be stale.',
     platformTemporarilyUnavailable: 'Platform is temporarily unavailable. Please try again in a moment.',
+    platformDnsFailed: 'Could not resolve the Platform hostname. Check this node’s DNS settings, then retry.',
+    platformConnectTimeout: 'Timed out while connecting to Platform. Check this node’s network, firewall, or proxy.',
+    platformTlsFailed: 'Could not establish a secure connection to Platform. Check the system clock, TLS inspection, and certificates.',
+    platformNetworkError: 'Could not connect to Platform. Check this node’s network and retry.',
+    platformInvalidResponse: 'Platform returned an invalid response. Retry later or update Provider Node.',
     platformUnreachable:
       "Cannot reach the platform (tried the direct endpoint and the fallback). Check this node's network and that the server IP or domain is reachable from here.",
+    providerNodeUnexpectedError:
+      'Provider Node encountered an unexpected error. Retry once, then check “wokey-node logs” and include the error ID when asking for support.',
+    requestFailed: 'The operation failed.',
+    errorIdLabel: 'Error ID:',
     credentialsTitle: 'Local credentials',
     credentialsBody: 'Only credentials authorized or imported on this node are shown. Provider-assigned routing credentials stay private.',
     credentialsScanDisabledBody: 'Add a local credential with the browser OAuth flow, device code, or by pasting a token.',
@@ -119,6 +128,8 @@ const messages = {
     authorizationLinkRequired: 'Generate an authorization link first.',
     authorizationCodeRequired: 'Paste the returned authorization code first.',
     authorizationSubmitFailed: 'Authorization failed. Generate a new authorization link and submit a fresh code.',
+    authorizationCodeInvalid:
+      'This authorization code is invalid, expired, or has already been used. Generate a new authorization link and submit the new code.',
     authorizationFlowExpired:
       'This authorization flow has expired. Refresh this page, generate a new Claude authorization link, then submit the new code.',
     authorizationCodeLinkMismatch:
@@ -197,6 +208,38 @@ const messages = {
     deviceWaiting: 'Waiting for device authorization...',
     deviceAuthorized: 'Device authorization succeeded. Credential saved on Platform.',
     deviceAuthorizationExpired: 'This device authorization session is no longer available. Start device code authorization again.',
+    oauthUnsupportedRegion:
+      'OpenAI does not support this node’s current exit region. Move the entire Provider Node host to a supported-region network, restart the node, and try again.',
+    oauthDnsFailed: 'Could not resolve the authorization service. Check this node’s DNS settings, then retry.',
+    oauthConnectTimeout:
+      'Timed out while connecting to the authorization service. Check this node’s network, firewall, or system-wide proxy.',
+    oauthTlsFailed:
+      'Could not establish a secure connection to the authorization service. Check the system clock, TLS inspection, and certificates.',
+    oauthNetworkError:
+      'Could not connect to the authorization service. Check this node’s network or system-wide proxy, then retry.',
+    oauthInvalidResponse: 'The authorization service returned an invalid response. Retry later or update Provider Node.',
+    oauthBrowserChallenge:
+      'The authorization service returned a browser security challenge. Generate a fresh authorization link and try again.',
+    oauthRateLimited: 'The authorization service is rate limiting this node. Wait a moment, then retry.',
+    oauthUpstreamUnavailable: 'The authorization service is temporarily unavailable. Retry later.',
+    oauthRequestForbidden: 'The authorization service rejected this request. Check the account and this node’s exit region.',
+    oauthAuthorizationInvalid: 'The authorization request is invalid or expired. Start authorization again.',
+    oauthAccessDenied: 'Authorization was denied. Start again and approve the requested access.',
+    nodeNotBound: 'Connect this Provider Node to your Provider account before authorizing credentials.',
+    nodeBindingInvalid: 'Platform rejected this node binding. Rebind the node before authorizing credentials.',
+    unsupportedNodeVersion: 'This Provider Node version is no longer supported. Update the node and retry.',
+    nodeAlreadyBound: 'This Node ID is already bound to another Provider. Use that binding or install with a new Node ID.',
+    platformUrlInvalid: 'The Platform URL is invalid or not allowed. Restore the official Wokey Platform URL.',
+    credentialAlreadyOwned: 'This account is already connected to another Provider.',
+    credentialIdentityMismatch: 'The authorized account does not match the credential being updated. Start a fresh authorization.',
+    credentialIdentityUnverifiable: 'Platform could not verify the authorized account identity. Retry the authorization.',
+    credentialSubscriptionUnsupported: 'This account’s subscription is not supported for Provider supply.',
+    credentialNodeUnavailable: 'The selected Provider Node is offline or not ready. Start or reconnect the node, then retry.',
+    credentialHostNotAllowed: 'This Provider Node version does not allow the required vendor host. Update the node and retry.',
+    codexAuthJsonUnreadable: 'Codex auth.json could not be read. Check the file path and permissions.',
+    codexAuthJsonInvalid: 'Codex auth.json is not valid JSON.',
+    codexAuthJsonMissingTokens: 'Codex auth.json is missing its access or refresh token.',
+    localAuthSourceNotSupported: 'This local authorization source is not supported.',
   },
   zh: {
     appTitle: 'Wokey 节点管理',
@@ -234,7 +277,16 @@ const messages = {
     nodePausedNotice: '该节点已暂停，已停止接收请求。请在 Provider 页面恢复节点，然后点击"刷新节点状态"继续。',
     nodeBindingUnavailable: '暂时无法校验 Platform 绑定状态。本机授权凭证会继续显示，但授权状态可能不是最新。',
     platformTemporarilyUnavailable: '平台暂时不可用，请稍后重试。',
+    platformDnsFailed: '无法解析 Platform 域名。请检查当前节点的 DNS 设置后重试。',
+    platformConnectTimeout: '连接 Platform 超时。请检查当前节点的网络、防火墙或代理。',
+    platformTlsFailed: '无法与 Platform 建立安全连接。请检查系统时间、TLS 拦截和证书。',
+    platformNetworkError: '无法连接 Platform。请检查当前节点的网络后重试。',
+    platformInvalidResponse: 'Platform 返回了无效响应。请稍后重试或更新 Provider Node。',
     platformUnreachable: '无法连接平台(已尝试直连入口与回退入口)。请检查本节点网络,确认服务器 IP 或域名从这里可达。',
+    providerNodeUnexpectedError:
+      'Provider Node 遇到未预期错误。请重试一次；如果仍失败，运行“wokey-node logs”查看日志，并在求助时提供错误 ID。',
+    requestFailed: '操作失败。',
+    errorIdLabel: '错误 ID：',
     credentialsTitle: '本机授权凭证',
     credentialsBody: '仅显示在当前节点授权或导入的凭证；Provider 分配给本节点的路由凭证不会在这里暴露。',
     credentialsScanDisabledBody: '通过浏览器 OAuth、设备码或粘贴 Token 为当前节点添加本机授权凭证。',
@@ -304,6 +356,7 @@ const messages = {
     authorizationLinkRequired: '请先生成授权链接。',
     authorizationCodeRequired: '请先粘贴返回的授权码。',
     authorizationSubmitFailed: '授权失败。请重新生成授权链接，并提交新的授权码。',
+    authorizationCodeInvalid: '授权码无效、已过期或已使用。请重新生成授权链接，再提交新的授权码。',
     authorizationFlowExpired: '这次授权流程已过期。请刷新页面，重新生成 Claude 授权链接，再提交新的授权码。',
     authorizationCodeLinkMismatch:
       '这个授权码不属于当前授权链接。请刷新页面，重新生成 Claude 授权链接，再提交新的授权码。',
@@ -377,6 +430,34 @@ const messages = {
     deviceWaiting: '正在等待设备授权...',
     deviceAuthorized: '设备授权成功，授权凭证已保存到 Platform。',
     deviceAuthorizationExpired: '这次设备授权会话已失效，请重新开始设备码授权。',
+    oauthUnsupportedRegion:
+      'OpenAI 不支持当前节点的出口地区。请让整台 Provider Node 主机切换到受支持地区的网络，重启节点后再试。',
+    oauthDnsFailed: '无法解析授权服务域名。请检查当前节点的 DNS 设置后重试。',
+    oauthConnectTimeout: '连接授权服务超时。请检查当前节点的网络、防火墙或系统级代理。',
+    oauthTlsFailed: '无法与授权服务建立安全连接。请检查系统时间、TLS 拦截和证书。',
+    oauthNetworkError: '无法连接授权服务。请检查当前节点的网络或系统级代理后重试。',
+    oauthInvalidResponse: '授权服务返回了无效响应。请稍后重试或更新 Provider Node。',
+    oauthBrowserChallenge: '授权服务返回了浏览器安全验证。请重新生成授权链接后再试。',
+    oauthRateLimited: '授权服务正在限制当前节点的请求频率。请稍等后重试。',
+    oauthUpstreamUnavailable: '授权服务暂时不可用，请稍后重试。',
+    oauthRequestForbidden: '授权服务拒绝了本次请求。请检查账号状态和当前节点的出口地区。',
+    oauthAuthorizationInvalid: '授权请求无效或已过期，请重新开始授权。',
+    oauthAccessDenied: '你拒绝了授权。请重新开始并同意所需权限。',
+    nodeNotBound: '请先把 Provider Node 连接到 Provider 账号，再授权凭证。',
+    nodeBindingInvalid: 'Platform 已拒绝当前节点绑定。请重新绑定节点后再授权凭证。',
+    unsupportedNodeVersion: '当前 Provider Node 版本已不受支持，请更新节点后重试。',
+    nodeAlreadyBound: '该 Node ID 已绑定到另一个 Provider。请使用原绑定，或使用新的 Node ID 重新安装。',
+    platformUrlInvalid: 'Platform 地址无效或不被允许，请恢复为 Wokey 官方 Platform 地址。',
+    credentialAlreadyOwned: '该账号已连接到另一个 Provider。',
+    credentialIdentityMismatch: '本次授权账号与要更新的凭证不一致，请重新开始授权。',
+    credentialIdentityUnverifiable: 'Platform 无法确认授权账号身份，请重新授权。',
+    credentialSubscriptionUnsupported: '该账号的订阅类型暂不支持参与 Provider 供给。',
+    credentialNodeUnavailable: '所选 Provider Node 离线或尚未就绪。请启动或重新连接节点后重试。',
+    credentialHostNotAllowed: '当前 Provider Node 版本未放行厂商所需域名，请更新节点后重试。',
+    codexAuthJsonUnreadable: '无法读取 Codex auth.json，请检查文件路径和权限。',
+    codexAuthJsonInvalid: 'Codex auth.json 不是有效的 JSON。',
+    codexAuthJsonMissingTokens: 'Codex auth.json 缺少访问令牌或刷新令牌。',
+    localAuthSourceNotSupported: '暂不支持这种本机授权来源。',
   },
 };
 
@@ -774,7 +855,7 @@ async function refreshStatus(autoScan = true) {
     if (authScanButton) authScanButton.style.display = 'none';
   }
   renderDynamicMeta();
-  if (isBound) ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', error.message, 'error'));
+  if (isBound) ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
   if (isBound && autoScan) runBoundPageAuthScan(true).catch(() => undefined);
   if (!isBound && statusState.binding?.serverStatus === 'invalid')
     setToast('unboundResult', t('nodeBindingExpired'), 'error');
@@ -789,7 +870,7 @@ async function refreshStatusFromAction() {
     await refreshStatus();
     setToast(statusState?.binding?.isBound ? 'boundResult' : 'unboundResult', t('nodeStatusRefreshed'), 'success');
   } catch (error) {
-    setToast(toastId, error.message, 'error');
+    setToast(toastId, formatApiError(error), 'error');
   }
 }
 
@@ -844,7 +925,7 @@ function clearLaunchBindingParams() {
 }
 
 function isInvalidBindingCodeError(error) {
-  return error?.message === 'invalid_binding_code' || error?.body?.error?.code === 'invalid_binding_code';
+  return apiErrorCode(error) === 'invalid_binding_code';
 }
 
 async function consumeLaunchBindingParams() {
@@ -876,7 +957,7 @@ async function consumeLaunchBindingParams() {
 
 function consumeLaunchBindingParamsSoon() {
   setTimeout(() => {
-    consumeLaunchBindingParams().catch((error) => showMessage(error.message));
+    consumeLaunchBindingParams().catch((error) => showMessage(formatApiError(error)));
   }, 0);
 }
 
@@ -940,7 +1021,13 @@ async function loadCredentials(silent = false) {
     if (!silent && binding?.server?.status === 'unavailable')
       setToast(
         'credentialResult',
-        t('nodeBindingUnavailable') + (binding.server.error ? ' ' + binding.server.error : ''),
+        t('nodeBindingUnavailable')
+          + (binding.server.errorCode
+            ? ' ' + formatApiError({
+              message: binding.server.error,
+              body: { error: binding.server.errorCode, message: binding.server.error },
+            })
+            : ''),
         'error',
       );
   } catch (error) {
@@ -1434,13 +1521,108 @@ function legacyPlatformCredentialForLocalCredential(item) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+const API_ERROR_MESSAGE_KEYS = {
+  provider_node_internal_error: 'providerNodeUnexpectedError',
+  platform_unreachable: 'platformUnreachable',
+  platform_dns_failed: 'platformDnsFailed',
+  platform_connect_timeout: 'platformConnectTimeout',
+  platform_tls_failed: 'platformTlsFailed',
+  platform_network_error: 'platformNetworkError',
+  platform_invalid_response: 'platformInvalidResponse',
+  node_not_bound: 'nodeNotBound',
+  node_binding_invalid: 'nodeBindingInvalid',
+  invalid_provider_secret: 'nodeBindingInvalid',
+  provider_node_not_found: 'nodeBindingInvalid',
+  invalid_binding_code: 'nodeBindingExpired',
+  unsupported_node_version: 'unsupportedNodeVersion',
+  missing_node_version: 'unsupportedNodeVersion',
+  invalid_node_version: 'unsupportedNodeVersion',
+  node_version_too_old: 'unsupportedNodeVersion',
+  node_id_already_bound: 'nodeAlreadyBound',
+  platform_url_invalid: 'platformUrlInvalid',
+  platform_url_scheme_not_allowed: 'platformUrlInvalid',
+  platform_url_host_not_allowed: 'platformUrlInvalid',
+  platform_url_tls_required: 'platformUrlInvalid',
+  uninstall_confirmation_required: 'uninstallConfirmRequired',
+  anthropic_oauth_start_required: 'authorizationFlowExpired',
+  codex_oauth_start_required: 'authorizationFlowExpired',
+  anthropic_oauth_state_mismatch: 'authorizationCodeLinkMismatch',
+  invalid_state: 'authorizationCodeLinkMismatch',
+  invalid_grant: 'authorizationCodeInvalid',
+  code_required: 'authorizationCodeRequired',
+  device_auth_id_required: 'deviceCodeStartFirst',
+  device_code_required: 'deviceCodeStartFirst',
+  codex_device_missing_user_code: 'oauthInvalidResponse',
+  xai_device_missing_fields: 'oauthInvalidResponse',
+  unsupported_country_region_territory: 'oauthUnsupportedRegion',
+  oauth_dns_failed: 'oauthDnsFailed',
+  oauth_connect_timeout: 'oauthConnectTimeout',
+  oauth_tls_failed: 'oauthTlsFailed',
+  oauth_network_error: 'oauthNetworkError',
+  oauth_invalid_response: 'oauthInvalidResponse',
+  oauth_browser_challenge: 'oauthBrowserChallenge',
+  oauth_rate_limited: 'oauthRateLimited',
+  rate_limit_exceeded: 'oauthRateLimited',
+  too_many_requests: 'oauthRateLimited',
+  oauth_upstream_unavailable: 'oauthUpstreamUnavailable',
+  server_error: 'oauthUpstreamUnavailable',
+  temporarily_unavailable: 'oauthUpstreamUnavailable',
+  oauth_request_forbidden: 'oauthRequestForbidden',
+  oauth_request_rejected: 'oauthRequestForbidden',
+  request_forbidden: 'oauthRequestForbidden',
+  request_not_allowed: 'oauthRequestForbidden',
+  oauth_authorization_invalid: 'oauthAuthorizationInvalid',
+  invalid_request: 'oauthAuthorizationInvalid',
+  invalid_client: 'oauthAuthorizationInvalid',
+  unauthorized: 'oauthAuthorizationInvalid',
+  access_denied: 'oauthAccessDenied',
+  expired_token: 'deviceAuthorizationExpired',
+  device_auth_not_found: 'deviceAuthorizationExpired',
+  device_code_not_found: 'deviceAuthorizationExpired',
+  credential_already_owned: 'credentialAlreadyOwned',
+  credential_identity_mismatch: 'credentialIdentityMismatch',
+  credential_identity_unverifiable: 'credentialIdentityUnverifiable',
+  credential_subscription_unsupported: 'credentialSubscriptionUnsupported',
+  official_exit_node_offline: 'credentialNodeUnavailable',
+  official_exit_unavailable: 'credentialNodeUnavailable',
+  official_exit_vendor_not_allowed: 'credentialHostNotAllowed',
+  codex_auth_json_not_found: 'codexMissingReason',
+  codex_auth_json_unreadable: 'codexAuthJsonUnreadable',
+  codex_auth_json_invalid: 'codexAuthJsonInvalid',
+  codex_auth_json_missing_tokens: 'codexAuthJsonMissingTokens',
+  local_auth_source_not_supported: 'localAuthSourceNotSupported',
+  oauth_access_token_missing: 'oauthAccessTokenRequired',
+  oauth_refresh_token_required: 'oauthRefreshTokenRequired',
+};
+
+function apiErrorCode(error) {
+  const bodyError = error?.body?.error;
+  if (typeof bodyError === 'string') return bodyError;
+  if (bodyError && typeof bodyError.code === 'string') return bodyError.code;
+  if (typeof error?.code === 'string') return error.code;
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return /^[a-z][a-z0-9_]*$/.test(message) ? message : '';
+}
+
 function formatApiError(error) {
-  const message = error?.body?.error || error?.message || String(error || '');
-  if (message === 'Invalid provider node credentials') return t('nodeBindingInvalidCredentials');
-  if (message === 'platform_unreachable') return t('platformUnreachable');
-  if (message === 'uninstall_confirmation_required') return t('uninstallConfirmRequired');
-  if (message === 'anthropic_oauth_start_required') return t('authorizationFlowExpired');
-  if (message === 'anthropic_oauth_state_mismatch') return t('authorizationCodeLinkMismatch');
+  const code = apiErrorCode(error);
+  const messageKey = API_ERROR_MESSAGE_KEYS[code];
+  const requestId = error?.body?.requestId;
+  let message = messageKey ? t(messageKey) : '';
+  if (!message) {
+    const bodyMessage = error?.body?.message || error?.body?.error?.message;
+    const rawMessage = bodyMessage || error?.message;
+    if (rawMessage && rawMessage !== code && rawMessage !== 'Invalid provider node credentials') {
+      message = rawMessage;
+    } else if (code) {
+      message = `${t('requestFailed')} (${code})`;
+    } else {
+      message = t('requestFailed');
+    }
+  }
+  if (code === 'provider_node_internal_error' && requestId) {
+    message += ` ${t('errorIdLabel')} ${requestId}`;
+  }
   return message;
 }
 
@@ -1477,7 +1659,7 @@ function selectProvider(provider) {
   document.getElementById('claudeAuthPanel')?.classList.toggle('hidden', provider !== 'claude');
   document.getElementById('codexAuthPanel')?.classList.toggle('hidden', provider !== 'codex');
   document.getElementById('xaiAuthPanel')?.classList.toggle('hidden', provider !== 'grok');
-  if (provider === 'claude') ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', error.message, 'error'));
+  if (provider === 'claude') ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
 }
 
 async function startCodexDevice() {
@@ -1518,12 +1700,15 @@ function stopDevicePolling() {
 }
 
 function isDeviceAuthNotFound(error) {
-  return error?.message === 'device_auth_not_found' || error?.body?.error === 'device_auth_not_found';
+  return apiErrorCode(error) === 'device_auth_not_found';
 }
 
 function isTransientDevicePollError(error) {
-  const message = error?.body?.error || error?.message || String(error || '');
-  return error?.status >= 500 || message === 'internal_error' || message === 'codex_device_poll_failed';
+  const code = apiErrorCode(error);
+  return error?.body?.retryable === true
+    || error?.status >= 500
+    || code === 'provider_node_internal_error'
+    || code === 'codex_device_poll_failed';
 }
 
 async function copyTextToClipboard(text) {
@@ -1765,7 +1950,7 @@ async function startClaudeOAuth() {
     window.open(data.authorizationUrl, '_blank', 'noopener,noreferrer');
     setToast('oauthResult', t('authorizationUrlGenerated'));
   } catch (error) {
-    setToast('oauthResult', error.message, 'error');
+    setToast('oauthResult', formatApiError(error), 'error');
   }
 }
 
@@ -1775,7 +1960,7 @@ async function copyClaudeAuthorizationLink() {
     await navigator.clipboard.writeText(data.authorizationUrl);
     setToast('oauthResult', t('authorizationLinkCopied'));
   } catch (error) {
-    setToast('oauthResult', error.message, 'error');
+    setToast('oauthResult', formatApiError(error), 'error');
   }
 }
 
@@ -1878,7 +2063,7 @@ async function submitManualOAuthToken() {
     setToast('oauthResult', t('oauthTokenImported'), 'success');
     await loadCredentials();
   } catch (error) {
-    setToast('oauthResult', error.message, 'error');
+    setToast('oauthResult', formatApiError(error), 'error');
   }
 }
 
@@ -1964,4 +2149,4 @@ applyLocale();
 syncThemeToggle();
 refreshStatus()
   .then(() => consumeLaunchBindingParams())
-  .catch((error) => showMessage(error.message));
+  .catch((error) => showMessage(formatApiError(error)));

@@ -39,6 +39,11 @@ import {
 } from './local-auth-detect.js';
 import { providerOAuthConfigFromManualTokenBody, validateManualOAuthConfigForAuthorization } from './manual-oauth-token.js';
 import {
+  networkProviderNodeError,
+  ProviderNodeError,
+  providerNodeErrorPayload,
+} from './errors.js';
+import {
   applyTokenToOAuthConfig,
   createAnthropicOAuthStart,
   createCodexOAuthStart,
@@ -228,6 +233,7 @@ interface PlatformBindingStatus {
     nodeVersion?: string;
     versionStatus?: string;
     lastSeenAt?: string;
+    errorCode?: string;
     error?: string;
   };
 }
@@ -279,17 +285,43 @@ app.addHook('onRequest', async (request, reply) => {
 // so the same shape comes back regardless of which handler failed.
 const CLIENT_ERROR_CODE = /^[a-z][a-z0-9_]*$/;
 app.setErrorHandler((error: Error, request, reply) => {
+  if (error instanceof ProviderNodeError) {
+    if (error.statusCode >= 500) {
+      request.log.warn({
+        err: error,
+        errorCode: error.errorCode,
+        upstreamStatus: error.upstreamStatus,
+        retryable: error.retryable,
+      }, 'console request failed');
+    }
+    reply.code(error.statusCode).send(providerNodeErrorPayload(error, request.id));
+    return;
+  }
   const statusCode = (error as { statusCode?: number }).statusCode;
   if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
-    reply.code(statusCode).send({ ok: false, error: error.message || 'bad_request' });
+    const errorCode = error.message && CLIENT_ERROR_CODE.test(error.message) ? error.message : 'bad_request';
+    reply.code(statusCode).send(providerNodeErrorPayload(
+      new ProviderNodeError(errorCode, error.message || 'The request is invalid.', { statusCode }),
+      request.id,
+    ));
     return;
   }
   if (error.message && CLIENT_ERROR_CODE.test(error.message)) {
-    reply.code(400).send({ ok: false, error: error.message });
+    reply.code(400).send(providerNodeErrorPayload(
+      new ProviderNodeError(error.message, error.message),
+      request.id,
+    ));
     return;
   }
   request.log.error({ err: error }, 'unhandled console error');
-  reply.code(500).send({ ok: false, error: 'internal_error' });
+  reply.code(500).send(providerNodeErrorPayload(
+    new ProviderNodeError(
+      'provider_node_internal_error',
+      'Provider Node encountered an unexpected error. Check the node logs and retry.',
+      { statusCode: 500, retryable: true },
+    ),
+    request.id,
+  ));
 });
 
 const autoUpgrade = new AutoUpgradeController({
@@ -469,7 +501,7 @@ app.post('/api/platform/bind', async (request, reply) => {
 
 app.post('/api/platform/unbind', async () => {
   if (isNodeBound(config)) {
-    const response = await fetch(platformHttpUrl(config.platformWsUrl, '/internal/provider/unbind'), {
+    const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/unbind'), {
       method: 'POST',
       headers: providerCredentialHeaders(),
     });
@@ -500,7 +532,7 @@ app.get('/api/platform/credentials', async (_request, reply) => {
     reply.code(400);
     return { ok: false, error: 'node_not_bound', data: [] };
   }
-  const response = await fetch(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
+  const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
     headers: providerCredentialHeaders(),
   });
   const data = await parseJsonResponse<{ data?: unknown[] }>(response);
@@ -528,7 +560,7 @@ app.post('/api/platform/credentials', async (request, reply) => {
     reply.code(400);
     return { ok: false, error: 'node_not_bound' };
   }
-  const response = await fetch(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
+  const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
     method: 'POST',
     headers: {
       ...providerCredentialHeaders(),
@@ -792,24 +824,12 @@ app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
       message: 'This Claude authorization flow has expired. Refresh this page, generate a new authorization link, then submit the new code.',
     };
   }
-  let token: OAuthTokenResponse;
-  try {
-    const tokenState = parsedCode.state || matchedState;
-    token = await exchangeAnthropicCode({
-      code: formatAnthropicAuthorizationCode({ code: parsedCode.code, state: tokenState }),
-      codeVerifier: flow.codeVerifier,
-      setupToken: body.setupToken,
-    });
-  } catch (error) {
-    const status = upstreamOAuthErrorStatus(error);
-    if (!status) throw error;
-    reply.code(status);
-    return {
-      ok: false,
-      error: 'anthropic_oauth_exchange_failed',
-      message: oauthExchangeFailureMessage(error),
-    };
-  }
+  const tokenState = parsedCode.state || matchedState;
+  const token: OAuthTokenResponse = await exchangeAnthropicCode({
+    code: formatAnthropicAuthorizationCode({ code: parsedCode.code, state: tokenState }),
+    codeVerifier: flow.codeVerifier,
+    setupToken: body.setupToken,
+  });
   const receivedAt = new Date().toISOString();
   const oauth = setOAuthToken('anthropic-oauth', token, {
     accessTokenReceivedAt: receivedAt,
@@ -914,27 +934,6 @@ function trimPendingOAuthFlows(flows: Map<string, OAuthStart>): void {
 function shortSecret(value?: string): string | undefined {
   if (!value) return undefined;
   return value.length > 12 ? `${value.slice(0, 4)}...${value.slice(-4)}` : value;
-}
-
-function upstreamOAuthErrorStatus(error: unknown): number | undefined {
-  const match = /^oauth_(\d{3}):/.exec(error instanceof Error ? error.message : String(error));
-  if (!match) return undefined;
-  const status = Number(match[1]);
-  return status >= 400 && status < 500 ? status : undefined;
-}
-
-function oauthExchangeFailureMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('invalid_grant')) {
-    return 'Authorization code is invalid or has already been used. Generate a new Claude authorization link and submit the new code.';
-  }
-  if (message.includes('anthropic_browser_session_challenge')) {
-    return 'Claude returned a browser security challenge for this authorization. Use Claude Code local authorization or generate a fresh Claude OAuth authorization link.';
-  }
-  if (message.includes('Request not allowed') || message.startsWith('oauth_403:')) {
-    return 'Claude rejected this authorization code. Generate a new authorization link from this page, authorize again on Claude.ai, then submit the new code.';
-  }
-  return 'Claude authorization failed. Generate a new authorization link from this page and submit a fresh code.';
 }
 
 function parseExpiresAt(value: number | string | undefined): number | undefined {
@@ -1087,7 +1086,7 @@ async function authorizeOAuthCredential(
   // 由 relay 用 refresh_token 经隧道补刷(指纹一致)。节点自刷会以节点原生 JA3 命中授权端点,与该凭证渲染出口不一致。
   const credentialBody = oAuthCredentialBody(oauth, vendor, body);
   credentialBody.credentialBindingId ||= await inferManualReauthorizationCredentialId(credentialBody).catch(() => undefined);
-  const response = await fetch(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
+  const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
     method: 'POST',
     headers: {
       ...providerCredentialHeaders(),
@@ -1100,7 +1099,7 @@ async function authorizeOAuthCredential(
 }
 
 async function inferManualReauthorizationCredentialId(credentialBody: Record<string, unknown>): Promise<string | undefined> {
-  const response = await fetch(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
+  const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
     headers: providerCredentialHeaders(),
   });
   const data = await parseJsonResponse<{ data?: unknown[] }>(response);
@@ -1358,7 +1357,7 @@ async function platformBindingStatus(): Promise<PlatformBindingStatus> {
   }
 
   try {
-    const response = await fetch(platformHttpUrl(config.platformWsUrl, '/internal/provider/status'), {
+    const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/status'), {
       headers: providerCredentialHeaders(),
     });
     const data = await parseJsonResponse<{
@@ -1387,12 +1386,19 @@ async function platformBindingStatus(): Promise<PlatformBindingStatus> {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message === 'Invalid provider node credentials' || message === 'Provider node is no longer active') {
+    const errorCode = error instanceof ProviderNodeError ? error.errorCode : undefined;
+    if (
+      errorCode === 'invalid_provider_secret'
+      || errorCode === 'provider_node_not_found'
+      || message === 'Invalid provider node credentials'
+      || message === 'Provider node is no longer active'
+    ) {
       return {
         ok: true,
         local,
         server: {
           status: 'invalid',
+          errorCode: errorCode || 'node_binding_invalid',
           error: message,
         },
       };
@@ -1402,6 +1408,7 @@ async function platformBindingStatus(): Promise<PlatformBindingStatus> {
       local,
       server: {
         status: 'unavailable',
+        errorCode,
         error: message,
       },
     };
@@ -1411,7 +1418,11 @@ async function platformBindingStatus(): Promise<PlatformBindingStatus> {
 async function assertPlatformBindingIsUsable(): Promise<void> {
   const binding = await platformBindingStatus();
   if (binding.server.status === 'invalid' || binding.server.status === 'unbound') {
-    throw new Error('Invalid provider node credentials');
+    throw new ProviderNodeError(
+      'node_binding_invalid',
+      'Node binding credentials were rejected by Platform.',
+      { statusCode: 401 },
+    );
   }
 }
 
@@ -1431,19 +1442,60 @@ function platformHttpUrl(wsUrl: string, path: string): string {
   return url.toString();
 }
 
-async function parseJsonResponse<T>(response: Response): Promise<T> {
+async function fetchPlatform(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    throw networkProviderNodeError('platform', error);
+  }
+}
+
+export async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
-  const data = text ? JSON.parse(text) as T : {} as T;
+  let data: T;
+  try {
+    data = text ? JSON.parse(text) as T : {} as T;
+  } catch (_error) {
+    throw new ProviderNodeError(
+      'platform_invalid_response',
+      'Platform returned an invalid response.',
+      {
+        statusCode: 502,
+        retryable: true,
+        upstreamStatus: response.status,
+      },
+    );
+  }
   if (!response.ok) {
     const error = asObject(data).error;
+    const errorCode = typeof error === 'object' && error && 'code' in error
+      ? String((error as { code?: unknown }).code)
+      : typeof error === 'string'
+        ? error
+        : 'platform_request_failed';
     const message = typeof error === 'object' && error && 'message' in error
       ? String((error as { message?: unknown }).message)
       : typeof error === 'string'
         ? error
         : `request_failed:${response.status}`;
-    throw new Error(message);
+    throw new PlatformHttpError(response.status, errorCode, message);
   }
   return data;
+}
+
+export class PlatformHttpError extends ProviderNodeError {
+  constructor(
+    statusCode: number,
+    errorCode: string,
+    message: string,
+  ) {
+    super(errorCode, message, {
+      statusCode,
+      retryable: statusCode === 429 || statusCode >= 500,
+      upstreamStatus: statusCode,
+    });
+    this.name = 'PlatformHttpError';
+  }
 }
 
 type BindRedemptionData = { providerId: string; nodeId?: string; providerNodeSecret: string; platformWsUrl: string };

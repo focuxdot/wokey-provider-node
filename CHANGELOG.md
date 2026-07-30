@@ -4,6 +4,20 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.50]
+
+### Fixed
+- Preserve structured OAuth and Platform failures instead of collapsing known
+  errors into `internal_error`, including upstream status, retryability, and a
+  request ID for unexpected failures.
+- Classify authorization DNS, connection timeout, TLS, rate-limit, region,
+  invalid-response, and service-availability failures with stable error codes.
+- Show actionable English and Chinese console guidance for node binding,
+  authorization, Platform connectivity, credential identity, and local auth
+  file failures.
+- Do not treat a structured Codex 403 such as
+  `unsupported_country_region_territory` as a still-pending device flow.
+
 ## [0.1.49]
 
 ### Fixed

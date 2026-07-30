@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { subscriptionPlanDisplayName } from '../shared/subscription-plan.js';
 import type { ProviderOAuthConfig } from './config.js';
+import { ProviderNodeError } from './errors.js';
 
 interface CodexAuthJson {
   auth_mode?: string;
@@ -39,10 +40,33 @@ export function importCodexAuthJson(path?: string): ProviderOAuthConfig {
 function loadCodexAuthJson(path?: string): { oauth: ProviderOAuthConfig; subscriptionType?: string } {
   const resolvedPath = resolveCodexAuthJsonPath(path);
   if (!existsSync(resolvedPath)) {
-    throw new Error(`codex_auth_json_not_found:${resolvedPath}`);
+    throw new ProviderNodeError(
+      'codex_auth_json_not_found',
+      'Codex auth.json was not found.',
+      { details: { path: resolvedPath } },
+    );
   }
 
-  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf8')) as CodexAuthJson;
+  let text: string;
+  try {
+    text = readFileSync(resolvedPath, 'utf8');
+  } catch (_error) {
+    throw new ProviderNodeError(
+      'codex_auth_json_unreadable',
+      'Codex auth.json could not be read.',
+      { details: { path: resolvedPath } },
+    );
+  }
+  let parsed: CodexAuthJson;
+  try {
+    parsed = JSON.parse(text) as CodexAuthJson;
+  } catch (_error) {
+    throw new ProviderNodeError(
+      'codex_auth_json_invalid',
+      'Codex auth.json is not valid JSON.',
+      { details: { path: resolvedPath } },
+    );
+  }
   const tokens = parsed.tokens;
   if (!tokens?.access_token || !tokens.refresh_token) {
     throw new Error('codex_auth_json_missing_tokens');

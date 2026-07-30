@@ -8,6 +8,7 @@ import type { ProviderNodeConfig } from '../src/provider-node/config.js';
 const HOST = '127.0.0.1';
 let app: FastifyInstance;
 let mergeConfigPatch: (current: ProviderNodeConfig, patch: Partial<ProviderNodeConfig>) => ProviderNodeConfig;
+let parseJsonResponse: <T>(response: Response) => Promise<T>;
 let dir: string;
 
 beforeAll(async () => {
@@ -19,6 +20,7 @@ beforeAll(async () => {
   const mod = await import('../src/provider-node/server.js');
   app = mod.app;
   mergeConfigPatch = mod.mergeConfigPatch;
+  parseJsonResponse = mod.parseJsonResponse;
   await app.ready();
 });
 
@@ -92,10 +94,21 @@ describe('console routes', () => {
     const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
 
     expect(script).toContain('function clearLaunchBindingParams()');
-    expect(script).toContain("error?.body?.error?.code === 'invalid_binding_code'");
+    expect(script).toContain("apiErrorCode(error) === 'invalid_binding_code'");
     expect(script).toContain('if (!statusState) return;');
     expect(script).toContain('if (statusState.binding?.isBound) {');
     expect(script).toContain('if (auto && isInvalidBindingCodeError(error)) clearLaunchBindingParams();');
+  });
+
+  it('maps structured error codes to actionable bilingual console messages', () => {
+    const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
+
+    expect(script).toContain("unsupported_country_region_territory: 'oauthUnsupportedRegion'");
+    expect(script).toContain("oauth_connect_timeout: 'oauthConnectTimeout'");
+    expect(script).toContain("platform_network_error: 'platformNetworkError'");
+    expect(script).toContain("provider_node_internal_error: 'providerNodeUnexpectedError'");
+    expect(script).toContain("t('errorIdLabel')");
+    expect(script).toContain('requestId');
   });
 });
 
@@ -198,6 +211,41 @@ describe('error envelope', () => {
   it('returns 404 as JSON, not an HTML error page', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/does-not-exist', headers: { host: HOST } });
     expect(res.statusCode).toBe(404);
+  });
+
+  it('preserves a structured Platform error instead of collapsing it to internal_error', async () => {
+    const response = new Response(JSON.stringify({
+      error: {
+        code: 'official_exit_node_offline',
+        message: 'Provider node is not online',
+        type: 'invalid_request_error',
+      },
+    }), {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    });
+
+    await expect(parseJsonResponse(response)).rejects.toMatchObject({
+      name: 'PlatformHttpError',
+      statusCode: 503,
+      errorCode: 'official_exit_node_offline',
+      message: 'Provider node is not online',
+    });
+  });
+
+  it('classifies a malformed Platform response instead of collapsing it to internal_error', async () => {
+    const response = new Response('<html>bad gateway</html>', {
+      status: 502,
+      headers: { 'content-type': 'text/html' },
+    });
+
+    await expect(parseJsonResponse(response)).rejects.toMatchObject({
+      name: 'ProviderNodeError',
+      errorCode: 'platform_invalid_response',
+      statusCode: 502,
+      upstreamStatus: 502,
+      retryable: true,
+    });
   });
 });
 

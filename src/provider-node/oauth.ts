@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { ProviderOAuthConfig } from './config.js';
+import { networkProviderNodeError, ProviderNodeError } from './errors.js';
 
 // Vendor OAuth client parameters. These mirror the official first-party CLI
 // clients (public OAuth clients — no client secret). The `userAgent`/`originator`
@@ -120,7 +121,7 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
 }
 
 function isCodexDevicePollingPending(status: number, body: Record<string, unknown> | undefined, text: string): boolean {
-  if (status === 403 || status === 404) return true;
+  if ((status === 403 || status === 404) && !text.trim()) return true;
   if (status === 400 && !text.trim()) return true;
   if (![400, 401, 409, 429].includes(status)) return false;
 
@@ -143,7 +144,7 @@ async function parseCodexDevicePollResponse(response: Response): Promise<CodexDe
 
   if (!response.ok) {
     if (isCodexDevicePollingPending(response.status, body, text)) return null;
-    throw new Error(`oauth_${response.status}:${text.slice(0, 300)}`);
+    throw oauthResponseError(response, text);
   }
 
   const authorizationCode = stringField(body, 'authorization_code');
@@ -199,7 +200,7 @@ export async function exchangeCodexCode(input: {
 
 export async function requestCodexDeviceCode(issuer: string = CODEX_OAUTH.issuer): Promise<CodexDeviceCode> {
   const normalizedIssuer = issuer.replace(/\/+$/, '');
-  const response = await fetch(`${normalizedIssuer}/api/accounts/deviceauth/usercode`, {
+  const response = await fetchOAuth(`${normalizedIssuer}/api/accounts/deviceauth/usercode`, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -227,7 +228,7 @@ export async function pollCodexDeviceCode(input: {
   issuer?: string;
 }): Promise<{ status: 'pending' } | { status: 'succeeded'; token: OAuthTokenResponse }> {
   const issuer = (input.issuer || CODEX_OAUTH.issuer).replace(/\/+$/, '');
-  const response = await fetch(`${issuer}/api/accounts/deviceauth/token`, {
+  const response = await fetchOAuth(`${issuer}/api/accounts/deviceauth/token`, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -252,7 +253,7 @@ export async function pollCodexDeviceCode(input: {
 }
 
 export async function requestXaiDeviceCode(): Promise<XaiDeviceCode> {
-  const response = await fetch(XAI_OAUTH.deviceCodeUrl, {
+  const response = await fetchOAuth(XAI_OAUTH.deviceCodeUrl, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -280,7 +281,7 @@ export async function requestXaiDeviceCode(): Promise<XaiDeviceCode> {
 export async function pollXaiDeviceCode(input: {
   deviceCode: string;
 }): Promise<{ status: 'pending' } | { status: 'succeeded'; token: OAuthTokenResponse }> {
-  const response = await fetch(XAI_OAUTH.tokenUrl, {
+  const response = await fetchOAuth(XAI_OAUTH.tokenUrl, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -294,12 +295,12 @@ export async function pollXaiDeviceCode(input: {
     }).toString(),
   });
   const text = await response.text();
-  if (response.ok) return { status: 'succeeded', token: JSON.parse(text) as OAuthTokenResponse };
+  if (response.ok) return { status: 'succeeded', token: parseSuccessfulOAuthJson<OAuthTokenResponse>(text) };
   const body = parseJsonRecord(text);
   const error = stringField(body, 'error');
   // RFC 8628:未授权/限速 → 继续轮询;拒绝/过期 → 硬错(上层映射为设备码失效)。
   if (error === 'authorization_pending' || error === 'slow_down') return { status: 'pending' };
-  throw new Error(`oauth_${response.status}:${text.slice(0, 300)}`);
+  throw oauthResponseError(response, text);
 }
 
 export function createAnthropicOAuthStart(scope: string = ANTHROPIC_OAUTH.scopeOAuth): OAuthStart {
@@ -410,7 +411,7 @@ function createCodeChallenge(codeVerifier: string): string {
 }
 
 async function postForm(url: string, params: URLSearchParams, userAgent: string): Promise<OAuthTokenResponse> {
-  const response = await fetch(url, {
+  const response = await fetchOAuth(url, {
     method: 'POST',
     headers: {
       accept: 'application/json',
@@ -423,7 +424,7 @@ async function postForm(url: string, params: URLSearchParams, userAgent: string)
 }
 
 async function postJson(url: string, body: unknown, userAgent: string): Promise<OAuthTokenResponse> {
-  const response = await fetch(url, {
+  const response = await fetchOAuth(url, {
     method: 'POST',
     headers: {
       accept: 'application/json, text/plain, */*',
@@ -438,11 +439,82 @@ async function postJson(url: string, body: unknown, userAgent: string): Promise<
 async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   if (!response.ok) {
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('text/html') || /^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) {
-      throw new Error(`oauth_${response.status}:anthropic_browser_session_challenge`);
-    }
-    throw new Error(`oauth_${response.status}:${text.slice(0, 300)}`);
+    throw oauthResponseError(response, text);
   }
-  return JSON.parse(text) as T;
+  return parseSuccessfulOAuthJson<T>(text);
+}
+
+async function fetchOAuth(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    throw networkProviderNodeError('oauth', error);
+  }
+}
+
+function parseSuccessfulOAuthJson<T>(text: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch (_error) {
+    throw new ProviderNodeError(
+      'oauth_invalid_response',
+      'The authorization service returned an invalid response.',
+      { statusCode: 502, retryable: true },
+    );
+  }
+}
+
+function oauthResponseError(response: Response, text: string): ProviderNodeError {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/html') || /^\s*<!doctype html/i.test(text) || /^\s*<html/i.test(text)) {
+    return new ProviderNodeError(
+      'oauth_browser_challenge',
+      'The authorization service returned a browser security challenge.',
+      { statusCode: 502, retryable: true, upstreamStatus: response.status },
+    );
+  }
+
+  const body = parseJsonRecord(text);
+  const nestedError = body?.error && typeof body.error === 'object' && !Array.isArray(body.error)
+    ? body.error as Record<string, unknown>
+    : undefined;
+  const upstreamCode = safeErrorCode(
+    stringField(nestedError, 'code')
+      || stringField(body, 'error')
+      || stringField(body, 'code'),
+  );
+  const upstreamMessage = stringField(nestedError, 'message')
+    || stringField(body, 'error_description')
+    || stringField(body, 'message');
+  const errorCode = oauthErrorCode(response.status, upstreamCode);
+  const publicMessage = upstreamMessage || oauthFallbackMessage(errorCode);
+
+  return new ProviderNodeError(errorCode, publicMessage, {
+    statusCode: response.status >= 500 ? 502 : response.status,
+    retryable: response.status === 429 || response.status >= 500,
+    upstreamStatus: response.status,
+    details: upstreamCode && upstreamCode !== errorCode ? { upstreamCode } : undefined,
+  });
+}
+
+function safeErrorCode(value: string): string | undefined {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
+  return normalized && normalized.length <= 96 ? normalized : undefined;
+}
+
+function oauthErrorCode(status: number, upstreamCode?: string): string {
+  if (upstreamCode) return upstreamCode;
+  if (status === 401) return 'oauth_authorization_invalid';
+  if (status === 403) return 'oauth_request_forbidden';
+  if (status === 429) return 'oauth_rate_limited';
+  if (status >= 500) return 'oauth_upstream_unavailable';
+  return 'oauth_request_rejected';
+}
+
+function oauthFallbackMessage(errorCode: string): string {
+  if (errorCode === 'oauth_authorization_invalid') return 'The authorization request is invalid or expired.';
+  if (errorCode === 'oauth_request_forbidden') return 'The authorization service rejected this request.';
+  if (errorCode === 'oauth_rate_limited') return 'The authorization service is rate limiting this node.';
+  if (errorCode === 'oauth_upstream_unavailable') return 'The authorization service is temporarily unavailable.';
+  return 'The authorization service rejected this request.';
 }

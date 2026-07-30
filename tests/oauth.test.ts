@@ -53,6 +53,54 @@ describe('provider OAuth helpers', () => {
     expect(deviceCode.interval).toBe(2);
   });
 
+  it('preserves the OpenAI unsupported-region error for the console', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        code: 'unsupported_country_region_territory',
+        message: 'Country, region, or territory not supported',
+        type: 'request_forbidden',
+      },
+    }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    await expect(requestCodexDeviceCode()).rejects.toMatchObject({
+      name: 'ProviderNodeError',
+      errorCode: 'unsupported_country_region_territory',
+      statusCode: 403,
+      upstreamStatus: 403,
+      retryable: false,
+      message: 'Country, region, or territory not supported',
+    });
+  });
+
+  it('classifies authorization connection timeouts without returning internal_error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const error = new TypeError('fetch failed') as TypeError & { cause?: unknown };
+      error.cause = { code: 'UND_ERR_CONNECT_TIMEOUT' };
+      throw error;
+    }));
+
+    await expect(requestCodexDeviceCode()).rejects.toMatchObject({
+      name: 'ProviderNodeError',
+      errorCode: 'oauth_connect_timeout',
+      statusCode: 504,
+      retryable: true,
+    });
+  });
+
+  it('classifies malformed successful authorization responses', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('not-json', { status: 200 })));
+
+    await expect(requestCodexDeviceCode()).rejects.toMatchObject({
+      name: 'ProviderNodeError',
+      errorCode: 'oauth_invalid_response',
+      statusCode: 502,
+      retryable: true,
+    });
+  });
+
   it('returns pending for Codex device code polling while the user has not approved', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 403 })));
 
@@ -72,6 +120,26 @@ describe('provider OAuth helpers', () => {
       deviceAuthId: 'device_auth_test',
       userCode: 'ABCD-EFGH',
     })).resolves.toEqual({ status: 'pending' });
+  });
+
+  it('does not misclassify a Codex unsupported-region 403 as authorization pending', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: {
+        code: 'unsupported_country_region_territory',
+        message: 'Country, region, or territory not supported',
+      },
+    }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    await expect(pollCodexDeviceCode({
+      deviceAuthId: 'device_auth_test',
+      userCode: 'ABCD-EFGH',
+    })).rejects.toMatchObject({
+      errorCode: 'unsupported_country_region_territory',
+      statusCode: 403,
+    });
   });
 
   it('returns pending when Codex device polling has no authorization code yet', async () => {
