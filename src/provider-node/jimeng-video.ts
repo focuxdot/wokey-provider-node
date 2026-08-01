@@ -114,7 +114,10 @@ export interface JimengVideoHandlerOptions {
     platform: SupportedDreaminaPlatform;
     homeDir: string;
     env: NodeJS.ProcessEnv;
+    isolated?: boolean;
+    nativeHomeDir?: string;
   }) => JimengCredentialStore;
+  nativeHomeDir?: string;
   runCommand?: (
     executable: string,
     args: string[],
@@ -419,7 +422,13 @@ async function withEphemeralSession<T>(
       await mkdir(dirname(authFilePath), { recursive: true, mode: 0o700 });
       await writeFile(authFilePath, credential.bytes, { flag: 'wx', mode: 0o600 });
     } else {
-      credentialStore = (options.createCredentialStore ?? createJimengCredentialStore)({ platform, homeDir, env });
+      credentialStore = (options.createCredentialStore ?? createJimengCredentialStore)({
+        platform,
+        homeDir,
+        env,
+        isolated: platform === 'darwin',
+        nativeHomeDir: options.nativeHomeDir,
+      });
       credentialSnapshot = await credentialStore.snapshot();
       if (!canReuseNativeCredential(credentialSnapshot, credential.bytes)) {
         await credentialStore.restore(credential.bytes);

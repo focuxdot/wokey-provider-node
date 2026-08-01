@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { lstat, mkdir, open, symlink } from 'node:fs/promises';
+import { userInfo } from 'node:os';
 import { join } from 'node:path';
 
 const AUTH_FILE_RELATIVE_PATH = join('.local', 'share', 'dreamina', 'byted_cli_user_token.json');
@@ -24,6 +25,8 @@ export interface JimengCredentialStoreOptions {
   platform: SupportedDreaminaPlatform;
   homeDir: string;
   env: NodeJS.ProcessEnv;
+  isolated?: boolean;
+  nativeHomeDir?: string;
   runNativeCommand?: NativeCommandRunner;
 }
 
@@ -42,7 +45,13 @@ export type NativeCommandRunner = (
 export function createJimengCredentialStore(options: JimengCredentialStoreOptions): JimengCredentialStore {
   if (options.platform === 'linux') return new LinuxCredentialStore(options.homeDir);
   if (options.platform === 'darwin') {
-    return new MacOsCredentialStore(options.env, options.runNativeCommand ?? runNativeCommand);
+    return new MacOsCredentialStore(
+      options.homeDir,
+      options.env,
+      options.isolated === true,
+      options.nativeHomeDir ?? userInfo().homedir,
+      options.runNativeCommand ?? runNativeCommand,
+    );
   }
   return new WindowsCredentialStore(options.env, options.runNativeCommand ?? runNativeCommand);
 }
@@ -87,12 +96,22 @@ class LinuxCredentialStore implements JimengCredentialStore {
 }
 
 class MacOsCredentialStore implements JimengCredentialStore {
+  private preparation?: Promise<void>;
+
   constructor(
+    private readonly homeDir: string,
     private readonly env: NodeJS.ProcessEnv,
+    private readonly isolated: boolean,
+    private readonly nativeHomeDir: string,
     private readonly run: NativeCommandRunner,
-  ) {}
+  ) {
+    if (isolated && env.HOME !== homeDir) {
+      throw new Error('jimeng_credential_store_isolation_invalid');
+    }
+  }
 
   async snapshot(): Promise<Buffer | undefined> {
+    await this.prepareIsolatedKeychainView();
     const result = await this.run(
       '/usr/bin/security',
       ['find-generic-password', '-s', KEYRING_SERVICE, '-a', KEYRING_ACCOUNT, '-w'],
@@ -110,6 +129,7 @@ class MacOsCredentialStore implements JimengCredentialStore {
   }
 
   async restore(snapshot: Buffer | undefined): Promise<void> {
+    await this.prepareIsolatedKeychainView();
     if (!snapshot) {
       const result = await this.run(
         '/usr/bin/security',
@@ -141,6 +161,33 @@ class MacOsCredentialStore implements JimengCredentialStore {
     assertNativeSuccess(result);
     const current = await this.snapshot();
     if (!current?.equals(snapshot)) throw new Error('jimeng_credential_store_failed');
+  }
+
+  private prepareIsolatedKeychainView(): Promise<void> {
+    if (!this.isolated) return Promise.resolve();
+    this.preparation ??= this.createIsolatedKeychainView();
+    return this.preparation;
+  }
+
+  private async createIsolatedKeychainView(): Promise<void> {
+    const nativeKeychain = join(
+      this.nativeHomeDir,
+      'Library',
+      'Keychains',
+      'login.keychain-db',
+    );
+    const metadata = await lstat(nativeKeychain);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error('jimeng_credential_store_login_keychain_invalid');
+    }
+
+    const isolatedKeychainsDir = join(this.homeDir, 'Library', 'Keychains');
+    await mkdir(isolatedKeychainsDir, { recursive: true, mode: 0o700 });
+    await symlink(
+      nativeKeychain,
+      join(isolatedKeychainsDir, 'login.keychain-db'),
+      'file',
+    );
   }
 }
 

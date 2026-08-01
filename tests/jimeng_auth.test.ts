@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readlink, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -620,6 +620,59 @@ describe('Jimeng credential stores', () => {
     expect(writes.every((call) => call.args.length === 1)).toBe(true);
     expect(writes.every((call) => !call.input?.includes(injected))).toBe(true);
     expect(writes.every((call) => call.input?.includes('go-keyring-base64:'))).toBe(true);
+  });
+
+  it('exposes the native macOS login keychain inside an isolated video HOME without changing Keychain preferences', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-isolated-keychain-test-'));
+    tempDirs.push(parent);
+    const nativeHomeDir = join(parent, 'native-home');
+    const isolatedHomeDir = join(parent, 'isolated-home');
+    const nativeKeychain = join(nativeHomeDir, 'Library', 'Keychains', 'login.keychain-db');
+    await mkdir(dirname(nativeKeychain), { recursive: true });
+    await writeFile(nativeKeychain, 'test-keychain');
+
+    const calls: string[][] = [];
+    const store = createJimengCredentialStore({
+      platform: 'darwin',
+      homeDir: isolatedHomeDir,
+      env: { HOME: isolatedHomeDir },
+      isolated: true,
+      nativeHomeDir,
+      runNativeCommand: async (_executable, args) => {
+        calls.push(args);
+        return { code: 44, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      },
+    });
+
+    await expect(store.snapshot()).resolves.toBeUndefined();
+    await expect(readlink(join(
+      isolatedHomeDir,
+      'Library',
+      'Keychains',
+      'login.keychain-db',
+    ))).resolves.toBe(nativeKeychain);
+    expect(calls).toEqual([[
+      'find-generic-password',
+      '-s',
+      'dreamina',
+      '-a',
+      'byted_cli_user_token',
+      '-w',
+    ]]);
+    expect(calls.flat()).not.toContain('default-keychain');
+    expect(calls.flat()).not.toContain('list-keychains');
+    await rm(isolatedHomeDir, { recursive: true, force: true });
+    await expect(readFile(nativeKeychain, 'utf8')).resolves.toBe('test-keychain');
+  });
+
+  it('rejects an isolated macOS credential store whose command HOME is not the isolated HOME', () => {
+    expect(() => createJimengCredentialStore({
+      platform: 'darwin',
+      homeDir: '/tmp/isolated-home',
+      env: { HOME: '/Users/provider' },
+      isolated: true,
+      nativeHomeDir: '/Users/provider',
+    })).toThrow('jimeng_credential_store_isolation_invalid');
   });
 
   it('fails closed when a macOS Keychain write does not persist', async () => {

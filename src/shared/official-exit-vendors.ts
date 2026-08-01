@@ -8,7 +8,8 @@ export type OfficialExitVendorId =
   | 'xiaomi'
   | 'deepseek'
   | 'google'
-  | 'xai';
+  | 'xai'
+  | 'jimeng';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -66,6 +67,11 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     id: 'xai',
     displayName: 'xAI',
     allowedHosts: ['*.x.ai', '*.grok.com'],
+  },
+  {
+    id: 'jimeng',
+    displayName: 'Jimeng / Dreamina',
+    allowedHosts: ['*.byted.org', '*.jianying.com'],
   },
 ]);
 

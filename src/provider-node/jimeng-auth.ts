@@ -71,6 +71,8 @@ export interface JimengAuthorizationHandlerOptions {
     platform: SupportedDreaminaPlatform;
     homeDir: string;
     env: NodeJS.ProcessEnv;
+    isolated?: boolean;
+    nativeHomeDir?: string;
   }) => JimengCredentialStore;
   runCommand?: (
     executable: string,
