@@ -4,6 +4,19 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.54]
+
+### Added
+- Capture the Jimeng account ID, account name, VIP level, credit balance, and
+  CLI permission during authorization so the Platform can identify shared
+  accounts without exposing credential secrets.
+
+### Fixed
+- Preserve Jimeng account metadata when the CLI refreshes credentials during
+  video generation.
+- Reuse and safely restore native Dreamina credentials across macOS, Windows,
+  and Linux authorization flows, including malformed-state recovery.
+
 ## [0.1.50]
 
 ### Fixed

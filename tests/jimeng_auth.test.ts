@@ -176,14 +176,153 @@ describe('JimengAuthorizationHandler', () => {
       });
     });
     expect(event.type).toBe('provider.jimeng_auth_completed');
+    expect(order).toEqual(['snapshot', 'capture', 'user_credit', 'capture', 'restore']);
+  });
+
+  it('removes a malformed native credential and falls back to Device Flow', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-corrupt-native-test-'));
+    tempDirs.push(parent);
+    const order: string[] = [];
+    let captures = 0;
+    const auth = Buffer.from(
+      JSON.stringify({
+        access_token: 'access-secret',
+        refresh_token: 'refresh-secret',
+        token_expires_at: 1_900_000_000,
+        device_key: { device_id: 'device-secret' },
+        user_info: { user_id: 'jimeng-user-1' },
+      }),
+    );
+    const handler = new JimengAuthorizationHandler({
+      cli: { path: '/opt/dreamina', version: '1.4.14' },
+      platform: 'darwin',
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      tempParentDir: parent,
+      createCredentialStore: () => ({
+        snapshot: async () => {
+          order.push('snapshot');
+          return Buffer.from('corrupt-native-value');
+        },
+        capture: async () => {
+          captures += 1;
+          order.push(`capture-${captures}`);
+          return captures === 1 ? Buffer.from('not-json') : auth;
+        },
+        restore: async (snapshot) => {
+          order.push(snapshot ? 'restore' : 'delete');
+        },
+      }),
+      runCommand: async (_executable, args) => {
+        order.push(args.join(' '));
+        if (args.includes('--headless')) {
+          return {
+            stdout: [
+              'verification_uri: https://jimeng.jianying.com/device',
+              'user_code: ABCD-EFGH',
+              'device_code: node-only-secret',
+            ].join('\n'),
+            stderr: '',
+          };
+        }
+        return { stdout: 'ok\n', stderr: '' };
+      },
+    });
+
+    const event = await new Promise<JimengAuthEvent>((resolve) => {
+      handler.start(startMessage(), (value) => {
+        if (value.type !== 'provider.jimeng_auth_started') resolve(value);
+      });
+    });
+
+    expect(event.type).toBe('provider.jimeng_auth_completed');
     expect(order).toEqual([
       'snapshot',
+      'capture-1',
+      'delete',
       'login --headless',
       'login checklogin --device_code=node-only-secret --poll=60',
+      'capture-2',
       'user_credit',
-      'capture',
-      'restore',
+      'capture-3',
+      'delete',
     ]);
+  });
+
+  it.each([
+    'darwin',
+    'linux',
+    'win32',
+  ] as const)('uses the OS-appropriate credential environment on %s', async (platform) => {
+    const parent = await mkdtemp(join(tmpdir(), `wokey-jimeng-${platform}-environment-test-`));
+    tempDirs.push(parent);
+    const nativeHomeDir = join(parent, 'native-home');
+    await mkdir(nativeHomeDir, { mode: 0o700 });
+    const observedEnvironments: NodeJS.ProcessEnv[] = [];
+    const auth = Buffer.from(
+      JSON.stringify({
+        access_token: 'access-secret',
+        refresh_token: 'refresh-secret',
+        token_expires_at: 1_900_000_000,
+        device_key: { device_id: 'device-secret' },
+        user_info: { user_id: 'jimeng-user-1' },
+      }),
+    );
+    const handler = new JimengAuthorizationHandler({
+      cli: { path: '/opt/dreamina', version: '1.4.14' },
+      platform,
+      nativeHomeDir,
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      tempParentDir: parent,
+      createCredentialStore: (options) => {
+        observedEnvironments.push({ ...options.env });
+        return {
+          snapshot: async () => undefined,
+          capture: async () => auth,
+          restore: async () => {},
+        };
+      },
+      runCommand: async (_executable, args, options) => {
+        observedEnvironments.push({ ...options.env });
+        if (args.includes('--headless')) {
+          return {
+            stdout: [
+              'verification_uri: https://jimeng.jianying.com/device',
+              'user_code: ABCD-EFGH',
+              'device_code: node-only-secret',
+            ].join('\n'),
+            stderr: '',
+          };
+        }
+        return { stdout: 'ok\n', stderr: '' };
+      },
+    });
+
+    const event = await new Promise<JimengAuthEvent>((resolve) => {
+      handler.start(startMessage(), (value) => {
+        if (value.type !== 'provider.jimeng_auth_started') resolve(value);
+      });
+    });
+
+    expect(event.type).toBe('provider.jimeng_auth_completed');
+    expect(observedEnvironments).toHaveLength(4);
+    for (const env of observedEnvironments) {
+      if (platform === 'darwin') expect(env.HOME).toBe(nativeHomeDir);
+      else {
+        expect(env.HOME).not.toBe(nativeHomeDir);
+        expect(env.HOME).toMatch(new RegExp(`^${parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/wokey-jimeng-auth-`));
+      }
+      expect(env.XDG_CONFIG_HOME).not.toBe(nativeHomeDir);
+      expect(env.XDG_DATA_HOME).not.toBe(nativeHomeDir);
+      expect(env.XDG_CACHE_HOME).not.toBe(nativeHomeDir);
+      expect(env.XDG_RUNTIME_DIR).not.toBe(nativeHomeDir);
+      if (platform === 'win32') {
+        expect(env.USERPROFILE).toBe(env.HOME);
+        expect(env.APPDATA).toMatch(/\/config\/Roaming$/);
+        expect(env.LOCALAPPDATA).toMatch(/\/data\/Local$/);
+        expect(env.TEMP).toBe(env.XDG_CACHE_HOME);
+        expect(env.TMP).toBe(env.XDG_CACHE_HOME);
+      }
+    }
   });
 
   it('runs headless Device Flow in an isolated HOME and emits only the final bundle', async () => {
@@ -227,7 +366,16 @@ describe('JimengAuthorizationHandler', () => {
           return { stdout: 'login success\n', stderr: '' };
         }
         expect(args).toEqual(['user_credit']);
-        return { stdout: '{"credits":100}\n', stderr: '' };
+        return {
+          stdout: [
+            'user_id: jimeng-user-1',
+            'user_name: Provider Account',
+            'vip_level: VIP',
+            'total_credit: 100',
+            'has_cli_permission: true',
+          ].join('\n'),
+          stderr: '',
+        };
       },
     });
 
@@ -255,6 +403,13 @@ describe('JimengAuthorizationHandler', () => {
       schemaVersion: 2,
       storageFormat: 'dreamina_auth_json_v1',
       sourceCliVersion: '1.4.14',
+      accountProfile: {
+        accountId: 'jimeng-user-1',
+        accountName: 'Provider Account',
+        vipLevel: 'VIP',
+        totalCredit: 100,
+        hasCliPermission: true,
+      },
     });
     const auth = JSON.parse(Buffer.from(String(bundle.authFileBase64), 'base64').toString('utf8'));
     expect(auth.user_info.user_id).toBe('jimeng-user-1');
@@ -432,8 +587,7 @@ describe('Jimeng credential stores', () => {
     expect(decodeGoKeyringSecret(Buffer.from('hello'))).toEqual(Buffer.from('hello'));
   });
 
-  it('captures a macOS Keychain credential and restores the previous value without putting secrets in argv', async () => {
-    const previous = Buffer.from('go-keyring-base64:cHJldmlvdXM=');
+  it('captures and preserves an unchanged macOS Keychain credential without putting secrets in argv', async () => {
     const current = Buffer.from('go-keyring-base64:Y3VycmVudA==');
     const calls: Array<{ args: string[]; input?: Buffer }> = [];
     let reads = 0;
@@ -445,7 +599,7 @@ describe('Jimeng credential stores', () => {
       calls.push({ args, input: options.input });
       if (args[0] === 'find-generic-password') {
         reads += 1;
-        return { code: 0, stdout: Buffer.concat([reads === 1 ? previous : current, Buffer.from('\n')]), stderr: Buffer.alloc(0) };
+        return { code: 0, stdout: Buffer.concat([current, Buffer.from('\n')]), stderr: Buffer.alloc(0) };
       }
       return { code: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     };
@@ -454,18 +608,40 @@ describe('Jimeng credential stores', () => {
     await expect(store.capture()).resolves.toEqual(Buffer.from('current'));
     await store.restore(snapshot);
 
-    const restore = calls.at(-1);
-    expect(restore?.args).toEqual([
-      'add-generic-password',
-      '-U',
-      '-s',
-      'dreamina',
-      '-a',
-      'byted_cli_user_token',
-      '-w',
-    ]);
-    expect(restore?.args.join(' ')).not.toContain(previous.toString('utf8'));
-    expect(restore?.input).toEqual(Buffer.concat([previous, Buffer.from('\n')]));
+    expect(reads).toBe(3);
+    expect(calls.every((call) => call.args[0] === 'find-generic-password')).toBe(true);
+    expect(calls.every((call) => call.input === undefined)).toBe(true);
+  });
+
+  it('refuses to rewrite a changed macOS Keychain credential through argv', async () => {
+    const previous = Buffer.from('go-keyring-base64:cHJldmlvdXM=');
+    const current = Buffer.from('go-keyring-base64:Y3VycmVudA==');
+    let reads = 0;
+    const calls: Array<{ args: string[]; input?: Buffer }> = [];
+    const run = async (
+      _executable: string,
+      args: string[],
+      options: { input?: Buffer },
+    ): Promise<NativeCommandResult> => {
+      calls.push({ args, input: options.input });
+      reads += 1;
+      return {
+        code: 0,
+        stdout: Buffer.concat([reads === 1 ? previous : current, Buffer.from('\n')]),
+        stderr: Buffer.alloc(0),
+      };
+    };
+    const store = createJimengCredentialStore({
+      platform: 'darwin',
+      homeDir: '/unused',
+      env: {},
+      runNativeCommand: run,
+    });
+
+    const snapshot = await store.snapshot();
+    await expect(store.restore(snapshot)).rejects.toThrow('jimeng_credential_store_failed');
+    expect(calls.every((call) => call.args[0] === 'find-generic-password')).toBe(true);
+    expect(calls.every((call) => call.input === undefined)).toBe(true);
   });
 
   it('uses Windows Credential Manager through encoded code and sends credential bytes over stdin', async () => {

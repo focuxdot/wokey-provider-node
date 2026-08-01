@@ -117,12 +117,8 @@ class MacOsCredentialStore implements JimengCredentialStore {
       if (result.code !== 0 && result.code !== 44) assertNativeSuccess(result);
       return;
     }
-    const result = await this.run(
-      '/usr/bin/security',
-      ['add-generic-password', '-U', '-s', KEYRING_SERVICE, '-a', KEYRING_ACCOUNT, '-w'],
-      { env: this.env, input: Buffer.concat([snapshot, Buffer.from('\n')]), timeoutMs: NATIVE_COMMAND_TIMEOUT_MS },
-    );
-    assertNativeSuccess(result);
+    const current = await this.snapshot();
+    if (!current?.equals(snapshot)) throw new Error('jimeng_credential_store_failed');
   }
 }
 
@@ -212,7 +208,14 @@ function runNativeCommand(
   options: { env: NodeJS.ProcessEnv; input?: Buffer; timeoutMs: number },
 ): Promise<NativeCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { env: options.env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(executable, args, {
+      env: options.env,
+      shell: false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      // Prevent macOS `security -w` from reopening an interactive /dev/tty;
+      // the secret and its confirmation must be consumed from the stdin pipe.
+      detached: process.platform === 'darwin',
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let outputBytes = 0;

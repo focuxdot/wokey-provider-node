@@ -37,6 +37,11 @@ function credentialBundle(accessToken = 'access-secret'): string {
     authFileSha256: createHash('sha256').update(bytes).digest('hex'),
     capturedAt: '2026-08-01T00:00:00.000Z',
     sourceCliVersion: '1.4.14',
+    accountProfile: {
+      accountId: 'user-1',
+      accountName: 'Provider Account',
+      vipLevel: 'VIP',
+    },
   });
 }
 
@@ -135,9 +140,17 @@ describe('Jimeng Provider Node video executor', () => {
       );
       if (event.type !== 'provider.jimeng_video_completed' || !event.encodedCredentialBundle)
         throw new Error('missing refreshed credential');
-      const refreshedBundle = JSON.parse(event.encodedCredentialBundle) as { authFileBase64: string };
+      const refreshedBundle = JSON.parse(event.encodedCredentialBundle) as {
+        authFileBase64: string;
+        accountProfile?: Record<string, unknown>;
+      };
       expect(JSON.parse(Buffer.from(refreshedBundle.authFileBase64, 'base64').toString())).toMatchObject({
         access_token: 'refreshed-access',
+      });
+      expect(refreshedBundle.accountProfile).toEqual({
+        accountId: 'user-1',
+        accountName: 'Provider Account',
+        vipLevel: 'VIP',
       });
       const receipt = await readFile(join(receipts, 'video-job-1.json'), 'utf8');
       expect(receipt).not.toContain('refreshed-access');

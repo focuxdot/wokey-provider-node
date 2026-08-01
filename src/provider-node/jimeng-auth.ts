@@ -46,6 +46,15 @@ interface CommandResult {
   stderr: string;
 }
 
+interface JimengAccountProfile {
+  accountId: string;
+  accountName?: string;
+  accountEmail?: string;
+  vipLevel?: string;
+  totalCredit?: number;
+  hasCliPermission?: boolean;
+}
+
 interface RunningFlow {
   cancelled: boolean;
   process?: ChildProcess;
@@ -55,6 +64,7 @@ export interface JimengAuthorizationHandlerOptions {
   cli: DreaminaCliDescriptor;
   getIdentity: () => { nodeId: string; providerId: string };
   platform?: NodeJS.Platform;
+  nativeHomeDir?: string;
   tempParentDir?: string;
   now?: () => number;
   createCredentialStore?: (options: {
@@ -150,16 +160,21 @@ export class JimengAuthorizationHandler {
       const dataDir = join(rootDir, 'data');
       const cacheDir = join(rootDir, 'cache');
       const runtimeDir = join(rootDir, 'runtime');
+      const platform = this.options.platform ?? process.platform;
+      if (!isSupportedDreaminaPlatform(platform)) throw new Error('jimeng_platform_unsupported');
+
+      // On macOS, go-keyring resolves the default native credential vault
+      // through the user's real HOME. Linux deliberately stores the credential
+      // in the isolated HOME, while Windows resolves its native vault directly.
+      const commandHomeDir = platform === 'darwin' ? (this.options.nativeHomeDir ?? homedir()) : homeDir;
       const env: NodeJS.ProcessEnv = {
         ...process.env,
-        HOME: homeDir,
+        HOME: commandHomeDir,
         XDG_CONFIG_HOME: configDir,
         XDG_DATA_HOME: dataDir,
         XDG_CACHE_HOME: cacheDir,
         XDG_RUNTIME_DIR: runtimeDir,
       };
-      const platform = this.options.platform ?? process.platform;
-      if (!isSupportedDreaminaPlatform(platform)) throw new Error('jimeng_platform_unsupported');
       if (platform === 'win32') {
         env.USERPROFILE = homeDir;
         env.APPDATA = join(configDir, 'Roaming');
@@ -182,70 +197,92 @@ export class JimengAuthorizationHandler {
       credentialSnapshot = await credentialStore.snapshot();
       credentialSnapshotTaken = true;
 
-      stage = 'device_authorization';
-      const startResult = await this.runCommand(
-        ['login', '--headless'],
-        env,
-        Math.min(LOGIN_START_TIMEOUT_MS, message.deadlineMs),
-        flow,
-      );
-      assertNotCancelled(flow);
-      const material = parseDeviceAuthorization(startResult.stdout);
-      const expiresAtMs = Math.min(
-        this.now() + message.deadlineMs,
-        material.expiresInSeconds ? this.now() + material.expiresInSeconds * 1_000 : Number.POSITIVE_INFINITY,
-      );
-      emit({
-        type: 'provider.jimeng_auth_started',
-        protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
-        requestId: message.requestId,
-        flowId: message.flowId,
-        nodeId: message.nodeId,
-        verificationUri: material.verificationUri,
-        verificationUriComplete: material.verificationUriComplete,
-        userCode: material.userCode,
-        expiresAt: new Date(expiresAtMs).toISOString(),
-      });
+      let encodedCredentialBundle: string | undefined;
+      if (credentialSnapshot) {
+        try {
+          encodedCredentialBundle = captureCredentialBundle(
+            await credentialStore.capture(),
+            this.options.cli.version,
+          );
+        } catch (error) {
+          if (!isInvalidCredentialBundleError(error)) throw error;
+          // A malformed native item cannot be restored safely. Remove it and
+          // fall through to a fresh Device Flow.
+          await credentialStore.restore(undefined);
+          credentialSnapshot = undefined;
+        }
+      }
 
-      stage = 'user_authorization';
-      const remainingMs = Math.max(1, expiresAtMs - this.now());
-      await this.runCommand(
-        [
-          'login',
-          'checklogin',
-          `--device_code=${material.deviceCode}`,
-          `--poll=${Math.max(1, Math.ceil(remainingMs / 1_000))}`,
-        ],
-        env,
-        remainingMs,
-        flow,
-      );
-      assertNotCancelled(flow);
+      if (!encodedCredentialBundle) {
+        stage = 'device_authorization';
+        const startResult = await this.runCommand(
+          ['login', '--headless'],
+          env,
+          Math.min(LOGIN_START_TIMEOUT_MS, message.deadlineMs),
+          flow,
+        );
+        assertNotCancelled(flow);
+        const material = parseDeviceAuthorization(startResult.stdout);
+        const expiresAtMs = Math.min(
+          this.now() + message.deadlineMs,
+          material.expiresInSeconds ? this.now() + material.expiresInSeconds * 1_000 : Number.POSITIVE_INFINITY,
+        );
+        emit({
+          type: 'provider.jimeng_auth_started',
+          protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
+          requestId: message.requestId,
+          flowId: message.flowId,
+          nodeId: message.nodeId,
+          verificationUri: material.verificationUri,
+          verificationUriComplete: material.verificationUriComplete,
+          userCode: material.userCode,
+          expiresAt: new Date(expiresAtMs).toISOString(),
+        });
+
+        stage = 'user_authorization';
+        const remainingMs = Math.max(1, expiresAtMs - this.now());
+        await this.runCommand(
+          [
+            'login',
+            'checklogin',
+            `--device_code=${material.deviceCode}`,
+            `--poll=${Math.max(1, Math.ceil(remainingMs / 1_000))}`,
+          ],
+          env,
+          remainingMs,
+          flow,
+        );
+        assertNotCancelled(flow);
+
+        stage = 'credential_capture';
+        encodedCredentialBundle = captureCredentialBundle(
+          await credentialStore.capture(),
+          this.options.cli.version,
+        );
+      }
 
       // Do one real, non-generating upstream call before accepting the
       // credential. A successful login poll only proves token issuance;
       // `user_credit` proves that the saved session can actually reach Jimeng.
       stage = 'credential_validation';
-      const validationRemainingMs = Math.max(1, expiresAtMs - this.now());
-      await this.runCommand(
+      const validationResult = await this.runCommand(
         ['user_credit'],
         env,
-        Math.min(CREDENTIAL_VALIDATION_TIMEOUT_MS, validationRemainingMs),
+        Math.min(CREDENTIAL_VALIDATION_TIMEOUT_MS, message.deadlineMs),
         flow,
       );
       assertNotCancelled(flow);
 
-      stage = 'credential_capture';
-      const credentialBytes = await credentialStore.capture();
-      const encodedCredentialBundle = captureCredentialBundle(credentialBytes, this.options.cli.version);
-      completedEvent = {
-        type: 'provider.jimeng_auth_completed',
-        protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
-        requestId: message.requestId,
-        flowId: message.flowId,
-        nodeId: message.nodeId,
-        encodedCredentialBundle,
-      };
+      // `user_credit` refreshes the CLI's cached user profile. Capture once
+      // more so the central encrypted bundle contains the latest account ID,
+      // nickname and VIP level for the Provider credential table.
+      const validatedCredentialBytes = await credentialStore.capture();
+      encodedCredentialBundle = captureCredentialBundle(
+        validatedCredentialBytes,
+        this.options.cli.version,
+        parseJimengAccountProfile(validationResult.stdout, validatedCredentialBytes),
+      );
+      completedEvent = completedEventFor(message, encodedCredentialBundle);
     } catch (error) {
       failed = failedEvent(message, stage, errorCode(error), retryableError(error));
     } finally {
@@ -375,7 +412,11 @@ export function parseCliVersion(output: string): string | undefined {
   return token?.[1];
 }
 
-function captureCredentialBundle(bytes: Buffer, cliVersion: string): string {
+function captureCredentialBundle(
+  bytes: Buffer,
+  cliVersion: string,
+  accountProfile?: JimengAccountProfile,
+): string {
   validateAuthFile(bytes);
   return JSON.stringify({
     schemaVersion: 2,
@@ -384,7 +425,86 @@ function captureCredentialBundle(bytes: Buffer, cliVersion: string): string {
     authFileSha256: createHash('sha256').update(bytes).digest('hex'),
     capturedAt: new Date().toISOString(),
     sourceCliVersion: cliVersion,
+    ...(accountProfile ? { accountProfile } : {}),
   });
+}
+
+export function parseJimengAccountProfile(output: string, authFileBytes: Buffer): JimengAccountProfile {
+  validateAuthFile(authFileBytes);
+  const auth = JSON.parse(authFileBytes.toString('utf8')) as Record<string, unknown>;
+  const userInfo = auth.user_info as Record<string, unknown>;
+  const outputFields = parseAccountProfileOutput(output);
+  const accountId = profileText(
+    outputFields.user_id ?? outputFields.account_id ?? userInfo.user_id,
+    256,
+  );
+  if (!accountId) throw new Error('jimeng_credential_identity_missing');
+  const authAccountId = profileText(userInfo.user_id, 256);
+  if (authAccountId && accountId !== authAccountId) throw new Error('jimeng_credential_identity_mismatch');
+  const totalCredit = profileNumber(outputFields.total_credit ?? outputFields.credits ?? userInfo.total_credit);
+  const hasCliPermission = profileBoolean(outputFields.has_cli_permission ?? userInfo.has_cli_permission);
+  return {
+    accountId,
+    ...(profileText(outputFields.user_name ?? outputFields.screen_name ?? userInfo.user_name ?? userInfo.screen_name, 256)
+      ? { accountName: profileText(outputFields.user_name ?? outputFields.screen_name ?? userInfo.user_name ?? userInfo.screen_name, 256) }
+      : {}),
+    ...(profileText(outputFields.email ?? outputFields.email_address ?? userInfo.email ?? userInfo.email_address, 320)
+      ? { accountEmail: profileText(outputFields.email ?? outputFields.email_address ?? userInfo.email ?? userInfo.email_address, 320) }
+      : {}),
+    ...(profileText(outputFields.vip_level ?? outputFields.membership_level ?? userInfo.vip_level, 128)
+      ? { vipLevel: profileText(outputFields.vip_level ?? outputFields.membership_level ?? userInfo.vip_level, 128) }
+      : {}),
+    ...(totalCredit !== undefined ? { totalCredit } : {}),
+    ...(hasCliPermission !== undefined ? { hasCliPermission } : {}),
+  };
+}
+
+function parseAccountProfileOutput(output: string): Record<string, unknown> {
+  const trimmed = output.trim();
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const value = parsed as Record<string, unknown>;
+        const nested = value.user_info;
+        return nested && typeof nested === 'object' && !Array.isArray(nested)
+          ? { ...value, ...(nested as Record<string, unknown>) }
+          : value;
+      }
+    } catch {
+      // The official CLI currently emits labeled lines; JSON is supported for
+      // compatibility with machine-readable builds.
+    }
+  }
+  const fields: Record<string, unknown> = {};
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^\s*([a-z][a-z0-9_]*)\s*:\s*(.*?)\s*$/i.exec(line);
+    if (match?.[1] && match[2] !== undefined) fields[match[1].toLowerCase()] = match[2];
+  }
+  return fields;
+}
+
+function profileText(value: unknown, maxLength: number): string | undefined {
+  const text = typeof value === 'string'
+    ? value.trim()
+    : typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+      ? String(value)
+      : '';
+  return text && text.length <= maxLength ? text : undefined;
+}
+
+function profileNumber(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function profileBoolean(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return undefined;
 }
 
 function validateAuthFile(bytes: Buffer): void {
@@ -412,6 +532,24 @@ function validateAuthFile(bytes: Buffer): void {
   ) {
     throw new Error('jimeng_credential_auth_file_field_missing');
   }
+}
+
+function isInvalidCredentialBundleError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith('jimeng_credential_auth_file_');
+}
+
+function completedEventFor(
+  message: Pick<PlatformJimengAuthStart, 'requestId' | 'flowId' | 'nodeId'>,
+  encodedCredentialBundle: string,
+): ProviderJimengAuthCompleted {
+  return {
+    type: 'provider.jimeng_auth_completed',
+    protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
+    requestId: message.requestId,
+    flowId: message.flowId,
+    nodeId: message.nodeId,
+    encodedCredentialBundle,
+  };
 }
 
 function parseDeviceAuthorization(stdout: string): {

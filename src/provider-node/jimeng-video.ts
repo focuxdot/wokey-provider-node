@@ -732,7 +732,7 @@ function sha256File(path: string): Promise<string> {
   });
 }
 
-function parseCredentialBundle(encoded: string): { encoded: string; bytes: Buffer } {
+function parseCredentialBundle(encoded: string): { encoded: string; bytes: Buffer; accountProfile?: Record<string, unknown> } {
   if (typeof encoded !== 'string' || Buffer.byteLength(encoded, 'utf8') > 128 * 1024)
     throw videoError('credential_injection', 'jimeng_credential_bundle_invalid', false, false);
   let parsed: unknown;
@@ -752,10 +752,11 @@ function parseCredentialBundle(encoded: string): { encoded: string; bytes: Buffe
   )
     throw videoError('credential_injection', 'jimeng_credential_bundle_invalid', false, false);
   const bytes = Buffer.from(value.authFileBase64, 'base64');
-  validateAuthBytes(bytes);
+  const auth = validateAuthBytes(bytes);
   if (bytes.toString('base64') !== value.authFileBase64 || sha256(bytes) !== value.authFileSha256)
     throw videoError('credential_injection', 'jimeng_credential_bundle_sha256_mismatch', false, false);
-  return { encoded: JSON.stringify(value), bytes };
+  const accountProfile = validatedAccountProfile(value.accountProfile, auth);
+  return { encoded: JSON.stringify(value), bytes, ...(accountProfile ? { accountProfile } : {}) };
 }
 
 function validateAuthBytes(bytes: Buffer): Record<string, unknown> {
@@ -785,7 +786,7 @@ function validateAuthBytes(bytes: Buffer): Record<string, unknown> {
 
 async function captureSessionCredential(
   session: { authFilePath: string; credentialStore?: JimengCredentialStore },
-  initial: { encoded: string; bytes: Buffer },
+  initial: { encoded: string; bytes: Buffer; accountProfile?: Record<string, unknown> },
   cliVersion: string,
 ): Promise<{ changed: boolean; encoded: string }> {
   let bytes: Buffer;
@@ -813,8 +814,36 @@ async function captureSessionCredential(
       authFileSha256: sha256(bytes),
       capturedAt: new Date().toISOString(),
       sourceCliVersion: cliVersion,
+      ...(initial.accountProfile ? { accountProfile: initial.accountProfile } : {}),
     }),
   };
+}
+
+function validatedAccountProfile(
+  value: unknown,
+  auth: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw videoError('credential_injection', 'jimeng_credential_account_profile_invalid', false, false);
+  const profile = value as Record<string, unknown>;
+  const accountId = profileText(profile.accountId, 256);
+  const userInfo = auth.user_info;
+  const authAccountId = userInfo && typeof userInfo === 'object' && !Array.isArray(userInfo)
+    ? profileText((userInfo as Record<string, unknown>).user_id, 256)
+    : undefined;
+  if (!accountId || (authAccountId && accountId !== authAccountId))
+    throw videoError('credential_injection', 'jimeng_credential_account_profile_invalid', false, false);
+  return profile;
+}
+
+function profileText(value: unknown, maxLength: number): string | undefined {
+  const text = typeof value === 'string'
+    ? value.trim()
+    : typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+      ? String(value)
+      : '';
+  return text && text.length <= maxLength ? text : undefined;
 }
 
 async function captureTaskState(
