@@ -2,6 +2,9 @@ import WebSocket, { type RawData } from 'ws';
 import { nanoid } from 'nanoid';
 import {
   decodeOfficialExitBinaryFrame,
+  OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES,
+  OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES,
+  OFFICIAL_EXIT_DEFAULT_CONNECTION_QUEUE_BUDGET_BYTES,
   OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
   OFFICIAL_EXIT_WEBSOCKET_MAX_MESSAGE_BYTES,
 } from '../shared/official-exit-binary.js';
@@ -18,6 +21,8 @@ import type {
   PlatformJimengAuthCancel,
   PlatformJimengAuthStart,
   PlatformJimengCliInstall,
+  PlatformJimengUsageCancel,
+  PlatformJimengUsageRefresh,
   PlatformJimengVideoCancel,
   PlatformJimengVideoExecute,
   PlatformProviderReady,
@@ -31,7 +36,13 @@ import { JIMENG_CLI_INSTALL_PROTOCOL_VERSION } from '../shared/protocol.js';
 import { sha256Json } from '../shared/crypto.js';
 import { type ProviderNodeConfig, platformFallbackUrl } from './config.js';
 import { ProviderRiskController, type ProviderRiskSnapshot } from './risk.js';
-import { ProviderOfficialExitTunnelManager } from './official-exit.js';
+import {
+  ProviderOfficialExitTunnelManager,
+  type ProviderOfficialExitSendOptions,
+  type ProviderOfficialExitSendResult,
+  type PlatformBulkTransferSelection,
+} from './official-exit.js';
+import { WebSocketSendScheduler } from '../shared/websocket-send-scheduler.js';
 import type { JimengAuthorizationHandler } from './jimeng-auth.js';
 import type { JimengVideoHandler } from './jimeng-video.js';
 
@@ -57,6 +68,10 @@ const PROVIDER_WS_BACKPRESSURE_HIGH_WATER_BYTES = positiveEnvNumber(
 const PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS = positiveEnvNumber(
   'PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS',
   30_000,
+);
+const PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES = positiveEnvNumber(
+  'PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES',
+  OFFICIAL_EXIT_DEFAULT_CONNECTION_QUEUE_BUDGET_BYTES,
 );
 
 export interface BridgeState {
@@ -129,6 +144,7 @@ export function buildProviderBridgeWebSocketConnection(
 
 export class ProviderBridge {
   private socket: WebSocket | null = null;
+  private controlScheduler: WebSocketSendScheduler | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private keepaliveTimer: NodeJS.Timeout | null = null;
@@ -161,11 +177,9 @@ export class ProviderBridge {
   private readonly risk = new ProviderRiskController();
   private readonly officialExitTunnels = new ProviderOfficialExitTunnelManager(
     () => this.getConfig(),
-    (message) => this.send(message),
+    (message, sendOptions) => this.send(message, sendOptions),
     undefined,
     {
-      webSocketBufferedAmount: () => this.socket?.bufferedAmount ?? 0,
-      webSocketHighWaterBytes: PROVIDER_WS_BACKPRESSURE_HIGH_WATER_BYTES,
       backpressureTimeoutMs: PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS,
       setPlatformInputBackpressure: (sessionId, blocked) => {
         if (blocked) this.platformInputBlockedSessions.add(sessionId);
@@ -214,6 +228,8 @@ export class ProviderBridge {
     this.heartbeatTimer = null;
     this.keepaliveTimer = null;
     this.officialExitTunnels.closeAll();
+    this.controlScheduler?.close();
+    this.controlScheduler = null;
     this.platformInputBlockedSessions.clear();
     this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_stopped'));
@@ -233,6 +249,8 @@ export class ProviderBridge {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_reconnecting'));
+    this.controlScheduler?.close();
+    this.controlScheduler = null;
     this.socket?.close();
     this.connect();
   }
@@ -292,7 +310,17 @@ export class ProviderBridge {
         resolve,
         reject,
       });
-      this.send(message);
+      this.send(message, {
+        lane: 'control',
+        onComplete: (error) => {
+          if (!error) return;
+          const pending = this.pendingMirrorUpdates.get(requestId);
+          if (!pending) return;
+          this.pendingMirrorUpdates.delete(requestId);
+          clearTimeout(pending.timer);
+          pending.reject(error);
+        },
+      });
     });
   }
 
@@ -304,6 +332,8 @@ export class ProviderBridge {
     const connection = buildProviderBridgeWebSocketConnection(config, this.useFallback);
     const socket = new WebSocket(connection.url, connection.options);
     this.socket = socket;
+    this.controlScheduler?.close();
+    this.controlScheduler = this.createScheduler(socket, PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES);
     let opened = false;
 
     socket.on('open', () => {
@@ -363,6 +393,8 @@ export class ProviderBridge {
     this.state.lastError = reason;
     this.state.reconnectSuppressedReason = undefined;
     this.officialExitTunnels.closeAll('platform_connection_closed');
+    this.controlScheduler?.close();
+    this.controlScheduler = null;
     this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error(`provider_bridge_${reason}`));
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
@@ -406,6 +438,11 @@ export class ProviderBridge {
       transportCapabilities: {
         officialExitDataProtocols: ['json_base64_v1', 'binary_v1'],
         officialExitEarlyDataProtocols: ['buffered_v1'],
+        officialExitBulkTransfer: {
+          minInitialWindowBytes: OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES,
+          maxInitialWindowBytes: OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES,
+          maxConnectionQueueBytes: PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES,
+        },
         flowControl: ['credit_v1'],
         maxBinaryFrameBytes: OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
       },
@@ -418,7 +455,12 @@ export class ProviderBridge {
               ...(this.options.jimengAuthorization
                 ? { jimengAuth: this.options.jimengAuthorization.capability() }
                 : {}),
-              ...(this.options.jimengVideo ? { jimengVideo: this.options.jimengVideo.capability() } : {}),
+              ...(this.options.jimengVideo ? {
+                jimengVideo: this.options.jimengVideo.capability(),
+                ...(this.options.jimengVideo.usageCapability
+                  ? { jimengUsage: this.options.jimengVideo.usageCapability() }
+                  : {}),
+              } : {}),
             }
           : undefined,
     };
@@ -464,6 +506,12 @@ export class ProviderBridge {
       const selected = selectedOfficialExitDataProtocol(ready);
       this.officialExitTunnels.setNegotiatedDataProtocol(selected);
       this.officialExitTunnels.setNegotiatedEarlyDataProtocol(selectedOfficialExitEarlyDataProtocol(ready, selected));
+      const bulkTransfer = selectedOfficialExitBulkTransfer(ready, selected);
+      this.officialExitTunnels.setNegotiatedBulkTransfer(bulkTransfer);
+      this.controlScheduler?.setMaxQueuedBytes(
+        bulkTransfer?.connectionQueueBudgetBytes
+          ?? PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES,
+      );
       this.options.onPlatformReady?.();
       return;
     }
@@ -547,6 +595,27 @@ export class ProviderBridge {
       }
       return;
     }
+    if (message.type === 'platform.jimeng_usage_refresh') {
+      const refresh = message as PlatformJimengUsageRefresh;
+      if (!this.options.jimengVideo) {
+        this.send({
+          type: 'provider.jimeng_usage_failed',
+          protocolVersion: refresh.protocolVersion,
+          requestId: refresh.requestId,
+          nodeId: this.getConfig().nodeId,
+          credentialBindingId: refresh.credentialBindingId,
+          errorCode: 'jimeng_usage_not_supported',
+          retryable: false,
+        });
+        return;
+      }
+      this.options.jimengVideo.refreshUsage(refresh, (event) => this.send(event));
+      return;
+    }
+    if (message.type === 'platform.jimeng_usage_cancel') {
+      this.options.jimengVideo?.cancelUsage(message as PlatformJimengUsageCancel);
+      return;
+    }
     if (message.type === 'platform.jimeng_video_execute') {
       const execute = message as PlatformJimengVideoExecute;
       if (!this.options.jimengVideo) {
@@ -608,14 +677,35 @@ export class ProviderBridge {
     pending.resolve();
   }
 
-  private send(message: unknown) {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      try {
-        this.socket.send(Buffer.isBuffer(message) ? message : JSON.stringify(message));
-      } catch (error) {
-        this.state.lastError = error instanceof Error ? error.message : 'provider_bridge_send_failed';
-      }
+  private send(
+    message: unknown,
+    options: ProviderOfficialExitSendOptions = { lane: 'control' },
+  ): ProviderOfficialExitSendResult {
+    const socket = this.socket;
+    const scheduler = this.controlScheduler;
+    if (!socket || !scheduler || socket.readyState !== WebSocket.OPEN) {
+      const error = new Error('provider_websocket_disconnected');
+      options.onComplete?.(error);
+      return { accepted: false, error };
     }
+    const encoded = Buffer.isBuffer(message) ? message : JSON.stringify(message);
+    const result = scheduler.enqueue(encoded, {
+      lane: options.lane,
+      sessionId: options.sessionId,
+      callback: (error) => {
+        if (error) this.state.lastError = error.message;
+        options.onComplete?.(error);
+      },
+    });
+    return result;
+  }
+
+  private createScheduler(socket: WebSocket, maxQueuedBytes: number): WebSocketSendScheduler {
+    return new WebSocketSendScheduler(socket, {
+      highWaterBytes: PROVIDER_WS_BACKPRESSURE_HIGH_WATER_BYTES,
+      maxQueuedBytes,
+      sendTimeoutMs: PROVIDER_OFFICIAL_EXIT_BACKPRESSURE_TIMEOUT_MS,
+    });
   }
 
   private shouldSendBusinessHeartbeat(config: ProviderNodeConfig): boolean {
@@ -703,6 +793,33 @@ function selectedOfficialExitEarlyDataProtocol(
   return dataProtocol === 'binary_v1' && ready.transport?.officialExitEarlyDataProtocol === 'buffered_v1'
     ? 'buffered_v1'
     : undefined;
+}
+
+export interface SelectedOfficialExitBulkTransfer extends PlatformBulkTransferSelection {
+  connectionQueueBudgetBytes: number;
+}
+
+export function selectedOfficialExitBulkTransfer(
+  ready: PlatformProviderReady,
+  dataProtocol: OfficialExitDataProtocol,
+): SelectedOfficialExitBulkTransfer | undefined {
+  const bulkTransfer = ready.transport?.bulkTransfer;
+  if (
+    dataProtocol !== 'binary_v1'
+    || !bulkTransfer
+    || !Number.isSafeInteger(bulkTransfer.initialWindowBytes)
+    || bulkTransfer.initialWindowBytes < OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES
+    || bulkTransfer.initialWindowBytes > OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES
+    || !Number.isSafeInteger(bulkTransfer.connectionQueueBudgetBytes)
+    || bulkTransfer.connectionQueueBudgetBytes < bulkTransfer.initialWindowBytes
+    || bulkTransfer.connectionQueueBudgetBytes > PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES
+  ) {
+    return undefined;
+  }
+  return {
+    bulkInitialWindowBytes: bulkTransfer.initialWindowBytes,
+    connectionQueueBudgetBytes: bulkTransfer.connectionQueueBudgetBytes,
+  };
 }
 
 function rawDataBuffer(raw: RawData): Buffer {

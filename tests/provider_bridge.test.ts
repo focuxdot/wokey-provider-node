@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildProviderBridgeWebSocketConnection,
   normalizeProviderBridgeCloseReason,
+  selectedOfficialExitBulkTransfer,
   shouldSuppressProviderBridgeReconnect,
 } from '../src/provider-node/bridge.js';
 
@@ -11,6 +12,7 @@ import {
 const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
   const sockets: Array<{
     url: string;
+    options?: { headers?: Record<string, string> };
     readyState: number;
     sent: Array<string | Buffer>;
     emit: (event: string, ...args: unknown[]) => void;
@@ -19,10 +21,12 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
     static OPEN = 1;
     readyState = 0;
     url: string;
+    options?: { headers?: Record<string, string> };
     sent: Array<string | Buffer> = [];
     private handlers: Record<string, Array<(...a: unknown[]) => void>> = {};
-    constructor(url: string) {
+    constructor(url: string, options?: { headers?: Record<string, string> }) {
       this.url = url;
+      this.options = options;
       sockets.push(this as never);
     }
     on(event: string, fn: (...a: unknown[]) => void) {
@@ -44,6 +48,36 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
 vi.mock('ws', () => ({ default: FakeWebSocket }));
 
 describe('ProviderBridge reconnect policy', () => {
+  it('returns only a locally valid negotiated bulk queue budget', () => {
+    const ready = (connectionQueueBudgetBytes: number) => ({
+      type: 'platform.ready',
+      nodeId: 'node_123',
+      transport: {
+        officialExitDataProtocol: 'binary_v1',
+        bulkTransfer: {
+          initialWindowBytes: 1024 * 1024,
+          connectionQueueBudgetBytes,
+        },
+      },
+    }) as const;
+
+    expect(selectedOfficialExitBulkTransfer(
+      ready(16 * 1024 * 1024),
+      'binary_v1',
+    )).toEqual({
+      bulkInitialWindowBytes: 1024 * 1024,
+      connectionQueueBudgetBytes: 16 * 1024 * 1024,
+    });
+    expect(selectedOfficialExitBulkTransfer(
+      ready(16 * 1024 * 1024 + 1),
+      'binary_v1',
+    )).toBeUndefined();
+    expect(selectedOfficialExitBulkTransfer(
+      ready(1024),
+      'binary_v1',
+    )).toBeUndefined();
+  });
+
   it('suppresses reconnects for platform-managed close reasons', () => {
     expect(shouldSuppressProviderBridgeReconnect('node_paused')).toBe(true);
     expect(shouldSuppressProviderBridgeReconnect('invalid_provider_secret')).toBe(true);
@@ -223,12 +257,99 @@ describe('ProviderBridge endpoint failover', () => {
     }
   });
 
+  it('rejects a credential mirror update immediately when scheduler admission fails', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+      const scheduler = (bridge as unknown as {
+        controlScheduler: { close(): void };
+      }).controlScheduler;
+      scheduler.close();
+
+      await expect(bridge.sendCredentialMirrorUpdate({
+        credentialBindingId: 'credential_123',
+        vendor: 'openai',
+        accessToken: 'access_token_123',
+      })).rejects.toThrow('provider_websocket_disconnected');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('keeps one physical socket when bulk flow control is negotiated', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const hello = control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello');
+      expect(hello).toMatchObject({
+        transportCapabilities: {
+          officialExitBulkTransfer: {
+            minInitialWindowBytes: 1024 * 1024,
+            maxInitialWindowBytes: 4 * 1024 * 1024,
+          },
+        },
+      });
+      const maxConnectionQueueBytes = Number((
+        hello?.transportCapabilities as {
+          officialExitBulkTransfer?: { maxConnectionQueueBytes?: number };
+        }
+      )?.officialExitBulkTransfer?.maxConnectionQueueBytes);
+
+      control.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.ready',
+        nodeId: 'node_123',
+        transport: {
+          officialExitDataProtocol: 'binary_v1',
+          flowControl: 'credit_v1',
+          initialWindowBytes: 256 * 1024,
+          maxBinaryFrameBytes: 64 * 1024,
+          bulkTransfer: {
+            initialWindowBytes: 1024 * 1024,
+            connectionQueueBudgetBytes: maxConnectionQueueBytes,
+          },
+        },
+      })), false);
+      await Promise.resolve();
+
+      expect(fakeSockets).toHaveLength(1);
+      expect(control.options?.headers).not.toHaveProperty('x-provider-data-channel');
+
+      control.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.ready',
+        nodeId: 'node_123',
+        transport: {
+          officialExitDataProtocol: 'binary_v1',
+          bulkTransfer: {
+            initialWindowBytes: 1024 * 1024,
+            connectionQueueBudgetBytes: maxConnectionQueueBytes + 1,
+          },
+        },
+      })), false);
+      await Promise.resolve();
+      expect((bridge as unknown as {
+        controlScheduler: { maxQueuedBytes: number };
+      }).controlScheduler.maxQueuedBytes).toBe(maxConnectionQueueBytes);
+    } finally {
+      bridge.stop();
+    }
+  });
+
   it('advertises and routes Jimeng video control messages through the authenticated socket', async () => {
     const { defaultConfig } = await import('../src/provider-node/config.js');
     const { ProviderBridge } = await import('../src/provider-node/bridge.js');
     const config = defaultConfig();
     const execute = vi.fn();
     const cancel = vi.fn();
+    const refreshUsage = vi.fn();
+    const cancelUsage = vi.fn();
     const cancelAll = vi.fn();
     const jimengVideo = {
       capability: () => ({
@@ -238,8 +359,11 @@ describe('ProviderBridge endpoint failover', () => {
         upstreamModelVersions: ['seedance2.0mini'],
         resolutions: ['720p'],
       }),
+      usageCapability: () => ({ protocolVersions: [1], cliVersion: '1.4.14' }),
       execute,
       cancel,
+      refreshUsage,
+      cancelUsage,
       cancelAll,
     };
     const bridge = new ProviderBridge(() => config, { jimengVideo: jimengVideo as never });
@@ -258,6 +382,10 @@ describe('ProviderBridge endpoint failover', () => {
             cliVersion: '1.4.14',
             generationModes: ['text_to_video'],
             upstreamModelVersions: ['seedance2.0mini'],
+          },
+          jimengUsage: {
+            protocolVersions: [1],
+            cliVersion: '1.4.14',
           },
         },
       });
@@ -293,6 +421,29 @@ describe('ProviderBridge endpoint failover', () => {
       };
       fakeSockets[0].emit('message', Buffer.from(JSON.stringify(cancellation)), false);
       expect(cancel).toHaveBeenCalledWith(cancellation);
+
+      const usageRefresh = {
+        type: 'platform.jimeng_usage_refresh',
+        protocolVersion: 1,
+        requestId: 'usage-request-1',
+        providerId: config.providerId,
+        nodeId: config.nodeId,
+        credentialBindingId: 'credential-1',
+        deadlineMs: 10_000,
+        encodedCredentialBundle: '{}',
+      };
+      fakeSockets[0].emit('message', Buffer.from(JSON.stringify(usageRefresh)), false);
+      expect(refreshUsage).toHaveBeenCalledWith(usageRefresh, expect.any(Function));
+
+      const usageCancel = {
+        type: 'platform.jimeng_usage_cancel',
+        protocolVersion: 1,
+        requestId: 'usage-request-1',
+        nodeId: config.nodeId,
+        credentialBindingId: 'credential-1',
+      };
+      fakeSockets[0].emit('message', Buffer.from(JSON.stringify(usageCancel)), false);
+      expect(cancelUsage).toHaveBeenCalledWith(usageCancel);
     } finally {
       bridge.stop();
       expect(cancelAll).toHaveBeenCalled();

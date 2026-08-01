@@ -1,5 +1,7 @@
 import { connect, type Socket } from 'node:net';
 import {
+  OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES,
+  OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES,
   encodeOfficialExitBinaryData,
   encodeOfficialExitBinaryWindowUpdate,
   OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
@@ -15,7 +17,9 @@ import type {
   OfficialExitOpenRequest,
   OfficialExitOpenResponse,
   OfficialExitTransportDiagnostic,
+  OfficialExitTrafficClass,
 } from '../shared/protocol.js';
+import type { WebSocketSendLane } from '../shared/websocket-send-scheduler.js';
 import { DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS } from '../shared/official-exit-vendors.js';
 import type { ProviderNodeConfig } from './config.js';
 
@@ -82,6 +86,8 @@ interface OfficialExitSession {
   remoteAddress?: string;
   dataProtocol: OfficialExitDataProtocol;
   earlyDataProtocol?: OfficialExitEarlyDataProtocol;
+  trafficClass: OfficialExitTrafficClass;
+  initialWindowBytes: number;
   earlyDataBytes: number;
   pendingToUpstream: Array<{ payload: Buffer; creditBytes: number }>;
   pendingToUpstreamBytes: number;
@@ -95,15 +101,32 @@ interface OfficialExitSession {
   peakBufferedBytes: number;
   upstreamBackpressureTimer?: NodeJS.Timeout;
   platformInputBackpressureTimer?: NodeJS.Timeout;
-  backpressurePollTimer?: NodeJS.Timeout;
   platformInputBlocked: boolean;
 }
 
 export interface ProviderOfficialExitTunnelManagerOptions {
-  webSocketBufferedAmount?: () => number;
-  webSocketHighWaterBytes?: number;
   backpressureTimeoutMs?: number;
-  setPlatformInputBackpressure?: (sessionId: string, blocked: boolean) => void;
+  setPlatformInputBackpressure?: (
+    sessionId: string,
+    blocked: boolean,
+  ) => void;
+}
+
+export interface ProviderOfficialExitSendOptions {
+  lane: WebSocketSendLane;
+  sessionId?: string;
+  onComplete?: (error?: Error | null) => void;
+}
+
+export interface ProviderOfficialExitSendResult {
+  accepted: boolean;
+  backpressured?: boolean;
+  bufferedBytes?: number;
+  error?: Error;
+}
+
+export interface PlatformBulkTransferSelection {
+  bulkInitialWindowBytes: number;
 }
 
 export class ProviderOfficialExitTunnelManager {
@@ -112,22 +135,24 @@ export class ProviderOfficialExitTunnelManager {
   private readonly allowedHosts: readonly string[];
   private negotiatedDataProtocol: OfficialExitDataProtocol = 'json_base64_v1';
   private negotiatedEarlyDataProtocol?: OfficialExitEarlyDataProtocol;
+  private negotiatedBulkInitialWindowBytes?: number;
   private acceptingSessions = true;
   private readonly options: Required<Pick<
     ProviderOfficialExitTunnelManagerOptions,
-    'webSocketBufferedAmount' | 'webSocketHighWaterBytes' | 'backpressureTimeoutMs'
+    'backpressureTimeoutMs'
   >> & Pick<ProviderOfficialExitTunnelManagerOptions, 'setPlatformInputBackpressure'>;
 
   constructor(
     private getConfig: () => ProviderNodeConfig,
-    private send: (message: OfficialExitProviderOutbound) => void,
+    private send: (
+      message: OfficialExitProviderOutbound,
+      options?: ProviderOfficialExitSendOptions,
+    ) => ProviderOfficialExitSendResult | undefined,
     allowedHosts: readonly string[] = parseOfficialExitAllowlist(process.env[OFFICIAL_EXIT_ALLOWLIST_ENV]),
     options: ProviderOfficialExitTunnelManagerOptions = {},
   ) {
     this.allowedHosts = allowedHosts;
     this.options = {
-      webSocketBufferedAmount: options.webSocketBufferedAmount ?? (() => 0),
-      webSocketHighWaterBytes: options.webSocketHighWaterBytes ?? 4 * 1024 * 1024,
       backpressureTimeoutMs: options.backpressureTimeoutMs ?? 30_000,
       setPlatformInputBackpressure: options.setPlatformInputBackpressure,
     };
@@ -143,6 +168,10 @@ export class ProviderOfficialExitTunnelManager {
 
   setNegotiatedEarlyDataProtocol(earlyDataProtocol: OfficialExitEarlyDataProtocol | undefined): void {
     this.negotiatedEarlyDataProtocol = earlyDataProtocol;
+  }
+
+  setNegotiatedBulkTransfer(bulkTransfer: PlatformBulkTransferSelection | undefined): void {
+    this.negotiatedBulkInitialWindowBytes = bulkTransfer?.bulkInitialWindowBytes;
   }
 
   setAcceptingSessions(accepting: boolean): void {
@@ -167,13 +196,20 @@ export class ProviderOfficialExitTunnelManager {
     this.closeFromPlatform(message);
   }
 
-  handleBinaryFrame(frame: OfficialExitBinaryFrame, wireBytes: number): void {
+  handleBinaryFrame(
+    frame: OfficialExitBinaryFrame,
+    wireBytes: number,
+  ): void {
     if (frame.kind === 'data') {
       this.writeBinaryData(frame, wireBytes);
       return;
     }
     const session = this.sessions.get(frame.sessionId);
-    if (!session || session.closed || session.dataProtocol !== 'binary_v1') return;
+    if (
+      !session
+      || session.closed
+      || session.dataProtocol !== 'binary_v1'
+    ) return;
     session.webSocketBytesIn += wireBytes;
     session.outboundCredit += frame.creditBytes;
     if (session.outboundCredit > 16 * 1024 * 1024) {
@@ -211,11 +247,13 @@ export class ProviderOfficialExitTunnelManager {
         connectMs: 0,
         dataProtocol: request.dataProtocol ?? 'json_base64_v1',
         earlyDataProtocol: request.earlyDataProtocol,
+        trafficClass: request.trafficClass ?? 'interactive',
+        initialWindowBytes: request.initialWindowBytes ?? OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
         earlyDataBytes: 0,
         pendingToUpstream: [],
         pendingToUpstreamBytes: 0,
         expectedSeqIn: 0,
-        outboundCredit: OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
+        outboundCredit: request.initialWindowBytes ?? OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
         pendingFromUpstream: [],
         pendingFromUpstreamOffset: 0,
         webSocketBytesIn: 0,
@@ -316,6 +354,28 @@ export class ProviderOfficialExitTunnelManager {
     if (request.earlyDataProtocol !== undefined && request.earlyDataProtocol !== this.negotiatedEarlyDataProtocol) {
       return 'official_exit_early_data_protocol_not_negotiated';
     }
+    const trafficClass = request.trafficClass ?? 'interactive';
+    if (trafficClass !== 'interactive' && trafficClass !== 'bulk') {
+      return 'official_exit_traffic_class_invalid';
+    }
+    const expectedInitialWindowBytes = trafficClass === 'bulk'
+      ? this.negotiatedBulkInitialWindowBytes ?? OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES
+      : OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES;
+    const requestedInitialWindowBytes = request.initialWindowBytes ?? OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES;
+    if (
+      !expectedInitialWindowBytes
+      || !Number.isSafeInteger(requestedInitialWindowBytes)
+      || requestedInitialWindowBytes !== expectedInitialWindowBytes
+      || requestedInitialWindowBytes < OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES
+      || requestedInitialWindowBytes > OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES
+      || (
+        trafficClass === 'bulk'
+        && this.negotiatedBulkInitialWindowBytes !== undefined
+        && requestedInitialWindowBytes < OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES
+      )
+    ) {
+      return 'official_exit_initial_window_not_negotiated';
+    }
     return undefined;
   }
 
@@ -341,9 +401,8 @@ export class ProviderOfficialExitTunnelManager {
       };
       const encodedBytes = Buffer.byteLength(JSON.stringify(frame));
       session.webSocketBytesOut += encodedBytes;
-      this.send(frame);
       session.seqOut += 1;
-      this.applyWebSocketBackpressure(sessionId, session);
+      this.sendSessionFrame(sessionId, session, frame, session.trafficClass);
     });
     session.socket.once('close', () => {
       if (this.sessions.get(sessionId) !== session) return;
@@ -354,7 +413,7 @@ export class ProviderOfficialExitTunnelManager {
   private writeJsonData(frame: OfficialExitDataFrame, wireBytes?: number): void {
     const session = this.sessions.get(frame.sessionId);
     if (!session || session.closed) {
-      this.send({
+      this.sendControl({
         type: 'official_exit.error',
         sessionId: frame.sessionId,
         errorCode: 'official_exit_session_not_found',
@@ -387,7 +446,7 @@ export class ProviderOfficialExitTunnelManager {
   ): void {
     const session = this.sessions.get(frame.sessionId);
     if (!session || session.closed) {
-      this.send({
+      this.sendControl({
         type: 'official_exit.error',
         sessionId: frame.sessionId,
         errorCode: 'official_exit_session_not_found',
@@ -395,7 +454,10 @@ export class ProviderOfficialExitTunnelManager {
       });
       return;
     }
-    if (session.dataProtocol !== 'binary_v1' || frame.seq !== session.expectedSeqIn) {
+    if (
+      session.dataProtocol !== 'binary_v1'
+      || frame.seq !== session.expectedSeqIn
+    ) {
       this.sendErrorAndClose(frame.sessionId, session, 'official_exit_frame_sequence_mismatch');
       return;
     }
@@ -454,8 +516,7 @@ export class ProviderOfficialExitTunnelManager {
       if (creditBytes <= 0) return;
       const update = encodeOfficialExitBinaryWindowUpdate(sessionId, creditBytes);
       session.webSocketBytesOut += update.byteLength;
-      this.send(update);
-      this.applyWebSocketBackpressure(sessionId, session);
+      this.sendSessionFrame(sessionId, session, update, 'window');
     });
     if (!writable) {
       if (creditBytes <= 0) {
@@ -495,8 +556,7 @@ export class ProviderOfficialExitTunnelManager {
         session.pendingFromUpstream.shift();
         session.pendingFromUpstreamOffset = 0;
       }
-      this.send(encoded);
-      if (this.applyWebSocketBackpressure(sessionId, session)) return;
+      if (!this.sendSessionFrame(sessionId, session, encoded, session.trafficClass)) return;
     }
     if (session.pendingFromUpstream.length === 0 && session.outboundCredit > 0) {
       this.clearUpstreamBackpressureTimeout(session);
@@ -506,32 +566,47 @@ export class ProviderOfficialExitTunnelManager {
     }
   }
 
-  private applyWebSocketBackpressure(sessionId: string, session: OfficialExitSession): boolean {
-    const bufferedBytes = Math.max(0, this.options.webSocketBufferedAmount());
-    session.peakBufferedBytes = Math.max(session.peakBufferedBytes, bufferedBytes);
-    if (bufferedBytes <= this.options.webSocketHighWaterBytes) return false;
-    session.backpressureCount += 1;
-    session.socket.pause();
-    this.startUpstreamBackpressureTimeout(sessionId, session);
-    if (!session.backpressurePollTimer) {
-      const poll = () => {
-        session.backpressurePollTimer = undefined;
-        if (session.closed) return;
-        const current = Math.max(0, this.options.webSocketBufferedAmount());
-        session.peakBufferedBytes = Math.max(session.peakBufferedBytes, current);
-        if (current <= Math.floor(this.options.webSocketHighWaterBytes / 2)) {
-          this.clearUpstreamBackpressureTimeout(session);
-          if (session.dataProtocol === 'binary_v1') this.pumpUpstreamToPlatform(sessionId, session);
-          else session.socket.resume();
+  private sendControl(message: OfficialExitProviderMessage): void {
+    this.send(message, { lane: 'control' });
+  }
+
+  private sendSessionFrame(
+    sessionId: string,
+    session: OfficialExitSession,
+    message: OfficialExitDataFrame | Buffer,
+    lane: OfficialExitTrafficClass | 'window',
+  ): boolean {
+    const result = this.send(message, {
+      lane,
+      sessionId,
+      onComplete: (error) => {
+        if (error) {
+          if (this.sessions.get(sessionId) === session && !session.closed) {
+            this.sendErrorAndClose(sessionId, session, providerWebSocketSendErrorCode(error), error.message);
+          }
           return;
         }
-        session.backpressurePollTimer = setTimeout(poll, 5);
-        session.backpressurePollTimer.unref?.();
-      };
-      session.backpressurePollTimer = setTimeout(poll, 5);
-      session.backpressurePollTimer.unref?.();
+        if (
+          session.dataProtocol === 'json_base64_v1'
+          && this.sessions.get(sessionId) === session
+          && !session.closed
+        ) {
+          session.socket.resume();
+        }
+      },
+    });
+    if (!result || typeof result !== 'object' || typeof result.accepted !== 'boolean') return true;
+    session.peakBufferedBytes = Math.max(session.peakBufferedBytes, result.bufferedBytes ?? 0);
+    if (result.backpressured) {
+      session.backpressureCount += 1;
+      if (session.dataProtocol === 'json_base64_v1') session.socket.pause();
     }
-    return true;
+    if (result.accepted) return true;
+    if (!session.closed) {
+      const error = result.error ?? new Error('provider_websocket_queue_overflow');
+      this.sendErrorAndClose(sessionId, session, providerWebSocketSendErrorCode(error), error.message);
+    }
+    return false;
   }
 
   private blockPlatformInput(sessionId: string, session: OfficialExitSession): void {
@@ -588,7 +663,7 @@ export class ProviderOfficialExitTunnelManager {
     reasonCode?: string,
     transportDiagnostic?: OfficialExitTransportDiagnostic,
   ): void {
-    this.send({
+    this.sendControl({
       type: 'official_exit.open_response',
       sessionId,
       accepted,
@@ -603,7 +678,7 @@ export class ProviderOfficialExitTunnelManager {
     errorCode: string,
     errorMessage?: string,
   ): void {
-    this.send({
+    this.sendControl({
       type: 'official_exit.error',
       sessionId,
       errorCode,
@@ -624,12 +699,13 @@ export class ProviderOfficialExitTunnelManager {
     session.closed = true;
     this.clearUpstreamBackpressureTimeout(session);
     this.clearPlatformInputBackpressureTimeout(session);
-    if (session.backpressurePollTimer) clearTimeout(session.backpressurePollTimer);
-    if (session.platformInputBlocked) this.options.setPlatformInputBackpressure?.(sessionId, false);
+    if (session.platformInputBlocked) {
+      this.options.setPlatformInputBackpressure?.(sessionId, false);
+    }
     this.sessions.delete(sessionId);
     session.socket.destroy();
     if (notifyPlatform) {
-      this.send({
+      this.sendControl({
         type: 'official_exit.close',
         sessionId,
         reasonCode,
@@ -696,4 +772,11 @@ export function classifySocketError(error: Error): string {
   if (code === 'ECONNRESET') return 'official_exit_socket_reset';
   if (code === 'EPIPE') return 'official_exit_socket_broken_pipe';
   return 'official_exit_socket_failed';
+}
+
+function providerWebSocketSendErrorCode(error: Error): string {
+  if (error.message.includes('send_timeout')) return 'official_exit_backpressure_timeout';
+  if (error.message.includes('queue_overflow')) return 'official_exit_connection_queue_overflow';
+  if (error.message.includes('disconnected')) return 'official_exit_provider_connection_closed';
+  return 'official_exit_websocket_send_failed';
 }

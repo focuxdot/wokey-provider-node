@@ -71,7 +71,7 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'jimeng',
     displayName: 'Jimeng / Dreamina',
-    allowedHosts: ['*.byted.org', '*.jianying.com'],
+    allowedHosts: ['bytetsd-router.byted.org', 'jimeng.jianying.com'],
   },
 ]);
 

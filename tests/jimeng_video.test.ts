@@ -6,12 +6,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { JimengVideoHandler } from '../src/provider-node/jimeng-video.js';
 import {
   JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION,
+  JIMENG_USAGE_CONTROL_PROTOCOL_VERSION,
+  type PlatformJimengUsageRefresh,
   type PlatformJimengVideoExecute,
+  type ProviderJimengUsageCompleted,
+  type ProviderJimengUsageFailed,
   type ProviderJimengVideoCompleted,
   type ProviderJimengVideoFailed,
 } from '../src/shared/protocol.js';
 
 type VideoEvent = ProviderJimengVideoCompleted | ProviderJimengVideoFailed;
+type UsageEvent = ProviderJimengUsageCompleted | ProviderJimengUsageFailed;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -76,6 +81,10 @@ function execute(handler: JimengVideoHandler, message: PlatformJimengVideoExecut
   return new Promise((resolve) => handler.execute(message, resolve));
 }
 
+function refreshUsage(handler: JimengVideoHandler, message: PlatformJimengUsageRefresh): Promise<UsageEvent> {
+  return new Promise((resolve) => handler.refreshUsage(message, resolve));
+}
+
 async function nextTurn(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
@@ -86,6 +95,62 @@ function commandHome(env: NodeJS.ProcessEnv): string {
 }
 
 describe('Jimeng Provider Node video executor', () => {
+  it('queries live credit in an isolated credential session and returns a refreshed profile', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-usage-test-'));
+    let sessionRoot = '';
+    const handler = new JimengVideoHandler({
+      cli: { path: '/opt/dreamina', version: '1.4.14' },
+      receiptsDirectory: join(parent, 'receipts'),
+      ...receiptCodec,
+      tempParentDir: parent,
+      platform: 'linux',
+      getIdentity: () => ({ nodeId: 'node-1', providerId: 'provider-1' }),
+      runCommand: async (_binary, args, options) => {
+        expect(args).toEqual(['user_credit']);
+        sessionRoot = join(commandHome(options.env), '..');
+        return {
+          stdout: JSON.stringify({
+            user_id: 'user-1',
+            user_name: 'Provider Account',
+            vip_level: 'VIP',
+            total_credit: 88,
+          }),
+          stderr: '',
+        };
+      },
+    });
+    try {
+      const event = await refreshUsage(handler, {
+        type: 'platform.jimeng_usage_refresh',
+        protocolVersion: JIMENG_USAGE_CONTROL_PROTOCOL_VERSION,
+        requestId: 'usage-request-1',
+        providerId: 'provider-1',
+        nodeId: 'node-1',
+        credentialBindingId: 'credential-1',
+        deadlineMs: 10_000,
+        encodedCredentialBundle: credentialBundle(),
+      });
+      expect(event).toMatchObject({
+        type: 'provider.jimeng_usage_completed',
+        credentialBindingId: 'credential-1',
+        totalCredit: 88,
+        checkedAt: expect.any(String),
+      });
+      if (event.type !== 'provider.jimeng_usage_completed') throw new Error('usage refresh failed');
+      const bundle = JSON.parse(event.encodedCredentialBundle) as {
+        accountProfile: Record<string, unknown>;
+      };
+      expect(bundle.accountProfile).toMatchObject({
+        accountId: 'user-1',
+        totalCredit: 88,
+        creditCheckedAt: event.checkedAt,
+      });
+      await expect(access(sessionRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('submits once, captures task state and refreshed credentials, and removes the temporary HOME', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-video-test-'));
     const receipts = join(parent, 'receipts');

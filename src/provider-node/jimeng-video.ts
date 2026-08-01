@@ -12,12 +12,16 @@ import type {
   JimengVideoFailureStage,
   PlatformJimengVideoCancel,
   PlatformJimengVideoExecute,
+  PlatformJimengUsageCancel,
+  PlatformJimengUsageRefresh,
   ProviderJimengVideoCompleted,
   ProviderJimengVideoFailed,
+  ProviderJimengUsageCompleted,
+  ProviderJimengUsageFailed,
   ProviderNodeControlCapabilities,
 } from '../shared/protocol.js';
-import { JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION } from '../shared/protocol.js';
-import type { DreaminaCliDescriptor } from './jimeng-auth.js';
+import { JIMENG_USAGE_CONTROL_PROTOCOL_VERSION, JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION } from '../shared/protocol.js';
+import { parseJimengAccountProfile, type DreaminaCliDescriptor } from './jimeng-auth.js';
 import {
   createJimengCredentialStore,
   isSupportedDreaminaPlatform,
@@ -56,6 +60,7 @@ const KILL_GRACE_MS = 1_000;
 const SQLITE_HEADER = Buffer.from('SQLite format 3\0', 'ascii');
 
 type VideoEvent = ProviderJimengVideoCompleted | ProviderJimengVideoFailed;
+type UsageEvent = ProviderJimengUsageCompleted | ProviderJimengUsageFailed;
 type TaskStatePath = (typeof TASK_STATE_PATHS)[number];
 
 interface RunningOperation {
@@ -168,6 +173,57 @@ export class JimengVideoHandler {
       upstreamModelVersions: [...new Set(generationModes.flatMap((mode) => [...this.modelsByMode[mode]]))],
       resolutions: [...this.resolutions],
     };
+  }
+
+  usageCapability(): NonNullable<ProviderNodeControlCapabilities['jimengUsage']> {
+    return {
+      protocolVersions: [JIMENG_USAGE_CONTROL_PROTOCOL_VERSION],
+      cliVersion: this.options.cli.version,
+    };
+  }
+
+  refreshUsage(message: PlatformJimengUsageRefresh, emit: (event: UsageEvent) => void): void {
+    const identity = this.options.getIdentity();
+    if (
+      message.protocolVersion !== JIMENG_USAGE_CONTROL_PROTOCOL_VERSION ||
+      message.nodeId !== identity.nodeId ||
+      message.providerId !== identity.providerId ||
+      !validIdentifier(message.requestId, 160) ||
+      !validIdentifier(message.credentialBindingId, 160) ||
+      !Number.isInteger(message.deadlineMs) ||
+      message.deadlineMs < 1 ||
+      message.deadlineMs > MAX_DEADLINE_MS ||
+      this.active.size > 0
+    ) {
+      emit(usageFailedEvent(
+        message,
+        this.active.size > 0 ? 'jimeng_usage_node_busy' : 'jimeng_usage_request_invalid',
+        this.active.size > 0,
+      ));
+      return;
+    }
+    const running: RunningOperation = {
+      videoJobId: `usage:${message.credentialBindingId}`,
+      controller: new AbortController(),
+    };
+    this.active.set(message.requestId, running);
+    const task = () => this.runUsage(message, running);
+    void (this.options.withCredentialLease ? this.options.withCredentialLease(task) : task())
+      .then(emit)
+      .catch((error) => emit(usageErrorEvent(message, error)))
+      .finally(() => this.active.delete(message.requestId));
+  }
+
+  cancelUsage(message: PlatformJimengUsageCancel): boolean {
+    const identity = this.options.getIdentity();
+    if (message.protocolVersion !== JIMENG_USAGE_CONTROL_PROTOCOL_VERSION || message.nodeId !== identity.nodeId) {
+      return false;
+    }
+    const running = this.active.get(message.requestId);
+    if (!running || running.videoJobId !== `usage:${message.credentialBindingId}`) return false;
+    running.controller.abort();
+    terminateProcess(running.process);
+    return true;
   }
 
   execute(message: PlatformJimengVideoExecute, emit: (event: VideoEvent) => void): void {
@@ -357,6 +413,46 @@ export class JimengVideoHandler {
           upstreamResult,
           outputArtifact,
         });
+      },
+    );
+  }
+
+  private async runUsage(
+    message: PlatformJimengUsageRefresh,
+    running: RunningOperation,
+  ): Promise<ProviderJimengUsageCompleted> {
+    const credential = parseCredentialBundle(message.encodedCredentialBundle);
+    return await withEphemeralSession(
+      credential,
+      `usage:${message.credentialBindingId}`,
+      undefined,
+      this.options,
+      async (session) => {
+        let command: CommandResult;
+        try {
+          command = await this.runCli(['user_credit'], session.env, message.deadlineMs, running);
+        } catch (error) {
+          throw videoError('cli_execution', errorCode(error), retryable(error), false, error);
+        }
+        const checkedAt = new Date().toISOString();
+        const refreshed = await captureSessionCredential(session, credential, this.options.cli.version, {
+          accountProfileOutput: command.stdout,
+          creditCheckedAt: checkedAt,
+        });
+        const totalCredit = refreshed.accountProfile?.totalCredit;
+        if (typeof totalCredit !== 'number' || !Number.isFinite(totalCredit) || totalCredit < 0) {
+          throw videoError('cli_execution', 'jimeng_usage_credit_missing', false, false);
+        }
+        return {
+          type: 'provider.jimeng_usage_completed',
+          protocolVersion: JIMENG_USAGE_CONTROL_PROTOCOL_VERSION,
+          requestId: message.requestId,
+          nodeId: message.nodeId,
+          credentialBindingId: message.credentialBindingId,
+          totalCredit,
+          checkedAt,
+          encodedCredentialBundle: refreshed.encoded,
+        };
       },
     );
   }
@@ -818,7 +914,8 @@ async function captureSessionCredential(
   session: { authFilePath: string; credentialStore?: JimengCredentialStore },
   initial: { encoded: string; bytes: Buffer; accountProfile?: Record<string, unknown> },
   cliVersion: string,
-): Promise<{ changed: boolean; encoded: string }> {
+  options: { accountProfileOutput?: string; creditCheckedAt?: string } = {},
+): Promise<{ changed: boolean; encoded: string; accountProfile?: Record<string, unknown> }> {
   let bytes: Buffer;
   if (session.credentialStore) {
     bytes = await session.credentialStore.capture();
@@ -834,7 +931,16 @@ async function captureSessionCredential(
     }
   }
   validateAuthBytes(bytes);
-  if (bytes.equals(initial.bytes)) return { changed: false, encoded: initial.encoded };
+  const accountProfile = options.accountProfileOutput === undefined
+    ? initial.accountProfile
+    : {
+        ...parseJimengAccountProfile(options.accountProfileOutput, bytes),
+        ...(options.creditCheckedAt ? { creditCheckedAt: options.creditCheckedAt } : {}),
+      };
+  const profileChanged = stableJson(accountProfile) !== stableJson(initial.accountProfile);
+  if (bytes.equals(initial.bytes) && !profileChanged) {
+    return { changed: false, encoded: initial.encoded, accountProfile };
+  }
   return {
     changed: true,
     encoded: JSON.stringify({
@@ -844,8 +950,9 @@ async function captureSessionCredential(
       authFileSha256: sha256(bytes),
       capturedAt: new Date().toISOString(),
       sourceCliVersion: cliVersion,
-      ...(initial.accountProfile ? { accountProfile: initial.accountProfile } : {}),
+      ...(accountProfile ? { accountProfile } : {}),
     }),
+    accountProfile,
   };
 }
 
@@ -1298,6 +1405,29 @@ function errorEvent(
       ? error
       : videoError('cli_execution', errorCode(error), retryable(error), false, error);
   return failedEvent(message, operation, detail.stage, detail.code, detail.retryable, detail.submissionUnknown);
+}
+
+function usageFailedEvent(
+  message: Pick<PlatformJimengUsageRefresh, 'requestId' | 'nodeId' | 'credentialBindingId'>,
+  errorCode: string,
+  canRetry: boolean,
+): ProviderJimengUsageFailed {
+  return {
+    type: 'provider.jimeng_usage_failed',
+    protocolVersion: JIMENG_USAGE_CONTROL_PROTOCOL_VERSION,
+    requestId: message.requestId,
+    nodeId: message.nodeId,
+    credentialBindingId: message.credentialBindingId,
+    errorCode,
+    retryable: canRetry,
+  };
+}
+
+function usageErrorEvent(
+  message: PlatformJimengUsageRefresh,
+  error: unknown,
+): ProviderJimengUsageFailed {
+  return usageFailedEvent(message, errorCode(error), retryable(error));
 }
 
 class JimengVideoError extends Error {

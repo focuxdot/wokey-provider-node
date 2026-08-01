@@ -22,10 +22,18 @@ export interface ProviderOfficialExitMetadata {
 
 export type OfficialExitDataProtocol = 'json_base64_v1' | 'binary_v1';
 export type OfficialExitEarlyDataProtocol = 'buffered_v1';
+export type OfficialExitTrafficClass = 'interactive' | 'bulk';
+
+export interface OfficialExitBulkTransferCapabilities {
+  minInitialWindowBytes: number;
+  maxInitialWindowBytes: number;
+  maxConnectionQueueBytes: number;
+}
 
 export interface ProviderTransportCapabilities {
   officialExitDataProtocols?: OfficialExitDataProtocol[];
   officialExitEarlyDataProtocols?: OfficialExitEarlyDataProtocol[];
+  officialExitBulkTransfer?: OfficialExitBulkTransferCapabilities;
   flowControl?: Array<'credit_v1'>;
   maxBinaryFrameBytes?: number;
 }
@@ -55,6 +63,8 @@ export const JIMENG_CLI_INSTALL_PROTOCOL_VERSION = 1;
 export type JimengCliInstallProtocolVersion = typeof JIMENG_CLI_INSTALL_PROTOCOL_VERSION;
 export const JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION = 2;
 export type JimengVideoControlProtocolVersion = typeof JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION;
+export const JIMENG_USAGE_CONTROL_PROTOCOL_VERSION = 1;
+export type JimengUsageControlProtocolVersion = typeof JIMENG_USAGE_CONTROL_PROTOCOL_VERSION;
 
 export interface ProviderNodeControlCapabilities {
   jimengCliInstall?: {
@@ -70,6 +80,10 @@ export interface ProviderNodeControlCapabilities {
     generationModes: Array<'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference'>;
     upstreamModelVersions: string[];
     resolutions: string[];
+  };
+  jimengUsage?: {
+    protocolVersions: JimengUsageControlProtocolVersion[];
+    cliVersion: string;
   };
 }
 
@@ -160,6 +174,10 @@ export interface PlatformProviderReady {
     flowControl?: 'credit_v1';
     initialWindowBytes?: number;
     maxBinaryFrameBytes?: number;
+    bulkTransfer?: {
+      initialWindowBytes: number;
+      connectionQueueBudgetBytes: number;
+    };
   };
 }
 
@@ -248,6 +266,46 @@ export interface ProviderJimengCliInstallFailed {
   protocolVersion: JimengCliInstallProtocolVersion;
   requestId: string;
   nodeId: string;
+  errorCode: string;
+  retryable: boolean;
+}
+
+export interface PlatformJimengUsageRefresh {
+  type: 'platform.jimeng_usage_refresh';
+  protocolVersion: JimengUsageControlProtocolVersion;
+  requestId: string;
+  providerId: string;
+  nodeId: string;
+  credentialBindingId: string;
+  deadlineMs: number;
+  encodedCredentialBundle: string;
+}
+
+export interface PlatformJimengUsageCancel {
+  type: 'platform.jimeng_usage_cancel';
+  protocolVersion: JimengUsageControlProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  credentialBindingId: string;
+}
+
+export interface ProviderJimengUsageCompleted {
+  type: 'provider.jimeng_usage_completed';
+  protocolVersion: JimengUsageControlProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  credentialBindingId: string;
+  totalCredit: number;
+  checkedAt: string;
+  encodedCredentialBundle: string;
+}
+
+export interface ProviderJimengUsageFailed {
+  type: 'provider.jimeng_usage_failed';
+  protocolVersion: JimengUsageControlProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  credentialBindingId: string;
   errorCode: string;
   retryable: boolean;
 }
@@ -354,6 +412,8 @@ export interface OfficialExitOpenRequest {
   maxBytesOut?: number;
   dataProtocol?: OfficialExitDataProtocol;
   earlyDataProtocol?: OfficialExitEarlyDataProtocol;
+  trafficClass?: OfficialExitTrafficClass;
+  initialWindowBytes?: number;
 }
 
 export interface OfficialExitOpenResponse {
@@ -416,6 +476,8 @@ export type ProviderToPlatformMessage =
   | ProviderJimengAuthFailed
   | ProviderJimengCliInstallCompleted
   | ProviderJimengCliInstallFailed
+  | ProviderJimengUsageCompleted
+  | ProviderJimengUsageFailed
   | OfficialExitOpenResponse
   | OfficialExitDataFrame
   | OfficialExitClose
@@ -429,6 +491,8 @@ export type PlatformToProviderMessage =
   | PlatformJimengAuthStart
   | PlatformJimengAuthCancel
   | PlatformJimengCliInstall
+  | PlatformJimengUsageRefresh
+  | PlatformJimengUsageCancel
   | OfficialExitOpenRequest
   | OfficialExitDataFrame
   | OfficialExitClose;

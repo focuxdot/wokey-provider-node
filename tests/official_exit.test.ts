@@ -9,6 +9,7 @@ import {
   OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES,
   OFFICIAL_EXIT_VENDOR_CONFIGS,
   ProviderOfficialExitTunnelManager,
+  type ProviderOfficialExitSendOptions,
   classifyConnectError,
   classifySocketError,
   isOfficialExitHostAllowed,
@@ -103,10 +104,10 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('grok.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('bytetsd-router.byted.org', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jimeng.jianying.com', defaults)).toBe(true);
-    expect(isOfficialExitHostAllowed('future-service.byted.org', defaults)).toBe(true);
-    expect(isOfficialExitHostAllowed('future-api.jianying.com', defaults)).toBe(true);
-    expect(isOfficialExitHostAllowed('byted.org', defaults)).toBe(true);
-    expect(isOfficialExitHostAllowed('jianying.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('future-service.byted.org', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('future-api.jianying.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('byted.org', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('jianying.com', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('jimeng.jianying.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('notbyted.org', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
@@ -287,6 +288,50 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
         webSocketBytesFromPlatform: inbound.byteLength,
       },
     });
+  });
+
+  it('routes negotiated bulk frames through the shared socket with a 1 MiB window', async () => {
+    const upstream = createServer((socket) => {
+      socket.write('bulk-response');
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const sent: Array<{ message: Record<string, unknown> | Buffer; options?: ProviderOfficialExitSendOptions }> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message, options) => {
+        sent.push({ message, options });
+      },
+      ['127.0.0.1'],
+    );
+    manager.setNegotiatedDataProtocol('binary_v1');
+    manager.setNegotiatedBulkTransfer({
+      bulkInitialWindowBytes: 1024 * 1024,
+    });
+
+    await manager.handleMessage({
+      ...openRequest('127.0.0.1', address.port),
+      dataProtocol: 'binary_v1',
+      trafficClass: 'bulk',
+      initialWindowBytes: 1024 * 1024,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const bulkFrame = sent.find((entry) => Buffer.isBuffer(entry.message));
+    expect(bulkFrame?.options).toMatchObject({
+      lane: 'bulk',
+      sessionId: 'sess_1',
+    });
+    expect(bulkFrame?.options).not.toHaveProperty('dataChannel');
+    expect(decodeOfficialExitBinaryFrame(bulkFrame?.message as Buffer)).toMatchObject({
+      kind: 'data',
+      sessionId: 'sess_1',
+      payload: Buffer.from('bulk-response'),
+    });
+
+    manager.closeAll('test_complete');
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
   });
 
   it('buffers one bounded binary-v1 prefix until TCP connects, then flushes it before open completes', async () => {
