@@ -369,6 +369,7 @@ function createJimengRuntime(cli: DreaminaCliDescriptor | undefined): {
     authorization: new JimengAuthorizationHandler({
       cli,
       withCredentialLease: (operation) => jimengCredentialLease.run(operation),
+      prepareCommandHome: (homeDir) => dreaminaCliInstaller.prepareCommandHome(homeDir),
       getIdentity: () => ({ nodeId: config.nodeId, providerId: config.providerId }),
     }),
     video: new JimengVideoHandler({

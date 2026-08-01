@@ -71,7 +71,10 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'jimeng',
     displayName: 'Jimeng / Dreamina',
-    allowedHosts: ['bytetsd-router.byted.org', 'jimeng.jianying.com'],
+    // Intentionally keep registrable-domain scope. Jimeng has changed API
+    // endpoints before; narrowing these entries would force needless Node
+    // rebuilds whenever another official subdomain is introduced.
+    allowedHosts: ['*.byted.org', '*.jianying.com'],
   },
 ]);
 

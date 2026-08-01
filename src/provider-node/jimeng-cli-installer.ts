@@ -1,14 +1,18 @@
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { defaultDreaminaCliPath, parseCliVersion } from './jimeng-auth.js';
 
 const DREAMINA_CLI_DOWNLOAD_BASE =
   'https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/dreamina_cli_beta';
+const DREAMINA_VERSION_METADATA_URL =
+  'https://lf3-static.bytednsdoc.com/obj/eden-cn/psj_hupthlyk/ljhwZthlaukjlkulzlp/version.json';
 const DREAMINA_CLI_DOWNLOAD_HOST = 'lf3-static.bytednsdoc.com';
 const MAX_CLI_BYTES = 64 * 1024 * 1024;
+const MAX_VERSION_METADATA_BYTES = 16 * 1024;
+const VERSION_METADATA_DOWNLOAD_TIMEOUT_MS = 10_000;
 
 const ARTIFACTS = {
   'darwin-arm64': 'dreamina_cli_darwin_arm64',
@@ -61,14 +65,17 @@ export class DreaminaCliInstaller {
   private readonly platform: NodeJS.Platform;
   private readonly arch: string;
   private readonly targetPath?: string;
+  private readonly homeDir: string;
+  private versionMetadataPromise?: Promise<Buffer>;
 
   constructor(private readonly options: DreaminaCliInstallerOptions = {}) {
     this.platform = options.platform ?? process.platform;
     this.arch = options.arch ?? process.arch;
+    this.homeDir = options.homeDir ?? homedir();
     const artifact = dreaminaCliArtifact(this.platform, this.arch);
     this.targetPath = artifact
       ? options.configuredPath ||
-        defaultDreaminaCliPath(this.platform as SupportedPlatform, options.homeDir ?? homedir())
+        defaultDreaminaCliPath(this.platform as SupportedPlatform, this.homeDir)
       : undefined;
     this.currentStatus = {
       supported: Boolean(artifact),
@@ -111,6 +118,15 @@ export class DreaminaCliInstaller {
         this.installPromise = undefined;
       });
     return this.installPromise;
+  }
+
+  async prepareCommandHome(commandHomeDir: string): Promise<void> {
+    const bytes = await this.ensureVersionMetadata();
+    const targetPath = join(commandHomeDir, '.dreamina_cli', 'version.json');
+    const installedPath = this.versionMetadataPath();
+    if (targetPath === installedPath) return;
+    await mkdir(dirname(targetPath), { recursive: true, mode: 0o700 });
+    await writeFile(targetPath, bytes, { mode: 0o600 });
   }
 
   private async performInstall(): Promise<DreaminaCliInstallResult> {
@@ -171,6 +187,7 @@ export class DreaminaCliInstaller {
       await writeFile(stagedPath, bytes, { mode: 0o700, flag: 'wx' });
       if (this.platform !== 'win32') await chmod(stagedPath, 0o755);
       const version = await (this.options.verifyBinary ?? verifyDreaminaBinary)(stagedPath);
+      await this.ensureVersionMetadata(true);
       try {
         await stat(this.targetPath);
         await rename(this.targetPath, backupPath);
@@ -192,6 +209,75 @@ export class DreaminaCliInstaller {
       await rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
   }
+
+  private ensureVersionMetadata(forceRefresh = false): Promise<Buffer> {
+    if (!forceRefresh && this.versionMetadataPromise) return this.versionMetadataPromise;
+    const operation = this.loadOrDownloadVersionMetadata(forceRefresh).finally(() => {
+      if (this.versionMetadataPromise === operation) this.versionMetadataPromise = undefined;
+    });
+    this.versionMetadataPromise = operation;
+    return operation;
+  }
+
+  private async loadOrDownloadVersionMetadata(forceRefresh: boolean): Promise<Buffer> {
+    const path = this.versionMetadataPath();
+    if (!forceRefresh) {
+      try {
+        const existing = await readFile(path);
+        validateVersionMetadata(existing);
+        return existing;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && error instanceof DreaminaCliInstallError) {
+          // Replace malformed or partial metadata with a fresh official copy.
+        } else if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw new DreaminaCliInstallError('jimeng_cli_version_metadata_failed', true, { cause: error });
+        }
+      }
+    }
+
+    let response: Response;
+    try {
+      response = await (this.options.fetchImpl ?? fetch)(DREAMINA_VERSION_METADATA_URL, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(VERSION_METADATA_DOWNLOAD_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new DreaminaCliInstallError('jimeng_cli_version_metadata_download_failed', true, { cause: error });
+    }
+    let finalUrl: URL;
+    try {
+      finalUrl = new URL(response.url || DREAMINA_VERSION_METADATA_URL);
+    } catch {
+      throw new DreaminaCliInstallError('jimeng_cli_install_source_rejected');
+    }
+    if (finalUrl.protocol !== 'https:' || finalUrl.hostname !== DREAMINA_CLI_DOWNLOAD_HOST) {
+      throw new DreaminaCliInstallError('jimeng_cli_install_source_rejected');
+    }
+    if (!response.ok) throw new DreaminaCliInstallError('jimeng_cli_version_metadata_download_failed', true);
+    const declaredLength = parseContentLength(response.headers.get('content-length'));
+    if (declaredLength === undefined || declaredLength <= 0 || declaredLength > MAX_VERSION_METADATA_BYTES) {
+      throw new DreaminaCliInstallError('jimeng_cli_version_metadata_invalid');
+    }
+    let bytes: Buffer;
+    try {
+      const arrayBuffer = await response.arrayBuffer();
+      if (arrayBuffer.byteLength !== declaredLength || arrayBuffer.byteLength > MAX_VERSION_METADATA_BYTES) {
+        throw new DreaminaCliInstallError('jimeng_cli_version_metadata_invalid');
+      }
+      bytes = Buffer.from(arrayBuffer);
+      validateVersionMetadata(bytes);
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await writeFile(path, bytes, { mode: 0o600 });
+    } catch (error) {
+      if (error instanceof DreaminaCliInstallError) throw error;
+      throw new DreaminaCliInstallError('jimeng_cli_version_metadata_failed', true, { cause: error });
+    }
+    return bytes;
+  }
+
+  private versionMetadataPath(): string {
+    return join(this.homeDir, '.dreamina_cli', 'version.json');
+  }
 }
 
 export function dreaminaCliArtifact(platform: NodeJS.Platform, arch: string): string | undefined {
@@ -208,6 +294,31 @@ function normalizeInstallError(error: unknown): DreaminaCliInstallError {
   return error instanceof DreaminaCliInstallError
     ? error
     : new DreaminaCliInstallError('jimeng_cli_install_failed', true, { cause: error });
+}
+
+function validateVersionMetadata(bytes: Buffer): void {
+  if (bytes.byteLength < 1 || bytes.byteLength > MAX_VERSION_METADATA_BYTES) {
+    throw new DreaminaCliInstallError('jimeng_cli_version_metadata_invalid');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw new DreaminaCliInstallError('jimeng_cli_version_metadata_invalid');
+  }
+  const version = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>).version
+    : undefined;
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    typeof version !== 'string' ||
+    !version ||
+    version.length > 128
+  ) {
+    throw new DreaminaCliInstallError('jimeng_cli_version_metadata_invalid');
+  }
 }
 
 function verifyDreaminaBinary(path: string): Promise<string> {

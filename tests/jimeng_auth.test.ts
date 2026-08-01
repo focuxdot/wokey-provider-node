@@ -258,6 +258,7 @@ describe('JimengAuthorizationHandler', () => {
     const nativeHomeDir = join(parent, 'native-home');
     await mkdir(nativeHomeDir, { mode: 0o700 });
     const observedEnvironments: NodeJS.ProcessEnv[] = [];
+    const preparedHomes: string[] = [];
     const auth = Buffer.from(
       JSON.stringify({
         access_token: 'access-secret',
@@ -271,6 +272,9 @@ describe('JimengAuthorizationHandler', () => {
       cli: { path: '/opt/dreamina', version: '1.4.14' },
       platform,
       nativeHomeDir,
+      prepareCommandHome: async (homeDir) => {
+        preparedHomes.push(homeDir);
+      },
       getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
       tempParentDir: parent,
       createCredentialStore: (options) => {
@@ -304,6 +308,7 @@ describe('JimengAuthorizationHandler', () => {
     });
 
     expect(event.type).toBe('provider.jimeng_auth_completed');
+    expect(preparedHomes).toEqual([platform === 'darwin' ? nativeHomeDir : observedEnvironments[0]?.HOME]);
     expect(observedEnvironments).toHaveLength(4);
     for (const env of observedEnvironments) {
       if (platform === 'darwin') expect(env.HOME).toBe(nativeHomeDir);
@@ -496,6 +501,35 @@ describe('JimengAuthorizationHandler', () => {
       userCode: 'ABCD-EFGH',
     });
     expect(JSON.stringify(events)).not.toContain('node-only-secret');
+  });
+
+  it.each([
+    ['authsdk: store unavailable: backend unavailable', 'jimeng_credential_store_unavailable'],
+    ['[authsdk:NewLoginFlow] get device code failed: request timeout', 'jimeng_device_authorization_request_failed'],
+    ['检测到本地文件版本文件缺失，强烈建议您重新运行curl命令更新版本', 'jimeng_cli_version_metadata_missing'],
+  ])('maps safe CLI diagnostics to an actionable error code', async (stderr, errorCode) => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-diagnostic-test-'));
+    tempDirs.push(parent);
+    const handler = new JimengAuthorizationHandler({
+      cli: { path: '/opt/dreamina', version: '1.4.15' },
+      platform: 'linux',
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      tempParentDir: parent,
+      createCredentialStore: () => ({
+        snapshot: async () => undefined,
+        capture: async () => Buffer.alloc(0),
+        restore: async () => {},
+      }),
+      runCommand: async () => ({ stdout: '', stderr }),
+    });
+
+    const event = await new Promise<JimengAuthEvent>((resolve) => handler.start(startMessage(), resolve));
+
+    expect(event).toMatchObject({
+      type: 'provider.jimeng_auth_failed',
+      stage: 'device_authorization',
+      errorCode,
+    });
   });
 
   it('fails closed when stdout and stderr contain conflicting authorization material', async () => {

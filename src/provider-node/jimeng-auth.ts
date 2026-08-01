@@ -80,6 +80,7 @@ export interface JimengAuthorizationHandlerOptions {
     options: { env: NodeJS.ProcessEnv; timeoutMs: number; flow: RunningFlow },
   ) => Promise<CommandResult>;
   withCredentialLease?: <T>(operation: () => Promise<T>) => Promise<T>;
+  prepareCommandHome?: (homeDir: string) => Promise<void>;
 }
 
 export class JimengAuthorizationHandler {
@@ -190,6 +191,7 @@ export class JimengAuthorizationHandler {
         mkdir(cacheDir, { mode: 0o700 }),
         mkdir(runtimeDir, { mode: 0o700 }),
       ]);
+      await this.options.prepareCommandHome?.(commandHomeDir);
 
       credentialStore = (this.options.createCredentialStore ?? createJimengCredentialStore)({
         platform,
@@ -569,7 +571,7 @@ function parseDeviceAuthorization(output: CommandResult): {
   const userCode = fields.get('user_code');
   const deviceCode = fields.get('device_code');
   if (!verificationUri || !userCode || !deviceCode) {
-    throw new Error('jimeng_device_authorization_output_invalid');
+    throw new Error(deviceAuthorizationOutputErrorCode(output));
   }
   const parsedUri = new URL(verificationUri);
   if (!isOfficialJimengVerificationUri(parsedUri)) {
@@ -592,6 +594,20 @@ function parseDeviceAuthorization(output: CommandResult): {
     deviceCode,
     expiresInSeconds: Number.isFinite(expires) && expires > 0 ? expires : undefined,
   };
+}
+
+function deviceAuthorizationOutputErrorCode(output: CommandResult): string {
+  const diagnostic = `${output.stdout}\n${output.stderr}`.toLowerCase();
+  if (diagnostic.includes('store unavailable') || diagnostic.includes('backend unavailable')) {
+    return 'jimeng_credential_store_unavailable';
+  }
+  if (diagnostic.includes('get device code failed')) {
+    return 'jimeng_device_authorization_request_failed';
+  }
+  if (diagnostic.includes('版本文件缺失') || (diagnostic.includes('version file') && diagnostic.includes('missing'))) {
+    return 'jimeng_cli_version_metadata_missing';
+  }
+  return 'jimeng_device_authorization_output_invalid';
 }
 
 const DEVICE_AUTHORIZATION_FIELDS = new Set([
