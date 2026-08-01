@@ -7,7 +7,9 @@ const AUTH_FILE_RELATIVE_PATH = join('.local', 'share', 'dreamina', 'byted_cli_u
 const KEYRING_SERVICE = 'dreamina';
 const KEYRING_ACCOUNT = 'byted_cli_user_token';
 const WINDOWS_TARGET = `${KEYRING_SERVICE}:${KEYRING_ACCOUNT}`;
+const GO_KEYRING_BASE64_PREFIX = 'go-keyring-base64:';
 const MAX_SECRET_BYTES = 64 * 1024;
+const MACOS_SECURITY_COMMAND_MAX_BYTES = 4 * 1024;
 const NATIVE_COMMAND_TIMEOUT_MS = 10_000;
 
 export type SupportedDreaminaPlatform = 'linux' | 'darwin' | 'win32';
@@ -98,13 +100,13 @@ class MacOsCredentialStore implements JimengCredentialStore {
     );
     if (result.code === 44) return undefined;
     assertNativeSuccess(result);
-    return trimSingleTrailingNewline(result.stdout);
+    return decodeGoKeyringSecret(trimSingleTrailingNewline(result.stdout));
   }
 
   async capture(): Promise<Buffer> {
     const stored = await this.snapshot();
     if (!stored) throw new Error('jimeng_credential_not_found');
-    return decodeGoKeyringSecret(stored);
+    return stored;
   }
 
   async restore(snapshot: Buffer | undefined): Promise<void> {
@@ -117,6 +119,26 @@ class MacOsCredentialStore implements JimengCredentialStore {
       if (result.code !== 0 && result.code !== 44) assertNativeSuccess(result);
       return;
     }
+    // Match zalando/go-keyring's macOS representation and its `security -i`
+    // write path. The credential is base64 encoded into a single command read
+    // from stdin, so multiline JSON never enters argv or process listings.
+    const encoded = `${GO_KEYRING_BASE64_PREFIX}${snapshot.toString('base64')}`;
+    const command = `${[
+      'add-generic-password',
+      '-U',
+      '-s', quoteSecurityInteractive(KEYRING_SERVICE),
+      '-a', quoteSecurityInteractive(KEYRING_ACCOUNT),
+      '-w', quoteSecurityInteractive(encoded),
+    ].join(' ')}\n`;
+    if (Buffer.byteLength(command) > MACOS_SECURITY_COMMAND_MAX_BYTES) {
+      throw new Error('jimeng_credential_store_input_too_large');
+    }
+    const result = await this.run(
+      '/usr/bin/security',
+      ['-i'],
+      { env: this.env, input: Buffer.from(command, 'utf8'), timeoutMs: NATIVE_COMMAND_TIMEOUT_MS },
+    );
+    assertNativeSuccess(result);
     const current = await this.snapshot();
     if (!current?.equals(snapshot)) throw new Error('jimeng_credential_store_failed');
   }
@@ -200,6 +222,10 @@ function trimSingleTrailingNewline(value: Buffer): Buffer {
     return value.subarray(0, end);
   }
   return value;
+}
+
+function quoteSecurityInteractive(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function runNativeCommand(

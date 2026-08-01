@@ -631,4 +631,89 @@ describe('Jimeng Provider Node video executor', () => {
       await rm(parent, { recursive: true, force: true });
     }
   });
+
+  it.each(['darwin', 'win32'] as const)(
+    'reuses an identical native credential without writing the credential store on %s',
+    async (platform) => {
+      const parent = await mkdtemp(join(tmpdir(), `wokey-jimeng-video-native-reuse-${platform}-`));
+      const bundle = JSON.parse(credentialBundle()) as { authFileBase64: string };
+      const localCredential = Buffer.from(bundle.authFileBase64, 'base64');
+      const restore = vi.fn(async () => {});
+      const handler = new JimengVideoHandler({
+        cli: { path: '/opt/dreamina', version: '1.4.15' },
+        receiptsDirectory: join(parent, 'receipts'),
+        ...receiptCodec,
+        tempParentDir: parent,
+        platform,
+        getIdentity: () => ({ nodeId: 'node-1', providerId: 'provider-1' }),
+        createCredentialStore: () => ({
+          snapshot: async () => Buffer.from(localCredential),
+          restore,
+          capture: async () => Buffer.from(localCredential),
+        }),
+        runCommand: async (_binary, _args, options) => {
+          const taskDir = join(commandHome(options.env), '.dreamina_cli');
+          await mkdir(taskDir, { recursive: true });
+          await writeFile(join(taskDir, 'tasks.db'), sqliteDatabase());
+          return { stdout: '{"submit_id":"submit-native-reuse"}', stderr: '' };
+        },
+      });
+      try {
+        const result = await execute(handler, submitMessage());
+        expect(result).toMatchObject({
+          type: 'provider.jimeng_video_completed',
+          credentialChanged: false,
+        });
+        expect(restore).not.toHaveBeenCalled();
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['darwin', 'win32'] as const)(
+    'reuses a refreshed native credential for the same Jimeng account on %s',
+    async (platform) => {
+      const parent = await mkdtemp(join(tmpdir(), `wokey-jimeng-video-native-account-reuse-${platform}-`));
+      const bundle = JSON.parse(credentialBundle()) as { authFileBase64: string };
+      const localAuth = JSON.parse(Buffer.from(bundle.authFileBase64, 'base64').toString()) as Record<string, unknown>;
+      localAuth.access_token = 'newer-local-access-token';
+      localAuth.refresh_token = 'newer-local-refresh-token';
+      const localCredential = Buffer.from(JSON.stringify(localAuth, null, 2));
+      const restore = vi.fn(async () => {});
+      const handler = new JimengVideoHandler({
+        cli: { path: '/opt/dreamina', version: '1.4.15' },
+        receiptsDirectory: join(parent, 'receipts'),
+        ...receiptCodec,
+        tempParentDir: parent,
+        platform,
+        getIdentity: () => ({ nodeId: 'node-1', providerId: 'provider-1' }),
+        createCredentialStore: () => ({
+          snapshot: async () => Buffer.from(localCredential),
+          restore,
+          capture: async () => Buffer.from(localCredential),
+        }),
+        runCommand: async (_binary, _args, options) => {
+          const taskDir = join(commandHome(options.env), '.dreamina_cli');
+          await mkdir(taskDir, { recursive: true });
+          await writeFile(join(taskDir, 'tasks.db'), sqliteDatabase());
+          return { stdout: '{"submit_id":"submit-native-account-reuse"}', stderr: '' };
+        },
+      });
+      try {
+        const result = await execute(handler, submitMessage());
+        expect(result).toMatchObject({
+          type: 'provider.jimeng_video_completed',
+          credentialChanged: true,
+        });
+        expect(restore).not.toHaveBeenCalled();
+        if (result.type !== 'provider.jimeng_video_completed' || !result.encodedCredentialBundle)
+          throw new Error('missing refreshed credential');
+        const refreshed = JSON.parse(result.encodedCredentialBundle) as { authFileBase64: string };
+        expect(Buffer.from(refreshed.authFileBase64, 'base64')).toEqual(localCredential);
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    },
+  );
 });

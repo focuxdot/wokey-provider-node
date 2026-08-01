@@ -587,10 +587,11 @@ describe('Jimeng credential stores', () => {
     expect(decodeGoKeyringSecret(Buffer.from('hello'))).toEqual(Buffer.from('hello'));
   });
 
-  it('captures and preserves an unchanged macOS Keychain credential without putting secrets in argv', async () => {
-    const current = Buffer.from('go-keyring-base64:Y3VycmVudA==');
+  it('captures, injects, verifies, and restores macOS Keychain credentials without putting secrets in argv', async () => {
+    const previous = Buffer.from('previous-native-secret');
+    const injected = Buffer.from('{\n  "access_token": "injected-secret"\n}');
+    let stored = Buffer.from(`go-keyring-base64:${previous.toString('base64')}`);
     const calls: Array<{ args: string[]; input?: Buffer }> = [];
-    let reads = 0;
     const run = async (
       _executable: string,
       args: string[],
@@ -598,25 +599,31 @@ describe('Jimeng credential stores', () => {
     ): Promise<NativeCommandResult> => {
       calls.push({ args, input: options.input });
       if (args[0] === 'find-generic-password') {
-        reads += 1;
-        return { code: 0, stdout: Buffer.concat([current, Buffer.from('\n')]), stderr: Buffer.alloc(0) };
+        return { code: 0, stdout: Buffer.concat([stored, Buffer.from('\n')]), stderr: Buffer.alloc(0) };
       }
+      const command = options.input?.toString('utf8') ?? '';
+      const encoded = command.match(/-w '([^']+)'/)?.[1];
+      if (!encoded) return { code: 2, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      stored = Buffer.from(encoded);
       return { code: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     };
     const store = createJimengCredentialStore({ platform: 'darwin', homeDir: '/unused', env: {}, runNativeCommand: run });
     const snapshot = await store.snapshot();
-    await expect(store.capture()).resolves.toEqual(Buffer.from('current'));
+    await expect(store.capture()).resolves.toEqual(previous);
+    await store.restore(injected);
+    await expect(store.capture()).resolves.toEqual(injected);
     await store.restore(snapshot);
+    await expect(store.capture()).resolves.toEqual(previous);
 
-    expect(reads).toBe(3);
-    expect(calls.every((call) => call.args[0] === 'find-generic-password')).toBe(true);
-    expect(calls.every((call) => call.input === undefined)).toBe(true);
+    const writes = calls.filter((call) => call.args[0] === '-i');
+    expect(writes).toHaveLength(2);
+    expect(writes.every((call) => call.args.length === 1)).toBe(true);
+    expect(writes.every((call) => !call.input?.includes(injected))).toBe(true);
+    expect(writes.every((call) => call.input?.includes('go-keyring-base64:'))).toBe(true);
   });
 
-  it('refuses to rewrite a changed macOS Keychain credential through argv', async () => {
-    const previous = Buffer.from('go-keyring-base64:cHJldmlvdXM=');
-    const current = Buffer.from('go-keyring-base64:Y3VycmVudA==');
-    let reads = 0;
+  it('fails closed when a macOS Keychain write does not persist', async () => {
+    const previous = Buffer.from('previous');
     const calls: Array<{ args: string[]; input?: Buffer }> = [];
     const run = async (
       _executable: string,
@@ -624,12 +631,11 @@ describe('Jimeng credential stores', () => {
       options: { input?: Buffer },
     ): Promise<NativeCommandResult> => {
       calls.push({ args, input: options.input });
-      reads += 1;
-      return {
-        code: 0,
-        stdout: Buffer.concat([reads === 1 ? previous : current, Buffer.from('\n')]),
-        stderr: Buffer.alloc(0),
-      };
+      if (args[0] === 'find-generic-password') {
+        const stored = Buffer.from(`go-keyring-base64:${previous.toString('base64')}\n`);
+        return { code: 0, stdout: stored, stderr: Buffer.alloc(0) };
+      }
+      return { code: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     };
     const store = createJimengCredentialStore({
       platform: 'darwin',
@@ -638,10 +644,8 @@ describe('Jimeng credential stores', () => {
       runNativeCommand: run,
     });
 
-    const snapshot = await store.snapshot();
-    await expect(store.restore(snapshot)).rejects.toThrow('jimeng_credential_store_failed');
-    expect(calls.every((call) => call.args[0] === 'find-generic-password')).toBe(true);
-    expect(calls.every((call) => call.input === undefined)).toBe(true);
+    await expect(store.restore(Buffer.from('different'))).rejects.toThrow('jimeng_credential_store_failed');
+    expect(calls.some((call) => call.args[0] === '-i')).toBe(true);
   });
 
   it('uses Windows Credential Manager through encoded code and sends credential bytes over stdin', async () => {

@@ -389,7 +389,7 @@ async function withEphemeralSession<T>(
   let primaryError: unknown;
   let credentialStore: JimengCredentialStore | undefined;
   let credentialSnapshot: Buffer | undefined;
-  let credentialInjected = false;
+  let credentialReplaced = false;
   try {
     await chmod(rootDir, 0o700);
     const env: NodeJS.ProcessEnv = {
@@ -421,15 +421,17 @@ async function withEphemeralSession<T>(
     } else {
       credentialStore = (options.createCredentialStore ?? createJimengCredentialStore)({ platform, homeDir, env });
       credentialSnapshot = await credentialStore.snapshot();
-      await credentialStore.restore(credential.bytes);
-      credentialInjected = true;
+      if (!canReuseNativeCredential(credentialSnapshot, credential.bytes)) {
+        await credentialStore.restore(credential.bytes);
+        credentialReplaced = true;
+      }
     }
     if (taskState) await restoreTaskState(homeDir, videoJobId, taskState.submitId, taskState.encoded);
     result = await run({ rootDir, homeDir, authFilePath, env, credentialStore });
   } catch (error) {
     primaryError = error;
   }
-  if (credentialInjected && credentialStore) {
+  if (credentialReplaced && credentialStore) {
     try {
       await credentialStore.restore(credentialSnapshot);
     } catch (error) {
@@ -445,6 +447,25 @@ async function withEphemeralSession<T>(
   }
   if (primaryError !== undefined) throw primaryError;
   return result as T;
+}
+
+function canReuseNativeCredential(local: Buffer | undefined, platform: Buffer): boolean {
+  if (!local) return false;
+  if (local.equals(platform)) return true;
+  const localAccountId = jimengCredentialAccountId(local);
+  const platformAccountId = jimengCredentialAccountId(platform);
+  return localAccountId !== undefined && localAccountId === platformAccountId;
+}
+
+function jimengCredentialAccountId(bytes: Buffer): string | undefined {
+  try {
+    const value = JSON.parse(bytes.toString('utf8')) as Record<string, unknown>;
+    if (!value.user_info || typeof value.user_info !== 'object' || Array.isArray(value.user_info)) return undefined;
+    const userId = (value.user_info as Record<string, unknown>).user_id;
+    return typeof userId === 'string' && userId.length > 0 ? userId : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function validateSubmitOperation(
