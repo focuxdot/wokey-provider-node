@@ -664,13 +664,13 @@ export class ProviderBridge {
 }
 
 function jimengCliInstallFailure(error: unknown): { errorCode: string; retryable: boolean } {
-  const candidate = error && typeof error === 'object'
-    ? error as { errorCode?: unknown; code?: unknown; message?: unknown; retryable?: unknown }
-    : undefined;
+  const candidate =
+    error && typeof error === 'object'
+      ? (error as { errorCode?: unknown; code?: unknown; message?: unknown; retryable?: unknown })
+      : undefined;
   const rawCode = candidate?.errorCode ?? candidate?.code ?? candidate?.message;
-  const errorCode = typeof rawCode === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(rawCode)
-    ? rawCode
-    : 'jimeng_cli_install_failed';
+  const errorCode =
+    typeof rawCode === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(rawCode) ? rawCode : 'jimeng_cli_install_failed';
   return { errorCode, retryable: candidate?.retryable === true };
 }
 

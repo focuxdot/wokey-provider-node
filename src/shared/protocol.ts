@@ -263,30 +263,30 @@ export interface PlatformJimengVideoExecute {
   encodedCredentialBundle: string;
   operation:
     | {
-      type: 'submit';
-      mode: 'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference';
-      modelVersion: string;
-      prompt: string;
-      durationSeconds: number;
-      ratio: string;
-      resolution: string;
-      mediaInputs: Array<{
-        id: string;
-        kind: 'image' | 'video' | 'audio';
-        role?: 'first_frame' | 'last_frame' | 'reference';
-        filename: string;
-        contentType: string;
-        bytes: number;
-        sha256: string;
-        downloadUrl: string;
-      }>;
-    }
+        type: 'submit';
+        mode: 'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference';
+        modelVersion: string;
+        prompt: string;
+        durationSeconds: number;
+        ratio: string;
+        resolution: string;
+        mediaInputs: Array<{
+          id: string;
+          kind: 'image' | 'video' | 'audio';
+          role?: 'first_frame' | 'last_frame' | 'reference';
+          filename: string;
+          contentType: string;
+          bytes: number;
+          sha256: string;
+          downloadUrl: string;
+        }>;
+      }
     | {
-      type: 'query';
-      submitId: string;
-      encodedTaskStateBundle: string;
-      artifactUpload: { url: string; maxBytes: number };
-    };
+        type: 'query';
+        submitId: string;
+        encodedTaskStateBundle: string;
+        artifactUpload: { url: string; maxBytes: number };
+      };
 }
 
 export interface PlatformJimengVideoCancel {
@@ -313,7 +313,16 @@ export interface ProviderJimengVideoCompleted {
   outputArtifact?: { contentType: 'video/mp4'; bytes: number; sha256: string };
 }
 
-export type JimengVideoFailureStage = 'validation' | 'receipt' | 'credential_injection' | 'media_transfer' | 'task_state_restore' | 'cli_execution' | 'task_state_capture' | 'credential_capture' | 'cleanup';
+export type JimengVideoFailureStage =
+  | 'validation'
+  | 'receipt'
+  | 'credential_injection'
+  | 'media_transfer'
+  | 'task_state_restore'
+  | 'cli_execution'
+  | 'task_state_capture'
+  | 'credential_capture'
+  | 'cleanup';
 
 export interface ProviderJimengVideoFailed {
   type: 'provider.jimeng_video_failed';

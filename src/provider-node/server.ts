@@ -423,9 +423,7 @@ const bridge = new ProviderBridge(() => config, {
   onPlatformReady: () => scheduleCodexAuthJsonMirrorCheck(1_000),
   jimengAuthorization,
   jimengVideo,
-  jimengCliInstall: dreaminaCliInstaller.status().supported
-    ? { install: installDreaminaCliAndActivate }
-    : undefined,
+  jimengCliInstall: dreaminaCliInstaller.status().supported ? { install: installDreaminaCliAndActivate } : undefined,
   onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,
   onPlatformUpgradeAvailable: (msg: PlatformUpgradeAvailable) => {
     if (config.autoUpdate === false) {

@@ -331,4 +331,53 @@ describe('ProviderBridge endpoint failover', () => {
       bridge.stop();
     }
   });
+
+  it('advertises remote Jimeng CLI installation and returns the correlated result', async () => {
+    const { defaultConfig } = await import('../src/provider-node/config.js');
+    const { ProviderBridge } = await import('../src/provider-node/bridge.js');
+    const config = defaultConfig();
+    const install = vi.fn(async () => ({ cliVersion: 'a857341-dirty' }));
+    const bridge = new ProviderBridge(() => config, { jimengCliInstall: { install } });
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+      const initialHello = fakeSockets[0].sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello');
+      expect(initialHello).toMatchObject({
+        controlCapabilities: { jimengCliInstall: { protocolVersions: [1] } },
+      });
+
+      fakeSockets[0].emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.jimeng_cli_install',
+            protocolVersion: 1,
+            requestId: 'install-1',
+            providerId: config.providerId,
+            nodeId: config.nodeId,
+          }),
+        ),
+        false,
+      );
+
+      await vi.waitFor(() => {
+        const result = fakeSockets[0].sent
+          .filter((message): message is string => typeof message === 'string')
+          .map((message) => JSON.parse(message) as Record<string, unknown>)
+          .find((message) => message.type === 'provider.jimeng_cli_install_completed');
+        expect(result).toMatchObject({
+          requestId: 'install-1',
+          nodeId: config.nodeId,
+          cliVersion: 'a857341-dirty',
+        });
+      });
+      expect(install).toHaveBeenCalledTimes(1);
+    } finally {
+      bridge.stop();
+    }
+  });
 });
