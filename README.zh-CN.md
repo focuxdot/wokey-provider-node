@@ -194,6 +194,28 @@ Provider Node 是供应侧软件，但它不是生产业务策略的权威来源
 | `wokey-node update` | 重新运行最新发布的安装器 |
 | `wokey-node logs` | 在支持的环境中显示服务日志 |
 
+请在节点主机上，以运行 Provider Node 的同一个系统用户执行服务命令。正常
+更新会保留节点绑定、凭证和本地配置：
+
+```bash
+wokey-node version
+wokey-node update
+wokey-node status
+```
+
+各平台的卸载方式不同：
+
+| 平台 | 移除运行程序或服务 | 同时清除本地数据 |
+| --- | --- | --- |
+| macOS | `wokey-node uninstall` | `wokey-node uninstall --purge` |
+| Linux `.deb` | 先运行 `wokey-node uninstall-service`，再运行 `sudo apt remove wokey-provider-node` | 另外删除 `~/.config/wokey-provider-node` |
+| Linux tarball | 先运行 `wokey-node uninstall-service`，再删除 [Linux 安装文档](docs/LINUX_INSTALLER.md)列出的运行文件 | 另外删除 `~/.config/wokey-provider-node` |
+| Windows | 先运行 `wokey-node uninstall-service`，再删除 `%LOCALAPPDATA%\WokeyProviderNode` | 另外删除 `%APPDATA%\Wokey Provider Node` |
+| Docker | `docker compose down` | `docker compose down -v` |
+
+`uninstall-service` 只移除后台服务或计划任务，不会删除运行文件和用户数据。
+完整命令和路径请查看对应平台的安装文档。
+
 ## 发布验证
 
 官方发布会附带 `checksums.txt`、`checksums.txt.sig`、`checksums.txt.pem`。安装器始终对每个文件比对 `checksums.txt` 的 SHA-256。如果系统里装了 `cosign`，还会验证 GitHub Actions 对 `checksums.txt` 的 keyless 签名，确认发布产物来自官方发布流程。

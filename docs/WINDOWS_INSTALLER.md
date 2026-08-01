@@ -48,8 +48,38 @@ wokey-node logs
 wokey-node open
 ```
 
-To remove the Scheduled Task while keeping user data:
+## Update
+
+Run in PowerShell or Command Prompt as the same Windows user that runs Provider
+Node:
+
+```powershell
+wokey-node version
+wokey-node update
+wokey-node status
+```
+
+The updater downloads the latest release installer, verifies the artifact,
+reinstalls the runtime, and restarts the Scheduled Task. It keeps the node
+binding and local data. If `wokey-node` is not found immediately after the
+first installation, open a new terminal so the updated user `Path` is loaded.
+
+## Uninstall
+
+Remove the Scheduled Task first:
 
 ```powershell
 wokey-node uninstall-service
+```
+
+This command keeps both the runtime and user data. Remove the runtime files:
+
+```powershell
+Remove-Item "$env:LOCALAPPDATA\WokeyProviderNode" -Recurse -Force
+```
+
+To purge the node binding, credentials, and other local data too:
+
+```powershell
+Remove-Item "$env:APPDATA\Wokey Provider Node" -Recurse -Force
 ```

@@ -86,6 +86,21 @@ docker compose up -d
 docker compose stop
 ```
 
+移除容器和网络，但保留 Provider Node 数据卷：
+
+```bash
+docker compose down
+```
+
+同时移除容器、网络和 Provider Node 本地数据：
+
+```bash
+docker compose down -v
+```
+
+`docker compose down -v` 会删除节点绑定和本地保存的授权数据。只有明确要
+彻底清除节点时才应使用。
+
 ## 数据保存在哪里
 
 节点配置和授权数据保存在 Docker volume：

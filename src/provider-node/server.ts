@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { getEnv, getEnvNumber } from '../shared/env.js';
@@ -12,6 +12,8 @@ import { AutoUpgradeController, checkCrashLoopOnStartup, scheduleUpgradeVerifica
 import {
   defaultConfig,
   applyRuntimeBuildInfo,
+  decryptProviderNodeLocalSecret,
+  encryptProviderNodeLocalSecret,
   loadConfig,
   platformFallbackUrl,
   redactConfig,
@@ -21,6 +23,11 @@ import {
   type ProviderUpstreamMode,
 } from './config.js';
 import { ProviderBridge } from './bridge.js';
+import { BoundedDevicePoller, type DevicePollFailure, type DevicePollSnapshot } from './bounded-device-poller.js';
+import { AsyncMutex, SingleFlight } from './single-flight.js';
+import { detectDreaminaCli, JimengAuthorizationHandler, type DreaminaCliDescriptor } from './jimeng-auth.js';
+import { DreaminaCliInstallError, DreaminaCliInstaller } from './jimeng-cli-installer.js';
+import { JimengVideoHandler } from './jimeng-video.js';
 import { applyClaudeCodeMetadataToOAuth, importClaudeCodeOAuth } from './claude-code-auth.js';
 import { defaultCodexAuthJsonPath, importCodexAuthJson, resolveCodexAuthJsonPath } from './codex-auth-json.js';
 import { inferManualReauthorizationCredentialIdFromPlatformCredentials } from './credential-reauthorization.js';
@@ -37,12 +44,11 @@ import {
   localCredentialIdentityFingerprint,
   type LocalCredentialDetection,
 } from './local-auth-detect.js';
-import { providerOAuthConfigFromManualTokenBody, validateManualOAuthConfigForAuthorization } from './manual-oauth-token.js';
 import {
-  networkProviderNodeError,
-  ProviderNodeError,
-  providerNodeErrorPayload,
-} from './errors.js';
+  providerOAuthConfigFromManualTokenBody,
+  validateManualOAuthConfigForAuthorization,
+} from './manual-oauth-token.js';
+import { networkProviderNodeError, ProviderNodeError, providerNodeErrorPayload } from './errors.js';
 import {
   applyTokenToOAuthConfig,
   createAnthropicOAuthStart,
@@ -193,16 +199,15 @@ try {
   const reason = error instanceof Error ? error.message : String(error);
   process.stderr.write(
     `\nWokey Provider Node could not load its config at ${CONFIG_PATH}.\n` +
-    `Reason: ${reason}\n\n` +
-    'If you set PROVIDER_NODE_MASTER_KEY, make sure it matches the key that encrypted this config.\n' +
-    'Otherwise the config file may be corrupt — remove it to start fresh (you will need to re-bind and re-authorize).\n\n',
+      `Reason: ${reason}\n\n` +
+      'If you set PROVIDER_NODE_MASTER_KEY, make sure it matches the key that encrypted this config.\n' +
+      'Otherwise the config file may be corrupt — remove it to start fresh (you will need to re-bind and re-authorize).\n\n',
   );
   process.exit(1);
 }
 const pendingCodexOAuth = new Map<string, OAuthStart>();
 const pendingAnthropicOAuth = new Map<string, OAuthStart>();
 const pendingCodexDeviceCodes = new Map<string, CodexDeviceCode>();
-const pendingXaiDeviceCodes = new Map<string, XaiDeviceCode>();
 let codexBrowserAttempt: {
   flow: OAuthStart;
   port: number;
@@ -249,6 +254,14 @@ const app = Fastify({
   },
 });
 
+const xaiDeviceAuthorizations = new BoundedDevicePoller<Record<string, unknown>>();
+const xaiDeviceStarts = new SingleFlight<Record<string, unknown>>();
+let currentXaiDeviceCode: XaiDeviceCode | undefined;
+
+app.addHook('onClose', async () => {
+  xaiDeviceAuthorizations.close();
+});
+
 // Reject any request whose Host header is not a trusted loopback/bind name. Runs
 // before routing so it covers every console endpoint (reads and writes alike),
 // closing the DNS-rebinding path into bind/config and account-metadata reads.
@@ -263,7 +276,10 @@ app.addHook('onRequest', async (request, reply) => {
 
   const origin = headerString(request.headers.origin);
   const referer = headerString(request.headers.referer);
-  if (!isAllowedConsoleOrigin(origin, CONSOLE_ALLOWED_HOSTS) || (referer && !isAllowedConsoleOrigin(referer, CONSOLE_ALLOWED_HOSTS))) {
+  if (
+    !isAllowedConsoleOrigin(origin, CONSOLE_ALLOWED_HOSTS) ||
+    (referer && !isAllowedConsoleOrigin(referer, CONSOLE_ALLOWED_HOSTS))
+  ) {
     reply.code(403).send({ ok: false, error: 'forbidden_origin' });
     return reply;
   }
@@ -287,12 +303,15 @@ const CLIENT_ERROR_CODE = /^[a-z][a-z0-9_]*$/;
 app.setErrorHandler((error: Error, request, reply) => {
   if (error instanceof ProviderNodeError) {
     if (error.statusCode >= 500) {
-      request.log.warn({
-        err: error,
-        errorCode: error.errorCode,
-        upstreamStatus: error.upstreamStatus,
-        retryable: error.retryable,
-      }, 'console request failed');
+      request.log.warn(
+        {
+          err: error,
+          errorCode: error.errorCode,
+          upstreamStatus: error.upstreamStatus,
+          retryable: error.retryable,
+        },
+        'console request failed',
+      );
     }
     reply.code(error.statusCode).send(providerNodeErrorPayload(error, request.id));
     return;
@@ -300,28 +319,33 @@ app.setErrorHandler((error: Error, request, reply) => {
   const statusCode = (error as { statusCode?: number }).statusCode;
   if (typeof statusCode === 'number' && statusCode >= 400 && statusCode < 500) {
     const errorCode = error.message && CLIENT_ERROR_CODE.test(error.message) ? error.message : 'bad_request';
-    reply.code(statusCode).send(providerNodeErrorPayload(
-      new ProviderNodeError(errorCode, error.message || 'The request is invalid.', { statusCode }),
-      request.id,
-    ));
+    reply
+      .code(statusCode)
+      .send(
+        providerNodeErrorPayload(
+          new ProviderNodeError(errorCode, error.message || 'The request is invalid.', { statusCode }),
+          request.id,
+        ),
+      );
     return;
   }
   if (error.message && CLIENT_ERROR_CODE.test(error.message)) {
-    reply.code(400).send(providerNodeErrorPayload(
-      new ProviderNodeError(error.message, error.message),
-      request.id,
-    ));
+    reply.code(400).send(providerNodeErrorPayload(new ProviderNodeError(error.message, error.message), request.id));
     return;
   }
   request.log.error({ err: error }, 'unhandled console error');
-  reply.code(500).send(providerNodeErrorPayload(
-    new ProviderNodeError(
-      'provider_node_internal_error',
-      'Provider Node encountered an unexpected error. Check the node logs and retry.',
-      { statusCode: 500, retryable: true },
-    ),
-    request.id,
-  ));
+  reply
+    .code(500)
+    .send(
+      providerNodeErrorPayload(
+        new ProviderNodeError(
+          'provider_node_internal_error',
+          'Provider Node encountered an unexpected error. Check the node logs and retry.',
+          { statusCode: 500, retryable: true },
+        ),
+        request.id,
+      ),
+    );
 });
 
 const autoUpgrade = new AutoUpgradeController({
@@ -332,25 +356,90 @@ const autoUpgrade = new AutoUpgradeController({
   log: app.log,
 });
 
-const bridge = new ProviderBridge(
-  () => config,
-  {
-    onPlatformReady: () => scheduleCodexAuthJsonMirrorCheck(1_000),
-    onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,
-    onPlatformUpgradeAvailable: (msg: PlatformUpgradeAvailable) => {
-      if (config.autoUpdate === false) {
-        app.log.info({}, 'auto-upgrade: disabled by config, ignoring upgrade_available');
-        return;
-      }
-      void autoUpgrade.handleUpgradeAvailable(msg);
-    },
-    onEndpointPreferenceChange: (preferFallback: boolean) => {
-      if (config.preferFallbackEndpoint === preferFallback) return;
-      config = { ...config, preferFallbackEndpoint: preferFallback };
-      persistConfig(); // no reconnect — we are already connected on this endpoint
-    },
+const jimengCredentialLease = new AsyncMutex();
+const dreaminaCliInstaller = new DreaminaCliInstaller({ configuredPath: getEnv('DREAMINA_CLI_PATH', '') });
+let dreaminaCli = detectDreaminaCli(getEnv('DREAMINA_CLI_PATH', ''));
+
+function createJimengRuntime(cli: DreaminaCliDescriptor | undefined): {
+  authorization?: JimengAuthorizationHandler;
+  video?: JimengVideoHandler;
+} {
+  if (!cli) return {};
+  return {
+    authorization: new JimengAuthorizationHandler({
+      cli,
+      withCredentialLease: (operation) => jimengCredentialLease.run(operation),
+      getIdentity: () => ({ nodeId: config.nodeId, providerId: config.providerId }),
+    }),
+    video: new JimengVideoHandler({
+      cli,
+      withCredentialLease: (operation) => jimengCredentialLease.run(operation),
+      allowedTransferOrigins: jimengVideoTransferOrigins(
+        config.platformWsUrl,
+        getEnv('JIMENG_VIDEO_TRANSFER_ORIGINS', ''),
+      ),
+      receiptsDirectory: join(dirname(CONFIG_PATH), 'jimeng-video-receipts'),
+      sealReceipt: (value) => encryptProviderNodeLocalSecret(CONFIG_PATH, value),
+      openReceipt: (value) => {
+        if (!value.startsWith('enc:v1:')) throw new Error('jimeng_video_receipt_encryption_required');
+        return decryptProviderNodeLocalSecret(CONFIG_PATH, value);
+      },
+      getIdentity: () => ({ nodeId: config.nodeId, providerId: config.providerId }),
+    }),
+  };
+}
+
+let { authorization: jimengAuthorization, video: jimengVideo } = createJimengRuntime(dreaminaCli);
+
+function jimengVideoTransferOrigins(platformWsUrl: string, configured: string): string[] {
+  const explicit = configured
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (explicit.length) return explicit;
+  const url = new URL(platformWsUrl);
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  return [url.origin];
+}
+
+async function installDreaminaCliAndActivate(): Promise<{ cliVersion: string }> {
+  if (jimengAuthorization && dreaminaCli) return { cliVersion: dreaminaCli.version };
+  const installed = await dreaminaCliInstaller.install();
+  const detected = detectDreaminaCli(installed.path);
+  if (!detected) throw new DreaminaCliInstallError('jimeng_cli_install_validation_failed');
+  dreaminaCli = detected;
+  const runtime = createJimengRuntime(detected);
+  jimengAuthorization = runtime.authorization;
+  jimengVideo = runtime.video;
+  bridge.setJimengHandlers(runtime);
+  app.log.info(
+    { cliVersion: detected.version, bytes: installed.bytes, sha256: installed.sha256 },
+    'Jimeng CLI installed and activated',
+  );
+  return { cliVersion: detected.version };
+}
+
+const bridge = new ProviderBridge(() => config, {
+  onPlatformReady: () => scheduleCodexAuthJsonMirrorCheck(1_000),
+  jimengAuthorization,
+  jimengVideo,
+  jimengCliInstall: dreaminaCliInstaller.status().supported
+    ? { install: installDreaminaCliAndActivate }
+    : undefined,
+  onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,
+  onPlatformUpgradeAvailable: (msg: PlatformUpgradeAvailable) => {
+    if (config.autoUpdate === false) {
+      app.log.info({}, 'auto-upgrade: disabled by config, ignoring upgrade_available');
+      return;
+    }
+    void autoUpgrade.handleUpgradeAvailable(msg);
   },
-);
+  onEndpointPreferenceChange: (preferFallback: boolean) => {
+    if (config.preferFallbackEndpoint === preferFallback) return;
+    config = { ...config, preferFallbackEndpoint: preferFallback };
+    persistConfig(); // no reconnect — we are already connected on this endpoint
+  },
+});
 
 app.get('/', async (_request, reply) => {
   reply.type('text/html; charset=utf-8').send(page());
@@ -359,6 +448,16 @@ app.get('/', async (_request, reply) => {
 app.get('/bind', async (_request, reply) => {
   reply.type('text/html; charset=utf-8').send(page());
 });
+
+function publicJimengStatus() {
+  return {
+    available: Boolean(jimengAuthorization),
+    configured: Boolean(getEnv('DREAMINA_CLI_PATH', '')),
+    cliVersion: dreaminaCli?.version,
+    errorCode: getEnv('DREAMINA_CLI_PATH', '') && !dreaminaCli ? 'jimeng_cli_unavailable' : undefined,
+    install: dreaminaCliInstaller.status(),
+  };
+}
 
 app.get('/api/status', async () => ({
   bridge: bridge.state,
@@ -372,18 +471,40 @@ app.get('/api/status', async () => ({
     defaultAuthJsonPath: defaultCodexAuthJsonPath(),
     browserLogin: codexBrowserAttempt
       ? {
-        status: codexBrowserAttempt.status,
-        port: codexBrowserAttempt.port,
-        error: codexBrowserAttempt.error,
-        startedAt: codexBrowserAttempt.startedAt,
-      }
+          status: codexBrowserAttempt.status,
+          port: codexBrowserAttempt.port,
+          error: codexBrowserAttempt.error,
+          startedAt: codexBrowserAttempt.startedAt,
+        }
       : undefined,
   },
+  xai: {
+    deviceAuthorization: (() => {
+      const attempt = xaiDeviceAuthorizations.current();
+      return attempt ? publicXaiDeviceAuthorization(attempt) : undefined;
+    })(),
+  },
+  jimeng: publicJimengStatus(),
 }));
 
 app.get('/api/csrf', async () => ({ ok: true, token: CONSOLE_CSRF_TOKEN }));
 
 app.get('/api/config', async () => redactConfig(config));
+
+app.post('/api/jimeng/cli/install', async () => {
+  try {
+    await installDreaminaCliAndActivate();
+    return { ok: true, jimeng: publicJimengStatus() };
+  } catch (error) {
+    if (error instanceof DreaminaCliInstallError) {
+      throw new ProviderNodeError(error.code, error.code, {
+        statusCode: error.code === 'jimeng_cli_install_unsupported' ? 409 : 502,
+        retryable: error.retryable,
+      });
+    }
+    throw error;
+  }
+});
 
 app.post('/api/config', async (request, reply) => {
   const patch = request.body as Partial<ProviderNodeConfig>;
@@ -430,15 +551,14 @@ app.post('/api/platform/bind', async (request, reply) => {
     return { ok: false, error: 'binding_code_required' };
   }
 
-  const primaryBindUrl = body.platformBindUrl?.trim() || platformHttpUrl(config.platformWsUrl, '/internal/provider/bind');
+  const primaryBindUrl =
+    body.platformBindUrl?.trim() || platformHttpUrl(config.platformWsUrl, '/internal/provider/bind');
   // Try the direct origin endpoint first, then its CDN-proxied fallback if
   // the direct one is unreachable (e.g. the bare origin IP is blocked). A real
   // platform rejection (bad/expired code, version too old) is returned verbatim —
   // we never retry it on the fallback, and the user sees the true reason instead
   // of a generic internal_error.
-  const bindUrls = [primaryBindUrl, platformFallbackUrl(primaryBindUrl)].filter(
-    (url): url is string => Boolean(url),
-  );
+  const bindUrls = [primaryBindUrl, platformFallbackUrl(primaryBindUrl)].filter((url): url is string => Boolean(url));
   const bindPayload = JSON.stringify({
     bindingCode: body.bindingCode.trim(),
     nodeId: config.nodeId,
@@ -539,16 +659,81 @@ app.get('/api/platform/credentials', async (_request, reply) => {
   return { ok: true, data: Array.isArray(data.data) ? data.data : [] };
 });
 
+app.post('/api/oauth/jimeng/start', async (_request, reply) => {
+  if (!isNodeBound(config)) {
+    reply.code(400);
+    return { ok: false, error: 'node_not_bound' };
+  }
+  if (!jimengAuthorization) {
+    reply.code(409);
+    return {
+      ok: false,
+      error: dreaminaCli ? 'jimeng_auth_not_supported' : 'jimeng_cli_unavailable',
+    };
+  }
+  await assertPlatformBindingIsUsable();
+  const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/jimeng/oauth/start'), {
+    method: 'POST',
+    headers: {
+      ...providerCredentialHeaders(),
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  });
+  return parseJsonResponse<Record<string, unknown>>(response);
+});
+
+app.get('/api/oauth/jimeng/:flowId/status', async (request, reply) => {
+  if (!isNodeBound(config)) {
+    reply.code(400);
+    return { ok: false, error: 'node_not_bound' };
+  }
+  const flowId = boundedJimengFlowId((request.params as { flowId?: unknown }).flowId);
+  if (!flowId) {
+    reply.code(400);
+    return { ok: false, error: 'jimeng_auth_flow_not_found' };
+  }
+  const response = await fetchPlatform(
+    platformHttpUrl(config.platformWsUrl, `/internal/provider/jimeng/oauth/${encodeURIComponent(flowId)}/status`),
+    { headers: providerCredentialHeaders() },
+  );
+  return parseJsonResponse<Record<string, unknown>>(response);
+});
+
+app.post('/api/oauth/jimeng/:flowId/cancel', async (request, reply) => {
+  if (!isNodeBound(config)) {
+    reply.code(400);
+    return { ok: false, error: 'node_not_bound' };
+  }
+  const flowId = boundedJimengFlowId((request.params as { flowId?: unknown }).flowId);
+  if (!flowId) {
+    reply.code(400);
+    return { ok: false, error: 'jimeng_auth_flow_not_found' };
+  }
+  const response = await fetchPlatform(
+    platformHttpUrl(config.platformWsUrl, `/internal/provider/jimeng/oauth/${encodeURIComponent(flowId)}/cancel`),
+    {
+      method: 'POST',
+      headers: {
+        ...providerCredentialHeaders(),
+        'content-type': 'application/json',
+      },
+      body: '{}',
+    },
+  );
+  return parseJsonResponse<Record<string, unknown>>(response);
+});
+
 app.get('/api/platform/binding-status', async (): Promise<PlatformBindingStatus> => {
   const binding = await platformBindingStatus();
   // A paused node now reports status 'bound' with nodeStatus 'paused' (so the console can
   // tell a deliberate pause apart from a rejected binding). Only auto-reconnect once the
   // node is actually active again — otherwise we'd hammer reconnects while still paused.
   if (
-    binding.server.status === 'bound'
-    && binding.server.nodeStatus !== 'paused'
-    && bridge.state.reconnectSuppressedReason === 'node_paused'
-    && !bridge.state.connected
+    binding.server.status === 'bound' &&
+    binding.server.nodeStatus !== 'paused' &&
+    bridge.state.reconnectSuppressedReason === 'node_paused' &&
+    !bridge.state.connected
   ) {
     bridge.reconnectNow();
   }
@@ -748,34 +933,119 @@ app.post('/api/oauth/codex/device/poll', async (request) => {
 });
 
 app.post('/api/oauth/xai/device/start', async () => {
-  const deviceCode = await requestXaiDeviceCode();
-  pendingXaiDeviceCodes.set(deviceCode.deviceCode, deviceCode);
-  return { ok: true, ...deviceCode };
+  const current = xaiDeviceAuthorizations.current();
+  if (current?.status === 'pending' && currentXaiDeviceCode?.deviceCode === current.id) {
+    return publicXaiDeviceStart(currentXaiDeviceCode, current);
+  }
+  return xaiDeviceStarts.run(startXaiDeviceAuthorization);
 });
+
+async function startXaiDeviceAuthorization(): Promise<Record<string, unknown>> {
+  const deviceCode = await requestXaiDeviceCode();
+  let oauth: ProviderOAuthConfig | undefined;
+  const attempt = xaiDeviceAuthorizations.start({
+    id: deviceCode.deviceCode,
+    vendorIntervalMs: deviceCode.interval * 1_000,
+    vendorExpiresAt: deviceCode.expiresAt,
+    poll: async (signal) => {
+      if (!oauth) {
+        const result = await pollXaiDeviceCode({ deviceCode: deviceCode.deviceCode, signal });
+        if (result.status === 'pending') return result;
+        const receivedAt = new Date().toISOString();
+        oauth = setOAuthToken('xai-oauth', result.token, {
+          accessTokenReceivedAt: receivedAt,
+          accessTokenSource: 'xai_device_code',
+          lastRefreshAt: receivedAt,
+        });
+        app.log.info({}, 'xai device authorization token issued');
+      }
+      // Token 兑换成功后只重试 Platform 上传，不再重复消耗一次性的 xAI device code。
+      const authorization = await authorizeOAuthCredential(oauth, 'xai', {}, signal);
+      app.log.info(
+        { credentialBindingId: authorization.credentialBindingId },
+        'xai device authorization saved to Platform',
+      );
+      return { status: 'succeeded' as const, value: authorization };
+    },
+    classifyError: classifyXaiDeviceAuthorizationError,
+  });
+  app.log.info(
+    { intervalMs: Math.max(5_000, deviceCode.interval * 1_000), expiresAt: attempt.expiresAt },
+    'xai device authorization started',
+  );
+  currentXaiDeviceCode = deviceCode;
+  return publicXaiDeviceStart(deviceCode, attempt);
+}
+
+function publicXaiDeviceStart(
+  deviceCode: XaiDeviceCode,
+  attempt: DevicePollSnapshot<Record<string, unknown>>,
+): Record<string, unknown> {
+  return { ok: true, ...deviceCode, expiresAt: attempt.expiresAt };
+}
 
 app.post('/api/oauth/xai/device/poll', async (request) => {
   const body = request.body as { deviceCode?: string };
   if (!body.deviceCode) throw new Error('device_code_required');
-  const deviceCode = pendingXaiDeviceCodes.get(body.deviceCode);
-  if (!deviceCode) throw new Error('device_code_not_found');
-  if (Date.now() > deviceCode.expiresAt) {
-    pendingXaiDeviceCodes.delete(body.deviceCode);
-    return { ok: false, status: 'expired' };
-  }
-  const result = await pollXaiDeviceCode({ deviceCode: deviceCode.deviceCode });
-  if (result.status === 'pending') return { ok: true, status: 'pending' };
-  const receivedAt = new Date().toISOString();
-  const oauth = setOAuthToken('xai-oauth', result.token, {
-    accessTokenReceivedAt: receivedAt,
-    accessTokenSource: 'xai_device_code',
-    lastRefreshAt: receivedAt,
-  });
-  // 先授权、成功后再从待办表删 device code。若平台推送失败(如节点密钥失配),真实错误得以透传,
-  // 而不是被下一次重试的 device_code_not_found 盖掉(codex 分支因生产一贯成功从未暴露此顺序问题)。
-  const authorization = await authorizeOAuthCredential(oauth, 'xai', {});
-  pendingXaiDeviceCodes.delete(body.deviceCode);
-  return { ok: true, status: 'succeeded', authorization };
+  return xaiDeviceAuthorizationStatus(body.deviceCode);
 });
+
+function xaiDeviceAuthorizationStatus(deviceCode: string): Record<string, unknown> {
+  const attempt = xaiDeviceAuthorizations.get(deviceCode);
+  if (!attempt) throw new Error('device_code_not_found');
+  return publicXaiDeviceAuthorization(attempt);
+}
+
+function publicXaiDeviceAuthorization(attempt: DevicePollSnapshot<Record<string, unknown>>): Record<string, unknown> {
+  return {
+    ok: attempt.status === 'pending' || attempt.status === 'succeeded',
+    status: attempt.status,
+    startedAt: attempt.startedAt,
+    expiresAt: attempt.expiresAt,
+    nextPollAt: attempt.nextPollAt,
+    pollCount: attempt.pollCount,
+    authorization: attempt.value,
+    ...(attempt.error
+      ? {
+          error: attempt.error.code,
+          message: attempt.error.message,
+          retryable: attempt.error.retryable,
+          upstreamStatus: attempt.error.upstreamStatus,
+          details: attempt.error.details,
+          requestId: attempt.error.requestId,
+        }
+      : {}),
+  };
+}
+
+function classifyXaiDeviceAuthorizationError(error: unknown): DevicePollFailure {
+  if (error instanceof ProviderNodeError) {
+    const payload = providerNodeErrorPayload(error);
+    app.log.warn(
+      {
+        errorCode: payload.error,
+        retryable: payload.retryable,
+        upstreamStatus: payload.upstreamStatus,
+      },
+      'xai device authorization attempt failed',
+    );
+    return {
+      code: payload.error,
+      message: payload.message,
+      retryable: payload.retryable,
+      upstreamStatus: payload.upstreamStatus,
+      details: payload.details,
+    };
+  }
+  const requestId = `xai_${randomBytes(8).toString('hex')}`;
+  app.log.error({ err: error, requestId }, 'xai device authorization failed');
+  return {
+    code: 'provider_node_internal_error',
+    message: 'Provider Node encountered an unexpected error while completing Grok authorization.',
+    retryable: false,
+    requestId,
+  };
+}
 
 app.post('/api/oauth/anthropic/start', async () => {
   const flow = createAnthropicOAuthStart();
@@ -789,7 +1059,9 @@ app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
   if (!body.code) throw new Error('code_required');
   const parsedCode = parseAnthropicAuthorizationCode(body.code);
   if (!parsedCode.code) throw new Error('code_required');
-  const candidateStates = Array.from(new Set([parsedCode.state, body.state, body.flowState].filter((value): value is string => Boolean(value))));
+  const candidateStates = Array.from(
+    new Set([parsedCode.state, body.state, body.flowState].filter((value): value is string => Boolean(value))),
+  );
   let matchedState = candidateStates.find((state) => {
     const candidate = pendingAnthropicOAuth.get(state);
     return candidate ? verifyState(state, candidate.state) : false;
@@ -808,20 +1080,24 @@ app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
       flowSource = 'sole-pending';
     }
   }
-  request.log.info({
-    pendingFlows: pendingAnthropicOAuth.size,
-    flowSource,
-    parsedState: shortSecret(parsedCode.state),
-    bodyState: shortSecret(body.state),
-    flowState: shortSecret(body.flowState),
-    matchedState: shortSecret(matchedState),
-  }, 'Claude OAuth exchange flow selected');
+  request.log.info(
+    {
+      pendingFlows: pendingAnthropicOAuth.size,
+      flowSource,
+      parsedState: shortSecret(parsedCode.state),
+      bodyState: shortSecret(body.state),
+      flowState: shortSecret(body.flowState),
+      matchedState: shortSecret(matchedState),
+    },
+    'Claude OAuth exchange flow selected',
+  );
   if (!flow) {
     reply.code(400);
     return {
       ok: false,
       error: 'anthropic_oauth_start_required',
-      message: 'This Claude authorization flow has expired. Refresh this page, generate a new authorization link, then submit the new code.',
+      message:
+        'This Claude authorization flow has expired. Refresh this page, generate a new authorization link, then submit the new code.',
     };
   }
   const tokenState = parsedCode.state || matchedState;
@@ -872,13 +1148,11 @@ function persistConfig(reconnect = false): void {
 
 function isNodeBound(value: ProviderNodeConfig): boolean {
   return Boolean(
-    value.providerId
-    && value.providerNodeSecret
-    && (
-      value.providerId !== baseConfig.providerId
-      || value.providerNodeSecret !== baseConfig.providerNodeSecret
-      || value.platformWsUrl !== baseConfig.platformWsUrl
-    ),
+    value.providerId &&
+      value.providerNodeSecret &&
+      (value.providerId !== baseConfig.providerId ||
+        value.providerNodeSecret !== baseConfig.providerNodeSecret ||
+        value.platformWsUrl !== baseConfig.platformWsUrl),
   );
 }
 
@@ -886,27 +1160,48 @@ export function mergeConfigPatch(current: ProviderNodeConfig, patch: Partial<Pro
   const next: ProviderNodeConfig = {
     ...current,
     ...patch,
-    providerNodeSecret: patch.providerNodeSecret === '***' ? current.providerNodeSecret : patch.providerNodeSecret ?? current.providerNodeSecret,
+    providerNodeSecret:
+      patch.providerNodeSecret === '***'
+        ? current.providerNodeSecret
+        : (patch.providerNodeSecret ?? current.providerNodeSecret),
     upstream: {
       ...current.upstream,
       ...patch.upstream,
-      apiKey: patch.upstream?.apiKey === '***' ? current.upstream.apiKey : patch.upstream?.apiKey ?? current.upstream.apiKey,
-      oauth: patch.upstream?.oauth ? {
-        ...current.upstream.oauth,
-        ...patch.upstream.oauth,
-        accessToken: patch.upstream.oauth.accessToken === '***' ? current.upstream.oauth?.accessToken : patch.upstream.oauth.accessToken ?? current.upstream.oauth?.accessToken,
-        refreshToken: patch.upstream.oauth.refreshToken === '***' ? current.upstream.oauth?.refreshToken : patch.upstream.oauth.refreshToken ?? current.upstream.oauth?.refreshToken,
-        idToken: patch.upstream.oauth.idToken === '***' ? current.upstream.oauth?.idToken : patch.upstream.oauth.idToken ?? current.upstream.oauth?.idToken,
-      } : current.upstream.oauth,
+      apiKey:
+        patch.upstream?.apiKey === '***'
+          ? current.upstream.apiKey
+          : (patch.upstream?.apiKey ?? current.upstream.apiKey),
+      oauth: patch.upstream?.oauth
+        ? {
+            ...current.upstream.oauth,
+            ...patch.upstream.oauth,
+            accessToken:
+              patch.upstream.oauth.accessToken === '***'
+                ? current.upstream.oauth?.accessToken
+                : (patch.upstream.oauth.accessToken ?? current.upstream.oauth?.accessToken),
+            refreshToken:
+              patch.upstream.oauth.refreshToken === '***'
+                ? current.upstream.oauth?.refreshToken
+                : (patch.upstream.oauth.refreshToken ?? current.upstream.oauth?.refreshToken),
+            idToken:
+              patch.upstream.oauth.idToken === '***'
+                ? current.upstream.oauth?.idToken
+                : (patch.upstream.oauth.idToken ?? current.upstream.oauth?.idToken),
+          }
+        : current.upstream.oauth,
     },
-    officialExit: patch.officialExit ? {
-      ...current.officialExit,
-      enabled: patch.officialExit.enabled ?? current.officialExit?.enabled ?? false,
-    } : current.officialExit,
-    capability: patch.capability ? {
-      ...current.capability,
-      ...patch.capability,
-    } : current.capability,
+    officialExit: patch.officialExit
+      ? {
+          ...current.officialExit,
+          enabled: patch.officialExit.enabled ?? current.officialExit?.enabled ?? false,
+        }
+      : current.officialExit,
+    capability: patch.capability
+      ? {
+          ...current.capability,
+          ...patch.capability,
+        }
+      : current.capability,
   };
   return applyRuntimeBuildInfo(next);
 }
@@ -945,7 +1240,11 @@ function parseExpiresAt(value: number | string | undefined): number | undefined 
   return Number.isFinite(time) ? time : undefined;
 }
 
-function setOAuthToken(mode: 'codex-oauth' | 'anthropic-oauth' | 'xai-oauth', token: OAuthTokenResponse, extra?: Partial<ProviderOAuthConfig>): ProviderOAuthConfig {
+function setOAuthToken(
+  mode: 'codex-oauth' | 'anthropic-oauth' | 'xai-oauth',
+  token: OAuthTokenResponse,
+  extra?: Partial<ProviderOAuthConfig>,
+): ProviderOAuthConfig {
   const previousOAuth = config.upstream.mode === mode ? config.upstream.oauth : undefined;
   const oauth = oauthConfigFromToken(token, { ...previousOAuth, ...extra });
   if (mode === 'anthropic-oauth') enrichAnthropicOAuthFromClaudeMetadata(oauth);
@@ -968,14 +1267,17 @@ function enrichAnthropicOAuthFromClaudeMetadata(oauth: ProviderOAuthConfig): voi
 }
 
 function enrichOpenAIOAuthFromToken(oauth: ProviderOAuthConfig): void {
-  const derived = providerOAuthConfigFromManualTokenBody({
-    accessToken: oauth.accessToken,
-    refreshToken: oauth.refreshToken,
-    idToken: oauth.idToken,
-    tokenType: oauth.tokenType,
-    expiresAt: oauth.expiresAt,
-    scope: oauth.scope,
-  }, 'openai');
+  const derived = providerOAuthConfigFromManualTokenBody(
+    {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken,
+      idToken: oauth.idToken,
+      tokenType: oauth.tokenType,
+      expiresAt: oauth.expiresAt,
+      scope: oauth.scope,
+    },
+    'openai',
+  );
   oauth.organizationId = derived.organizationId || oauth.organizationId;
   oauth.accountEmail = derived.accountEmail || oauth.accountEmail;
   oauth.subscriptionType = derived.subscriptionType || oauth.subscriptionType;
@@ -984,24 +1286,26 @@ function enrichOpenAIOAuthFromToken(oauth: ProviderOAuthConfig): void {
 
 // xAI:身份/档位(email/tier)权威值由 relay 写入期解 access token JWT 决定,节点本地仅做轻量回填(展示用)。
 function enrichXaiOAuthFromToken(oauth: ProviderOAuthConfig): void {
-  const derived = providerOAuthConfigFromManualTokenBody({
-    accessToken: oauth.accessToken,
-    refreshToken: oauth.refreshToken,
-    idToken: oauth.idToken,
-    tokenType: oauth.tokenType,
-    expiresAt: oauth.expiresAt,
-    scope: oauth.scope,
-  }, 'xai');
+  const derived = providerOAuthConfigFromManualTokenBody(
+    {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken,
+      idToken: oauth.idToken,
+      tokenType: oauth.tokenType,
+      expiresAt: oauth.expiresAt,
+      scope: oauth.scope,
+    },
+    'xai',
+  );
   oauth.accountEmail = derived.accountEmail || oauth.accountEmail;
   oauth.subscriptionType = derived.subscriptionType || oauth.subscriptionType;
   oauth.subscriptionDisplayName = derived.subscriptionDisplayName || oauth.subscriptionDisplayName;
 }
 
 function localCredentialDetections(): LocalCredentialDetection[] {
-  return detectLocalCredentials().map((detection) => applyLocalCredentialBindingReference(
-    detection,
-    localCredentialBindingReference(detection),
-  ));
+  return detectLocalCredentials().map((detection) =>
+    applyLocalCredentialBindingReference(detection, localCredentialBindingReference(detection)),
+  );
 }
 
 function localCredentialBindingReference(detection: LocalCredentialDetection) {
@@ -1044,14 +1348,17 @@ function oAuthCredentialBody(
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!oauth.accessToken) throw new Error('oauth_access_token_missing');
-  const derived = providerOAuthConfigFromManualTokenBody({
-    accessToken: oauth.accessToken,
-    refreshToken: oauth.refreshToken,
-    idToken: oauth.idToken,
-    tokenType: oauth.tokenType,
-    expiresAt: oauth.expiresAt,
-    scope: oauth.scope,
-  }, vendor);
+  const derived = providerOAuthConfigFromManualTokenBody(
+    {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken,
+      idToken: oauth.idToken,
+      tokenType: oauth.tokenType,
+      expiresAt: oauth.expiresAt,
+      scope: oauth.scope,
+    },
+    vendor,
+  );
   return {
     vendor,
     accessToken: oauth.accessToken,
@@ -1077,6 +1384,7 @@ async function authorizeOAuthCredential(
   oauth: ProviderOAuthConfig,
   vendor: 'openai' | 'anthropic' | 'xai',
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   if (!isNodeBound(config)) throw new Error('node_not_bound');
   oauth.accessTokenReceivedAt ||= new Date().toISOString();
@@ -1085,7 +1393,9 @@ async function authorizeOAuthCredential(
   // 有效性 + 账号信息由 relay 写入期(verifyOAuthBundleForCredentialWrite)经渲染隧道校验;access token 若过期,
   // 由 relay 用 refresh_token 经隧道补刷(指纹一致)。节点自刷会以节点原生 JA3 命中授权端点,与该凭证渲染出口不一致。
   const credentialBody = oAuthCredentialBody(oauth, vendor, body);
-  credentialBody.credentialBindingId ||= await inferManualReauthorizationCredentialId(credentialBody).catch(() => undefined);
+  credentialBody.credentialBindingId ||= await inferManualReauthorizationCredentialId(credentialBody, signal).catch(
+    () => undefined,
+  );
   const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
     method: 'POST',
     headers: {
@@ -1093,14 +1403,19 @@ async function authorizeOAuthCredential(
       'content-type': 'application/json',
     },
     body: JSON.stringify(credentialBody),
+    signal,
   });
   const data = await parseJsonResponse<unknown>(response);
   return { ok: true, ...asObject(data) };
 }
 
-async function inferManualReauthorizationCredentialId(credentialBody: Record<string, unknown>): Promise<string | undefined> {
+async function inferManualReauthorizationCredentialId(
+  credentialBody: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   const response = await fetchPlatform(platformHttpUrl(config.platformWsUrl, '/internal/provider/credentials'), {
     headers: providerCredentialHeaders(),
+    signal,
   });
   const data = await parseJsonResponse<{ data?: unknown[] }>(response);
   return inferManualReauthorizationCredentialIdFromPlatformCredentials(
@@ -1170,7 +1485,8 @@ function credentialBindingIdFromAuthorization(authorization: Record<string, unkn
 
 function handlePlatformCredentialRefreshHint(message: PlatformCredentialRefreshHint): void {
   const mirror = config.localAuth?.codexAuthJsonMirror;
-  if (!mirror?.enabled || mirror.credentialBindingId !== message.credentialBindingId || message.vendor !== 'openai') return;
+  if (!mirror?.enabled || mirror.credentialBindingId !== message.credentialBindingId || message.vendor !== 'openai')
+    return;
   codexAuthJsonHintUntil = Date.now() + CODEX_AUTH_JSON_SYNC_HINT_WINDOW_MS;
   scheduleCodexAuthJsonMirrorCheck(0);
 }
@@ -1274,11 +1590,7 @@ async function syncCodexAuthJsonMirror(): Promise<void> {
   }
 }
 
-function disableCodexAuthJsonMirror(
-  mirror: CodexAuthJsonMirrorConfig,
-  checkedAt: string,
-  reason: string,
-): void {
+function disableCodexAuthJsonMirror(mirror: CodexAuthJsonMirrorConfig, checkedAt: string, reason: string): void {
   config.localAuth = {
     ...config.localAuth,
     codexAuthJsonMirror: {
@@ -1319,25 +1631,28 @@ function oauthCredentialMirrorUpdateBody(
 
 function oauthTokenFingerprint(oauth: ProviderOAuthConfig): string {
   return createHash('sha256')
-    .update(JSON.stringify({
-      accessToken: oauth.accessToken,
-      refreshToken: oauth.refreshToken,
-      idToken: oauth.idToken,
-      expiresAt: oauth.expiresAt,
-    }))
+    .update(
+      JSON.stringify({
+        accessToken: oauth.accessToken,
+        refreshToken: oauth.refreshToken,
+        idToken: oauth.idToken,
+        expiresAt: oauth.expiresAt,
+      }),
+    )
     .digest('base64url');
 }
 
 function oauthAuthIdentityFingerprint(oauth: ProviderOAuthConfig): string | undefined {
   if (!oauth.organizationId && !oauth.accountEmail) return undefined;
   return createHash('sha256')
-    .update(JSON.stringify({
-      organizationId: oauth.organizationId || null,
-      accountEmail: oauth.accountEmail || null,
-    }))
+    .update(
+      JSON.stringify({
+        organizationId: oauth.organizationId || null,
+        accountEmail: oauth.accountEmail || null,
+      }),
+    )
     .digest('base64url');
 }
-
 
 async function platformBindingStatus(): Promise<PlatformBindingStatus> {
   const local = {
@@ -1388,10 +1703,10 @@ async function platformBindingStatus(): Promise<PlatformBindingStatus> {
     const message = error instanceof Error ? error.message : String(error);
     const errorCode = error instanceof ProviderNodeError ? error.errorCode : undefined;
     if (
-      errorCode === 'invalid_provider_secret'
-      || errorCode === 'provider_node_not_found'
-      || message === 'Invalid provider node credentials'
-      || message === 'Provider node is no longer active'
+      errorCode === 'invalid_provider_secret' ||
+      errorCode === 'provider_node_not_found' ||
+      message === 'Invalid provider node credentials' ||
+      message === 'Provider node is no longer active'
     ) {
       return {
         ok: true,
@@ -1418,11 +1733,9 @@ async function platformBindingStatus(): Promise<PlatformBindingStatus> {
 async function assertPlatformBindingIsUsable(): Promise<void> {
   const binding = await platformBindingStatus();
   if (binding.server.status === 'invalid' || binding.server.status === 'unbound') {
-    throw new ProviderNodeError(
-      'node_binding_invalid',
-      'Node binding credentials were rejected by Platform.',
-      { statusCode: 401 },
-    );
+    throw new ProviderNodeError('node_binding_invalid', 'Node binding credentials were rejected by Platform.', {
+      statusCode: 401,
+    });
   }
 }
 
@@ -1431,6 +1744,10 @@ function providerCredentialHeaders(): Record<string, string> {
     'x-provider-node-id': config.nodeId,
     'x-provider-node-secret': config.providerNodeSecret,
   };
+}
+
+function boundedJimengFlowId(value: unknown): string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,256}$/.test(value) ? value : '';
 }
 
 // Derive a Platform HTTP(S) endpoint from the bridge ws(s) URL, at the given path.
@@ -1454,41 +1771,35 @@ export async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   let data: T;
   try {
-    data = text ? JSON.parse(text) as T : {} as T;
+    data = text ? (JSON.parse(text) as T) : ({} as T);
   } catch (_error) {
-    throw new ProviderNodeError(
-      'platform_invalid_response',
-      'Platform returned an invalid response.',
-      {
-        statusCode: 502,
-        retryable: true,
-        upstreamStatus: response.status,
-      },
-    );
+    throw new ProviderNodeError('platform_invalid_response', 'Platform returned an invalid response.', {
+      statusCode: 502,
+      retryable: true,
+      upstreamStatus: response.status,
+    });
   }
   if (!response.ok) {
     const error = asObject(data).error;
-    const errorCode = typeof error === 'object' && error && 'code' in error
-      ? String((error as { code?: unknown }).code)
-      : typeof error === 'string'
-        ? error
-        : 'platform_request_failed';
-    const message = typeof error === 'object' && error && 'message' in error
-      ? String((error as { message?: unknown }).message)
-      : typeof error === 'string'
-        ? error
-        : `request_failed:${response.status}`;
+    const errorCode =
+      typeof error === 'object' && error && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : typeof error === 'string'
+          ? error
+          : 'platform_request_failed';
+    const message =
+      typeof error === 'object' && error && 'message' in error
+        ? String((error as { message?: unknown }).message)
+        : typeof error === 'string'
+          ? error
+          : `request_failed:${response.status}`;
     throw new PlatformHttpError(response.status, errorCode, message);
   }
   return data;
 }
 
 export class PlatformHttpError extends ProviderNodeError {
-  constructor(
-    statusCode: number,
-    errorCode: string,
-    message: string,
-  ) {
+  constructor(statusCode: number, errorCode: string, message: string) {
     super(errorCode, message, {
       statusCode,
       retryable: statusCode === 429 || statusCode >= 500,
@@ -1526,18 +1837,19 @@ async function redeemBindingCode(url: string, body: string): Promise<BindRedempt
   }
   if (!response.ok) {
     const error = asObject(parsed).error;
-    const message = typeof error === 'object' && error && 'message' in error
-      ? String((error as { message?: unknown }).message)
-      : typeof error === 'string'
-        ? error
-        : `request_failed:${response.status}`;
+    const message =
+      typeof error === 'object' && error && 'message' in error
+        ? String((error as { message?: unknown }).message)
+        : typeof error === 'string'
+          ? error
+          : `request_failed:${response.status}`;
     return { kind: 'platform_error', error: message, status: response.status };
   }
   return { kind: 'ok', data: parsed as BindRedemptionData };
 }
 
 function asObject(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 async function startCodexBrowserAttempt(): Promise<void> {
@@ -1579,11 +1891,15 @@ async function createCodexBrowserAttempt(port: number): Promise<NonNullable<type
         const token = await exchangeCodexCode({ code, codeVerifier: flow.codeVerifier, redirectUri: flow.redirectUri });
         setOAuthToken('codex-oauth', token);
         attempt.status = 'succeeded';
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(htmlMessage('Codex connected', 'You can close this window and return to Wokey Node Management.'));
+        response
+          .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+          .end(htmlMessage('Codex connected', 'You can close this window and return to Wokey Node Management.'));
       } catch (error) {
         attempt.status = 'failed';
         attempt.error = error instanceof Error ? error.message : 'codex_browser_oauth_failed';
-        response.writeHead(400, { 'content-type': 'text/html; charset=utf-8' }).end(htmlMessage('Codex connection failed', attempt.error));
+        response
+          .writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+          .end(htmlMessage('Codex connection failed', attempt.error));
       }
     })();
   });
@@ -1620,13 +1936,17 @@ function scriptJson(value: unknown): string {
 }
 
 function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  }[char] ?? char));
+  return value.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      })[char] ?? char,
+  );
 }
 
 async function shutdown(): Promise<void> {
@@ -1644,12 +1964,15 @@ function start(): void {
   checkCrashLoopOnStartup(CONFIG_PATH, app.log);
   bridge.start();
   scheduleCodexAuthJsonMirrorCheck(1_000);
-  app.listen({ host: CONSOLE_HOST, port: CONSOLE_PORT }).then(() => {
-    scheduleUpgradeVerification(CONFIG_PATH, app.log);
-  }).catch((error) => {
-    app.log.error(error);
-    process.exit(1);
-  });
+  app
+    .listen({ host: CONSOLE_HOST, port: CONSOLE_PORT })
+    .then(() => {
+      scheduleUpgradeVerification(CONFIG_PATH, app.log);
+    })
+    .catch((error) => {
+      app.log.error(error);
+      process.exit(1);
+    });
   process.once('SIGINT', () => {
     shutdown().finally(() => process.exit(0));
   });

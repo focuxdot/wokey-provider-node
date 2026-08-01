@@ -15,6 +15,11 @@ import type {
   PlatformDrainAck,
   PlatformCredentialMirrorUpdateAck,
   PlatformCredentialRefreshHint,
+  PlatformJimengAuthCancel,
+  PlatformJimengAuthStart,
+  PlatformJimengCliInstall,
+  PlatformJimengVideoCancel,
+  PlatformJimengVideoExecute,
   PlatformProviderReady,
   PlatformUpgradeAvailable,
   ProviderCredentialMirrorUpdate,
@@ -22,10 +27,13 @@ import type {
   ProviderHeartbeat,
   ProviderHello,
 } from '../shared/protocol.js';
+import { JIMENG_CLI_INSTALL_PROTOCOL_VERSION } from '../shared/protocol.js';
 import { sha256Json } from '../shared/crypto.js';
 import { type ProviderNodeConfig, platformFallbackUrl } from './config.js';
 import { ProviderRiskController, type ProviderRiskSnapshot } from './risk.js';
 import { ProviderOfficialExitTunnelManager } from './official-exit.js';
+import type { JimengAuthorizationHandler } from './jimeng-auth.js';
+import type { JimengVideoHandler } from './jimeng-video.js';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
 // Low-level WebSocket ping to keep the relay warm through intermediaries that
@@ -65,6 +73,11 @@ export interface ProviderBridgeOptions {
   onPlatformReady?: () => void;
   onPlatformCredentialRefreshHint?: (message: PlatformCredentialRefreshHint) => void;
   onPlatformUpgradeAvailable?: (message: PlatformUpgradeAvailable) => void;
+  jimengAuthorization?: JimengAuthorizationHandler;
+  jimengVideo?: JimengVideoHandler;
+  jimengCliInstall?: {
+    install: () => Promise<{ cliVersion: string }>;
+  };
   // Called when the bridge settles on a different endpoint than config recorded,
   // so the host can persist the preference (direct vs fallback) for next start.
   onEndpointPreferenceChange?: (preferFallback: boolean) => void;
@@ -119,12 +132,15 @@ export class ProviderBridge {
   private reconnectTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private keepaliveTimer: NodeJS.Timeout | null = null;
-  private readonly pendingMirrorUpdates = new Map<string, {
-    credentialBindingId: string;
-    timer: NodeJS.Timeout;
-    resolve: () => void;
-    reject: (error: Error) => void;
-  }>();
+  private readonly pendingMirrorUpdates = new Map<
+    string,
+    {
+      credentialBindingId: string;
+      timer: NodeJS.Timeout;
+      resolve: () => void;
+      reject: (error: Error) => void;
+    }
+  >();
   private reconnectAttempt = 0;
   // Which endpoint the next connect() targets: false = direct primary, true =
   // CDN-proxied fallback. We only flip after a connect attempt fails outright,
@@ -164,7 +180,20 @@ export class ProviderBridge {
     inFlight: 0,
   };
 
-  constructor(private getConfig: () => ProviderNodeConfig, private readonly options: ProviderBridgeOptions = {}) {}
+  constructor(
+    private getConfig: () => ProviderNodeConfig,
+    private readonly options: ProviderBridgeOptions = {},
+  ) {}
+
+  setJimengHandlers(handlers: { authorization?: JimengAuthorizationHandler; video?: JimengVideoHandler }) {
+    if (this.options.jimengAuthorization !== handlers.authorization) this.options.jimengAuthorization?.cancelAll();
+    if (this.options.jimengVideo !== handlers.video) this.options.jimengVideo?.cancelAll();
+    this.options.jimengAuthorization = handlers.authorization;
+    this.options.jimengVideo = handlers.video;
+    // A second hello is supported by Platform and immediately refreshes the
+    // node's control capabilities without reconnecting or interrupting traffic.
+    if (this.socket?.readyState === WebSocket.OPEN) this.sendHello();
+  }
 
   start() {
     this.stopped = false;
@@ -188,6 +217,8 @@ export class ProviderBridge {
     this.platformInputBlockedSessions.clear();
     this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_stopped'));
+    this.options.jimengAuthorization?.cancelAll();
+    this.options.jimengVideo?.cancelAll();
     this.socket?.close();
   }
 
@@ -378,6 +409,18 @@ export class ProviderBridge {
         flowControl: ['credit_v1'],
         maxBinaryFrameBytes: OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
       },
+      controlCapabilities:
+        this.options.jimengCliInstall || this.options.jimengAuthorization || this.options.jimengVideo
+          ? {
+              ...(this.options.jimengCliInstall
+                ? { jimengCliInstall: { protocolVersions: [JIMENG_CLI_INSTALL_PROTOCOL_VERSION] } }
+                : {}),
+              ...(this.options.jimengAuthorization
+                ? { jimengAuth: this.options.jimengAuthorization.capability() }
+                : {}),
+              ...(this.options.jimengVideo ? { jimengVideo: this.options.jimengVideo.capability() } : {}),
+            }
+          : undefined,
     };
     this.send(hello);
   }
@@ -409,14 +452,18 @@ export class ProviderBridge {
   }
 
   private async handleMessage(raw: string, wireBytes?: number) {
-    const message = JSON.parse(raw) as OfficialExitOpenRequest | OfficialExitDataFrame | OfficialExitClose | PlatformCredentialMirrorUpdateAck | PlatformCredentialRefreshHint | { type: string };
+    const message = JSON.parse(raw) as
+      | OfficialExitOpenRequest
+      | OfficialExitDataFrame
+      | OfficialExitClose
+      | PlatformCredentialMirrorUpdateAck
+      | PlatformCredentialRefreshHint
+      | { type: string };
     if (message.type === 'platform.ready') {
       const ready = message as PlatformProviderReady;
       const selected = selectedOfficialExitDataProtocol(ready);
       this.officialExitTunnels.setNegotiatedDataProtocol(selected);
-      this.officialExitTunnels.setNegotiatedEarlyDataProtocol(
-        selectedOfficialExitEarlyDataProtocol(ready, selected),
-      );
+      this.officialExitTunnels.setNegotiatedEarlyDataProtocol(selectedOfficialExitEarlyDataProtocol(ready, selected));
       this.options.onPlatformReady?.();
       return;
     }
@@ -433,6 +480,95 @@ export class ProviderBridge {
     }
     if (message.type === 'platform.credential_mirror_update_ack') {
       this.handleCredentialMirrorUpdateAck(message as PlatformCredentialMirrorUpdateAck);
+      return;
+    }
+    if (message.type === 'platform.jimeng_auth_start') {
+      const start = message as PlatformJimengAuthStart;
+      if (!this.options.jimengAuthorization) {
+        this.send({
+          type: 'provider.jimeng_auth_failed',
+          protocolVersion: start.protocolVersion,
+          requestId: start.requestId,
+          flowId: start.flowId,
+          nodeId: this.getConfig().nodeId,
+          stage: 'launch',
+          errorCode: 'jimeng_cli_unavailable',
+          retryable: false,
+        });
+        return;
+      }
+      this.options.jimengAuthorization.start(start, (event) => this.send(event));
+      return;
+    }
+    if (message.type === 'platform.jimeng_auth_cancel') {
+      this.options.jimengAuthorization?.cancel(message as PlatformJimengAuthCancel);
+      return;
+    }
+    if (message.type === 'platform.jimeng_cli_install') {
+      const install = message as PlatformJimengCliInstall;
+      const config = this.getConfig();
+      if (
+        install.protocolVersion !== JIMENG_CLI_INSTALL_PROTOCOL_VERSION ||
+        install.nodeId !== config.nodeId ||
+        install.providerId !== config.providerId ||
+        !this.options.jimengCliInstall
+      ) {
+        this.send({
+          type: 'provider.jimeng_cli_install_failed',
+          protocolVersion: JIMENG_CLI_INSTALL_PROTOCOL_VERSION,
+          requestId: install.requestId,
+          nodeId: config.nodeId,
+          errorCode: this.options.jimengCliInstall
+            ? 'jimeng_cli_install_request_invalid'
+            : 'jimeng_cli_install_unsupported',
+          retryable: false,
+        });
+        return;
+      }
+      try {
+        const result = await this.options.jimengCliInstall.install();
+        this.send({
+          type: 'provider.jimeng_cli_install_completed',
+          protocolVersion: JIMENG_CLI_INSTALL_PROTOCOL_VERSION,
+          requestId: install.requestId,
+          nodeId: config.nodeId,
+          cliVersion: result.cliVersion,
+        });
+      } catch (error) {
+        const failure = jimengCliInstallFailure(error);
+        this.send({
+          type: 'provider.jimeng_cli_install_failed',
+          protocolVersion: JIMENG_CLI_INSTALL_PROTOCOL_VERSION,
+          requestId: install.requestId,
+          nodeId: config.nodeId,
+          errorCode: failure.errorCode,
+          retryable: failure.retryable,
+        });
+      }
+      return;
+    }
+    if (message.type === 'platform.jimeng_video_execute') {
+      const execute = message as PlatformJimengVideoExecute;
+      if (!this.options.jimengVideo) {
+        this.send({
+          type: 'provider.jimeng_video_failed',
+          protocolVersion: execute.protocolVersion,
+          requestId: execute.requestId,
+          videoJobId: execute.videoJobId,
+          nodeId: this.getConfig().nodeId,
+          operation: execute.operation?.type === 'query' ? 'query' : 'submit',
+          stage: 'validation',
+          errorCode: 'jimeng_video_not_supported',
+          retryable: false,
+          submissionUnknown: false,
+        });
+        return;
+      }
+      this.options.jimengVideo.execute(execute, (event) => this.send(event));
+      return;
+    }
+    if (message.type === 'platform.jimeng_video_cancel') {
+      this.options.jimengVideo?.cancel(message as PlatformJimengVideoCancel);
       return;
     }
     if (message.type === 'platform.upgrade_available') {
@@ -487,10 +623,7 @@ export class ProviderBridge {
   }
 
   private nextReconnectDelayMs(): number {
-    const exponentialDelay = Math.min(
-      RECONNECT_MAX_DELAY_MS,
-      RECONNECT_BASE_DELAY_MS * (2 ** this.reconnectAttempt),
-    );
+    const exponentialDelay = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempt);
     this.reconnectAttempt = Math.min(this.reconnectAttempt + 1, 10);
     const jitter = exponentialDelay * RECONNECT_JITTER_RATIO * Math.random();
     return Math.round(exponentialDelay + jitter);
@@ -498,18 +631,22 @@ export class ProviderBridge {
 
   private capabilitiesWithLocalCapacity(config: ProviderNodeConfig) {
     if (config.officialExit?.enabled) {
-      return [{
-        routeMode: 'official_exit' as const,
-        officialExit: {
+      return [
+        {
           routeMode: 'official_exit' as const,
-          dataProtocols: ['json_base64_v1' as const, 'binary_v1' as const],
+          officialExit: {
+            routeMode: 'official_exit' as const,
+            dataProtocols: ['json_base64_v1' as const, 'binary_v1' as const],
+          },
         },
-      }];
+      ];
     }
-    return [{
-      ...config.capability,
-      routeMode: config.capability.routeMode,
-    }];
+    return [
+      {
+        ...config.capability,
+        routeMode: config.capability.routeMode,
+      },
+    ];
   }
 
   private officialExitHealth(config: ProviderNodeConfig): OfficialExitHealth | undefined {
@@ -526,20 +663,33 @@ export class ProviderBridge {
   }
 }
 
-function isOfficialExitPlatformMessage(
-  message: { type: string },
-): message is OfficialExitOpenRequest | OfficialExitDataFrame | OfficialExitClose {
-  return message.type === 'official_exit.open'
-    || message.type === 'official_exit.data'
-    || message.type === 'official_exit.close';
+function jimengCliInstallFailure(error: unknown): { errorCode: string; retryable: boolean } {
+  const candidate = error && typeof error === 'object'
+    ? error as { errorCode?: unknown; code?: unknown; message?: unknown; retryable?: unknown }
+    : undefined;
+  const rawCode = candidate?.errorCode ?? candidate?.code ?? candidate?.message;
+  const errorCode = typeof rawCode === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(rawCode)
+    ? rawCode
+    : 'jimeng_cli_install_failed';
+  return { errorCode, retryable: candidate?.retryable === true };
+}
+
+function isOfficialExitPlatformMessage(message: {
+  type: string;
+}): message is OfficialExitOpenRequest | OfficialExitDataFrame | OfficialExitClose {
+  return (
+    message.type === 'official_exit.open' ||
+    message.type === 'official_exit.data' ||
+    message.type === 'official_exit.close'
+  );
 }
 
 function selectedOfficialExitDataProtocol(ready: PlatformProviderReady): OfficialExitDataProtocol {
   const transport = ready.transport;
   if (
-    transport?.officialExitDataProtocol === 'binary_v1'
-    && transport.flowControl === 'credit_v1'
-    && (transport.maxBinaryFrameBytes ?? 0) >= OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES
+    transport?.officialExitDataProtocol === 'binary_v1' &&
+    transport.flowControl === 'credit_v1' &&
+    (transport.maxBinaryFrameBytes ?? 0) >= OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES
   ) {
     return 'binary_v1';
   }
@@ -550,8 +700,7 @@ function selectedOfficialExitEarlyDataProtocol(
   ready: PlatformProviderReady,
   dataProtocol: OfficialExitDataProtocol,
 ): OfficialExitEarlyDataProtocol | undefined {
-  return dataProtocol === 'binary_v1'
-    && ready.transport?.officialExitEarlyDataProtocol === 'buffered_v1'
+  return dataProtocol === 'binary_v1' && ready.transport?.officialExitEarlyDataProtocol === 'buffered_v1'
     ? 'buffered_v1'
     : undefined;
 }

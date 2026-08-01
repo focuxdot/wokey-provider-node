@@ -6,6 +6,7 @@ import {
   createCodexOAuthStart,
   parseAnthropicAuthorizationCode,
   pollCodexDeviceCode,
+  pollXaiDeviceCode,
   requestCodexDeviceCode,
   verifyState,
 } from '../src/provider-node/oauth.js';
@@ -151,6 +152,26 @@ describe('provider OAuth helpers', () => {
       deviceAuthId: 'device_auth_test',
       userCode: 'ABCD-EFGH',
     })).resolves.toEqual({ status: 'pending' });
+  });
+
+  it('increases all later xAI polling intervals after an RFC slow_down response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: 'slow_down',
+            }),
+            { status: 400 },
+          ),
+      ),
+    );
+
+    await expect(pollXaiDeviceCode({ deviceCode: 'xai-device-code' })).resolves.toEqual({
+      status: 'pending',
+      intervalIncreaseMs: 5_000,
+    });
   });
 
   it('builds Claude OAuth PKCE authorization URLs with Claude Code scopes', () => {

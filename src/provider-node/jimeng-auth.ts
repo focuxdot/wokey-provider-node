@@ -1,0 +1,591 @@
+import { createHash } from 'node:crypto';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { accessSync, constants } from 'node:fs';
+import { chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  createJimengCredentialStore,
+  isSupportedDreaminaPlatform,
+  type JimengCredentialStore,
+  type SupportedDreaminaPlatform,
+} from './jimeng-credential-store.js';
+import type {
+  JimengAuthFailureStage,
+  JimengAuthControlProtocolVersion,
+  PlatformJimengAuthCancel,
+  PlatformJimengAuthStart,
+  ProviderJimengAuthCompleted,
+  ProviderJimengAuthFailed,
+  ProviderJimengAuthStarted,
+} from '../shared/protocol.js';
+import { JIMENG_AUTH_CONTROL_PROTOCOL_VERSION } from '../shared/protocol.js';
+
+const MAX_AUTH_FILE_BYTES = 64 * 1024;
+const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
+const LOGIN_START_TIMEOUT_MS = 30_000;
+const CREDENTIAL_VALIDATION_TIMEOUT_MS = 30_000;
+const CANCEL_GRACE_MS = 1_000;
+
+export type JimengAuthEvent = ProviderJimengAuthStarted | ProviderJimengAuthCompleted | ProviderJimengAuthFailed;
+
+export interface DreaminaCliDescriptor {
+  path: string;
+  version: string;
+  textToVideoModels?: string[];
+  textToVideoResolutions?: string[];
+  videoGenerationModes?: Array<'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference'>;
+  videoModelsByMode?: Partial<
+    Record<'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference', string[]>
+  >;
+  videoResolutions?: string[];
+}
+
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+}
+
+interface RunningFlow {
+  cancelled: boolean;
+  process?: ChildProcess;
+}
+
+export interface JimengAuthorizationHandlerOptions {
+  cli: DreaminaCliDescriptor;
+  getIdentity: () => { nodeId: string; providerId: string };
+  platform?: NodeJS.Platform;
+  tempParentDir?: string;
+  now?: () => number;
+  createCredentialStore?: (options: {
+    platform: SupportedDreaminaPlatform;
+    homeDir: string;
+    env: NodeJS.ProcessEnv;
+  }) => JimengCredentialStore;
+  runCommand?: (
+    executable: string,
+    args: string[],
+    options: { env: NodeJS.ProcessEnv; timeoutMs: number; flow: RunningFlow },
+  ) => Promise<CommandResult>;
+  withCredentialLease?: <T>(operation: () => Promise<T>) => Promise<T>;
+}
+
+export class JimengAuthorizationHandler {
+  private readonly flows = new Map<string, RunningFlow>();
+  private readonly now: () => number;
+
+  constructor(private readonly options: JimengAuthorizationHandlerOptions) {
+    this.now = options.now ?? Date.now;
+  }
+
+  capability() {
+    return {
+      protocolVersions: [JIMENG_AUTH_CONTROL_PROTOCOL_VERSION],
+      cliVersion: this.options.cli.version,
+    } satisfies {
+      protocolVersions: JimengAuthControlProtocolVersion[];
+      cliVersion: string;
+    };
+  }
+
+  start(message: PlatformJimengAuthStart, emit: (event: JimengAuthEvent) => void): void {
+    const identity = this.options.getIdentity();
+    if (
+      message.protocolVersion !== JIMENG_AUTH_CONTROL_PROTOCOL_VERSION ||
+      message.nodeId !== identity.nodeId ||
+      message.providerId !== identity.providerId ||
+      !message.flowId ||
+      this.flows.has(message.flowId) ||
+      this.flows.size > 0
+    ) {
+      emit(failedEvent(message, 'launch', 'jimeng_auth_start_invalid', false));
+      return;
+    }
+    const flow: RunningFlow = { cancelled: false };
+    this.flows.set(message.flowId, flow);
+    const operation = () => this.run(message, flow, emit);
+    void (this.options.withCredentialLease ? this.options.withCredentialLease(operation) : operation()).finally(() => {
+      this.flows.delete(message.flowId);
+    });
+  }
+
+  cancel(message: PlatformJimengAuthCancel): boolean {
+    const identity = this.options.getIdentity();
+    if (message.protocolVersion !== JIMENG_AUTH_CONTROL_PROTOCOL_VERSION || message.nodeId !== identity.nodeId) {
+      return false;
+    }
+    const flow = this.flows.get(message.flowId);
+    if (!flow) return false;
+    flow.cancelled = true;
+    terminateProcessGroup(flow.process);
+    return true;
+  }
+
+  cancelAll(): void {
+    for (const flow of this.flows.values()) {
+      flow.cancelled = true;
+      terminateProcessGroup(flow.process);
+    }
+  }
+
+  private async run(
+    message: PlatformJimengAuthStart,
+    flow: RunningFlow,
+    emit: (event: JimengAuthEvent) => void,
+  ): Promise<void> {
+    assertNotCancelled(flow);
+    const parentDir = this.options.tempParentDir ?? process.env.XDG_RUNTIME_DIR ?? tmpdir();
+    const rootDir = await mkdtemp(join(parentDir, 'wokey-jimeng-auth-'));
+    const homeDir = join(rootDir, 'home');
+    let stage: JimengAuthFailureStage = 'launch';
+    let failed: ProviderJimengAuthFailed | undefined;
+    let completedEvent: ProviderJimengAuthCompleted | undefined;
+    let credentialStore: JimengCredentialStore | undefined;
+    let credentialSnapshot: Buffer | undefined;
+    let credentialSnapshotTaken = false;
+    try {
+      await chmod(rootDir, 0o700);
+      await mkdir(homeDir, { mode: 0o700 });
+      const configDir = join(rootDir, 'config');
+      const dataDir = join(rootDir, 'data');
+      const cacheDir = join(rootDir, 'cache');
+      const runtimeDir = join(rootDir, 'runtime');
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        HOME: homeDir,
+        XDG_CONFIG_HOME: configDir,
+        XDG_DATA_HOME: dataDir,
+        XDG_CACHE_HOME: cacheDir,
+        XDG_RUNTIME_DIR: runtimeDir,
+      };
+      const platform = this.options.platform ?? process.platform;
+      if (!isSupportedDreaminaPlatform(platform)) throw new Error('jimeng_platform_unsupported');
+      if (platform === 'win32') {
+        env.USERPROFILE = homeDir;
+        env.APPDATA = join(configDir, 'Roaming');
+        env.LOCALAPPDATA = join(dataDir, 'Local');
+        env.TEMP = cacheDir;
+        env.TMP = cacheDir;
+      }
+      await Promise.all([
+        mkdir(configDir, { mode: 0o700 }),
+        mkdir(dataDir, { mode: 0o700 }),
+        mkdir(cacheDir, { mode: 0o700 }),
+        mkdir(runtimeDir, { mode: 0o700 }),
+      ]);
+
+      credentialStore = (this.options.createCredentialStore ?? createJimengCredentialStore)({
+        platform,
+        homeDir,
+        env,
+      });
+      credentialSnapshot = await credentialStore.snapshot();
+      credentialSnapshotTaken = true;
+
+      stage = 'device_authorization';
+      const startResult = await this.runCommand(
+        ['login', '--headless'],
+        env,
+        Math.min(LOGIN_START_TIMEOUT_MS, message.deadlineMs),
+        flow,
+      );
+      assertNotCancelled(flow);
+      const material = parseDeviceAuthorization(startResult.stdout);
+      const expiresAtMs = Math.min(
+        this.now() + message.deadlineMs,
+        material.expiresInSeconds ? this.now() + material.expiresInSeconds * 1_000 : Number.POSITIVE_INFINITY,
+      );
+      emit({
+        type: 'provider.jimeng_auth_started',
+        protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
+        requestId: message.requestId,
+        flowId: message.flowId,
+        nodeId: message.nodeId,
+        verificationUri: material.verificationUri,
+        verificationUriComplete: material.verificationUriComplete,
+        userCode: material.userCode,
+        expiresAt: new Date(expiresAtMs).toISOString(),
+      });
+
+      stage = 'user_authorization';
+      const remainingMs = Math.max(1, expiresAtMs - this.now());
+      await this.runCommand(
+        [
+          'login',
+          'checklogin',
+          `--device_code=${material.deviceCode}`,
+          `--poll=${Math.max(1, Math.ceil(remainingMs / 1_000))}`,
+        ],
+        env,
+        remainingMs,
+        flow,
+      );
+      assertNotCancelled(flow);
+
+      // Do one real, non-generating upstream call before accepting the
+      // credential. A successful login poll only proves token issuance;
+      // `user_credit` proves that the saved session can actually reach Jimeng.
+      stage = 'credential_validation';
+      const validationRemainingMs = Math.max(1, expiresAtMs - this.now());
+      await this.runCommand(
+        ['user_credit'],
+        env,
+        Math.min(CREDENTIAL_VALIDATION_TIMEOUT_MS, validationRemainingMs),
+        flow,
+      );
+      assertNotCancelled(flow);
+
+      stage = 'credential_capture';
+      const credentialBytes = await credentialStore.capture();
+      const encodedCredentialBundle = captureCredentialBundle(credentialBytes, this.options.cli.version);
+      completedEvent = {
+        type: 'provider.jimeng_auth_completed',
+        protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
+        requestId: message.requestId,
+        flowId: message.flowId,
+        nodeId: message.nodeId,
+        encodedCredentialBundle,
+      };
+    } catch (error) {
+      failed = failedEvent(message, stage, errorCode(error), retryableError(error));
+    } finally {
+      stage = 'cleanup';
+      let cleanupFailed = false;
+      terminateProcessGroup(flow.process);
+      try {
+        if (credentialStore && credentialSnapshotTaken) await credentialStore.restore(credentialSnapshot);
+      } catch {
+        cleanupFailed = true;
+      }
+      try {
+        await rm(rootDir, { recursive: true, force: true });
+      } catch {
+        cleanupFailed = true;
+      }
+      if (cleanupFailed) {
+        completedEvent = undefined;
+        failed = failedEvent(message, stage, 'jimeng_auth_cleanup_failed', true);
+      }
+    }
+    if (completedEvent) emit(completedEvent);
+    else if (failed) emit(failed);
+  }
+
+  private runCommand(
+    args: string[],
+    env: NodeJS.ProcessEnv,
+    timeoutMs: number,
+    flow: RunningFlow,
+  ): Promise<CommandResult> {
+    return (this.options.runCommand ?? spawnBounded)(this.options.cli.path, args, { env, timeoutMs, flow });
+  }
+}
+
+export function detectDreaminaCli(
+  configuredPath = process.env.DREAMINA_CLI_PATH,
+  platform = process.platform,
+  homeDir = homedir(),
+): DreaminaCliDescriptor | undefined {
+  if (!isSupportedDreaminaPlatform(platform)) return undefined;
+  const executable = configuredPath || defaultDreaminaCliPath(platform, homeDir);
+  try {
+    accessSync(executable, constants.X_OK);
+    const result = spawnSync(executable, ['--version'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      shell: false,
+      maxBuffer: 16 * 1024,
+    });
+    if (result.status !== 0) return undefined;
+    const version = parseCliVersion(`${result.stdout || result.stderr}`);
+    if (!version || version.length > 128) return undefined;
+    const commands = [
+      ['text_to_video', 'text2video'],
+      ['image_to_video', 'image2video'],
+      ['first_last_frames', 'frames2video'],
+      ['multimodal_reference', 'multimodal2video'],
+    ] as const;
+    const videoModelsByMode: DreaminaCliDescriptor['videoModelsByMode'] = {};
+    const resolutions = new Set<string>();
+    for (const [mode, command] of commands) {
+      const help = spawnSync(executable, [command, '--help'], {
+        encoding: 'utf8',
+        timeout: 5_000,
+        shell: false,
+        maxBuffer: 64 * 1024,
+      });
+      if (help.status !== 0) continue;
+      const parsed = parseVideoCapabilities(`${help.stdout || help.stderr}`);
+      if (!parsed) continue;
+      videoModelsByMode[mode] = parsed.models;
+      for (const resolution of parsed.resolutions) resolutions.add(resolution);
+    }
+    const videoGenerationModes = Object.keys(videoModelsByMode) as NonNullable<
+      DreaminaCliDescriptor['videoGenerationModes']
+    >;
+    const textCapabilities = videoModelsByMode.text_to_video;
+    return {
+      path: executable,
+      version,
+      ...(textCapabilities ? { textToVideoModels: textCapabilities, textToVideoResolutions: [...resolutions] } : {}),
+      ...(videoGenerationModes.length > 1
+        ? { videoGenerationModes, videoModelsByMode, videoResolutions: [...resolutions] }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseVideoCapabilities(output: string): { models: string[]; resolutions: string[] } | undefined {
+  const models = [...new Set(output.toLowerCase().match(/\bseedance[0-9][a-z0-9._]*\b/g) ?? [])]
+    .filter((model) => model.length <= 64)
+    .slice(0, 20);
+  if (!models.length) return undefined;
+  const resolutions = [...new Set(output.toLowerCase().match(/\b(?:480p|720p|1080p|4k)\b/g) ?? [])];
+  return { models, resolutions };
+}
+
+export function defaultDreaminaCliPath(platform: SupportedDreaminaPlatform, homeDir: string): string {
+  return platform === 'win32' ? join(homeDir, 'bin', 'dreamina.exe') : join(homeDir, '.local', 'bin', 'dreamina');
+}
+
+export function parseCliVersion(output: string): string | undefined {
+  const value = output.trim();
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const version = (parsed as Record<string, unknown>).version;
+      if (typeof version === 'string' && version.trim()) return version.trim();
+    }
+  } catch {
+    // Fall through to the text formats used by other CLI builds.
+  }
+  const labeled = /(?:^|\s)version\s*[:=]?\s*v?([0-9][A-Za-z0-9._+-]*)/i.exec(value);
+  if (labeled?.[1]) return labeled[1];
+  const singleLine = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (singleLine.length !== 1) return undefined;
+  const line = singleLine[0];
+  if (!line) return undefined;
+  const token = /(?:^|\s)v?([0-9][A-Za-z0-9._+-]*)$/.exec(line);
+  return token?.[1];
+}
+
+function captureCredentialBundle(bytes: Buffer, cliVersion: string): string {
+  validateAuthFile(bytes);
+  return JSON.stringify({
+    schemaVersion: 2,
+    storageFormat: 'dreamina_auth_json_v1',
+    authFileBase64: bytes.toString('base64'),
+    authFileSha256: createHash('sha256').update(bytes).digest('hex'),
+    capturedAt: new Date().toISOString(),
+    sourceCliVersion: cliVersion,
+  });
+}
+
+function validateAuthFile(bytes: Buffer): void {
+  if (bytes.byteLength < 1 || bytes.byteLength > MAX_AUTH_FILE_BYTES) {
+    throw new Error('jimeng_credential_auth_file_size_invalid');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString('utf8'));
+  } catch {
+    throw new Error('jimeng_credential_auth_file_json_invalid');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('jimeng_credential_auth_file_json_invalid');
+  }
+  const value = parsed as Record<string, unknown>;
+  if (
+    typeof value.access_token !== 'string' ||
+    !value.access_token ||
+    typeof value.refresh_token !== 'string' ||
+    !value.refresh_token ||
+    !value.token_expires_at ||
+    !value.device_key ||
+    !value.user_info
+  ) {
+    throw new Error('jimeng_credential_auth_file_field_missing');
+  }
+}
+
+function parseDeviceAuthorization(stdout: string): {
+  verificationUri: string;
+  verificationUriComplete?: string;
+  userCode: string;
+  deviceCode: string;
+  expiresInSeconds?: number;
+} {
+  const fields = new Map<string, string>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^\s*([a-z_]+)\s*:\s*(.+?)\s*$/.exec(line);
+    if (match?.[1] && match[2]) fields.set(match[1], match[2]);
+  }
+  const verificationUri = fields.get('verification_uri');
+  const userCode = fields.get('user_code');
+  const deviceCode = fields.get('device_code');
+  if (!verificationUri || !userCode || !deviceCode) {
+    throw new Error('jimeng_device_authorization_output_invalid');
+  }
+  const parsedUri = new URL(verificationUri);
+  if (!isOfficialJimengVerificationUri(parsedUri)) {
+    throw new Error('jimeng_verification_uri_invalid');
+  }
+  const verificationUriComplete = fields.get('verification_uri_complete');
+  let parsedCompleteUri: string | undefined;
+  if (verificationUriComplete) {
+    const completeUri = new URL(verificationUriComplete);
+    if (!isOfficialJimengVerificationUri(completeUri)) {
+      throw new Error('jimeng_verification_uri_invalid');
+    }
+    parsedCompleteUri = completeUri.toString();
+  }
+  const expires = Number(fields.get('expires_in'));
+  return {
+    verificationUri: parsedUri.toString(),
+    verificationUriComplete: parsedCompleteUri,
+    userCode,
+    deviceCode,
+    expiresInSeconds: Number.isFinite(expires) && expires > 0 ? expires : undefined,
+  };
+}
+
+function isOfficialJimengVerificationUri(uri: URL): boolean {
+  return uri.protocol === 'https:' && isJianyingHost(uri.hostname) && !uri.username && !uri.password;
+}
+
+function isJianyingHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  return host === 'jianying.com' || host.endsWith('.jianying.com');
+}
+
+function spawnBounded(
+  executable: string,
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeoutMs: number; flow: RunningFlow },
+): Promise<CommandResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      env: options.env,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+    });
+    options.flow.process = child;
+    const stdoutChunks: Uint8Array[] = [];
+    const stderrChunks: Uint8Array[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+    const finish = (error?: Error, result?: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.flow.process = undefined;
+      if (error) reject(error);
+      else if (result) resolve(result);
+      else reject(new Error('jimeng_cli_result_missing'));
+    };
+    const append = (chunks: Uint8Array[], currentBytes: number, chunk: Uint8Array): number => {
+      const nextBytes = currentBytes + chunk.byteLength;
+      if (nextBytes > MAX_COMMAND_OUTPUT_BYTES) {
+        terminateProcessGroup(child);
+        throw new Error('jimeng_cli_output_too_large');
+      }
+      chunks.push(chunk);
+      return nextBytes;
+    };
+    child.stdout?.on('data', (chunk: Uint8Array) => {
+      try {
+        stdoutBytes = append(stdoutChunks, stdoutBytes, chunk);
+      } catch (error) {
+        finish(error as Error);
+      }
+    });
+    child.stderr?.on('data', (chunk: Uint8Array) => {
+      try {
+        stderrBytes = append(stderrChunks, stderrBytes, chunk);
+      } catch (error) {
+        finish(error as Error);
+      }
+    });
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        finish(undefined, {
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        });
+        return;
+      }
+      finish(
+        new Error(options.flow.cancelled ? 'jimeng_auth_cancelled' : `jimeng_cli_exit_${code ?? signal ?? 'unknown'}`),
+      );
+    });
+    const timer = setTimeout(
+      () => {
+        terminateProcessGroup(child);
+        finish(new Error('jimeng_cli_timeout'));
+      },
+      Math.max(1, options.timeoutMs),
+    );
+    timer.unref?.();
+  });
+}
+
+function terminateProcessGroup(child: ChildProcess | undefined): void {
+  if (!child?.pid || child.exitCode !== null) return;
+  const pid = child.pid;
+  try {
+    if (process.platform === 'win32') child.kill('SIGTERM');
+    else process.kill(-pid, 'SIGTERM');
+  } catch {
+    child.kill('SIGTERM');
+  }
+  const timer = setTimeout(() => {
+    try {
+      if (process.platform === 'win32') child.kill('SIGKILL');
+      else process.kill(-pid, 'SIGKILL');
+    } catch {
+      child.kill('SIGKILL');
+    }
+  }, CANCEL_GRACE_MS);
+  timer.unref?.();
+}
+
+function assertNotCancelled(flow: RunningFlow): void {
+  if (flow.cancelled) throw new Error('jimeng_auth_cancelled');
+}
+
+function failedEvent(
+  message: Pick<PlatformJimengAuthStart, 'requestId' | 'flowId' | 'nodeId'>,
+  stage: JimengAuthFailureStage,
+  errorCodeValue: string,
+  retryable: boolean,
+): ProviderJimengAuthFailed {
+  return {
+    type: 'provider.jimeng_auth_failed',
+    protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
+    requestId: message.requestId,
+    flowId: message.flowId,
+    nodeId: message.nodeId,
+    stage,
+    errorCode: errorCodeValue,
+    retryable,
+  };
+}
+
+function errorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  return /^jimeng_[a-z0-9_]+$/.test(message) ? message : 'jimeng_auth_failed';
+}
+
+function retryableError(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === 'jimeng_cli_timeout' || code === 'jimeng_auth_cleanup_failed' || code.startsWith('jimeng_cli_exit_');
+}

@@ -39,4 +39,32 @@ wokey-node restart
 curl http://127.0.0.1:16888/api/status
 ```
 
-To remove the runtime, use the `Uninstall.command` bundled in the DMG or remove the installed paths above. User config is intentionally kept unless deleted manually.
+## Update
+
+Run the update as the same macOS user that runs Provider Node:
+
+```bash
+wokey-node version
+wokey-node update
+wokey-node status
+```
+
+The updater downloads the latest signed release installer, verifies the
+artifact, reinstalls the package, and restarts the LaunchAgent. It keeps the
+node binding and local data.
+
+## Uninstall
+
+Remove the runtime while keeping local data:
+
+```bash
+wokey-node uninstall
+```
+
+Remove the runtime and local data:
+
+```bash
+wokey-node uninstall --purge
+```
+
+The `Uninstall.command` bundled in the DMG performs the non-purge removal.

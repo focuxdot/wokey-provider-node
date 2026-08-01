@@ -323,7 +323,7 @@ function decryptUpstreamSecrets(path: string, upstream: ProviderUpstreamConfig):
   }
 }
 
-function encryptSecret(path: string, value: string): string {
+export function encryptProviderNodeLocalSecret(path: string, value: string): string {
   if (value.startsWith(ENCRYPTED_PREFIX)) return value;
   const iv = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', getMasterKey(path), iv);
@@ -332,7 +332,7 @@ function encryptSecret(path: string, value: string): string {
   return `${ENCRYPTED_PREFIX}${Buffer.concat([iv, tag, encrypted]).toString('base64url')}`;
 }
 
-function decryptSecret(path: string, value: string): string {
+export function decryptProviderNodeLocalSecret(path: string, value: string): string {
   if (!value.startsWith(ENCRYPTED_PREFIX)) return value;
   const raw = Buffer.from(value.slice(ENCRYPTED_PREFIX.length), 'base64url');
   const iv = raw.subarray(0, 12);
@@ -342,6 +342,9 @@ function decryptSecret(path: string, value: string): string {
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
+
+const encryptSecret = encryptProviderNodeLocalSecret;
+const decryptSecret = decryptProviderNodeLocalSecret;
 
 function getMasterKey(configPath: string): Buffer {
   // Operator-supplied key: derive via scrypt rather than a bare hash so a

@@ -48,3 +48,54 @@ wokey-node status
 journalctl --user-unit wokey-provider-node.service -f
 curl http://127.0.0.1:16888/api/status
 ```
+
+## Update
+
+Run the update over SSH or in a local terminal as the same Linux user that runs
+Provider Node:
+
+```bash
+wokey-node version
+wokey-node update
+wokey-node status
+```
+
+The updater downloads the latest release installer, verifies the artifact,
+reinstalls the package or tarball, and restarts the user service. It keeps the
+node binding and local data. Package installation can require `sudo`; remote
+automatic updates therefore require non-interactive sudo, while a manual
+`wokey-node update` can prompt in an interactive terminal.
+
+If the command is not on `PATH`, use:
+
+```bash
+/usr/local/bin/wokey-node update
+```
+
+## Uninstall
+
+First remove the per-user background service while keeping local data:
+
+```bash
+wokey-node uninstall-service
+```
+
+For a `.deb` installation, remove the runtime package:
+
+```bash
+sudo apt remove wokey-provider-node
+```
+
+For a tarball installation, remove these runtime paths after stopping the
+service:
+
+```bash
+sudo rm -f /usr/local/bin/wokey-node
+sudo rm -rf /opt/wokey-provider-node
+sudo rm -rf /usr/share/doc/wokey-provider-node
+sudo rm -rf /usr/share/wokey-provider-node
+```
+
+Both paths intentionally keep local node data in
+`${XDG_CONFIG_HOME:-~/.config}/wokey-provider-node`. Delete that directory only
+when you also want to remove the node binding, credentials, and local settings.

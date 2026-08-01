@@ -49,7 +49,8 @@ const messages = {
     platformTemporarilyUnavailable: 'Platform is temporarily unavailable. Please try again in a moment.',
     platformDnsFailed: 'Could not resolve the Platform hostname. Check this node’s DNS settings, then retry.',
     platformConnectTimeout: 'Timed out while connecting to Platform. Check this node’s network, firewall, or proxy.',
-    platformTlsFailed: 'Could not establish a secure connection to Platform. Check the system clock, TLS inspection, and certificates.',
+    platformTlsFailed:
+      'Could not establish a secure connection to Platform. Check the system clock, TLS inspection, and certificates.',
     platformNetworkError: 'Could not connect to Platform. Check this node’s network and retry.',
     platformInvalidResponse: 'Platform returned an invalid response. Retry later or update Provider Node.',
     platformUnreachable:
@@ -59,8 +60,10 @@ const messages = {
     requestFailed: 'The operation failed.',
     errorIdLabel: 'Error ID:',
     credentialsTitle: 'Local credentials',
-    credentialsBody: 'Only credentials authorized or imported on this node are shown. Provider-assigned routing credentials stay private.',
-    credentialsScanDisabledBody: 'Add a local credential with the browser OAuth flow, device code, or by pasting a token.',
+    credentialsBody:
+      'Only credentials authorized or imported on this node are shown. Provider-assigned routing credentials stay private.',
+    credentialsScanDisabledBody:
+      'Add a local credential with the browser OAuth flow, device code, or by pasting a token.',
     scanAgain: 'Scan OAuth',
     scanningAuthButton: 'Scanning...',
     credentialsLoading: 'Scanning auth',
@@ -98,9 +101,16 @@ const messages = {
     codexOAuthFlowLabel: 'ChatGPT/OpenAI OAuth',
     claudeOAuthFlowLabel: 'Claude OAuth',
     claudeMissingReason: 'Claude Code config was not found.',
-    claudeCredentialsAuthorizationReason: 'Click Authorize to import Claude Code OAuth from its local credentials file.',
+    claudeCredentialsAuthorizationReason:
+      'Click Authorize to import Claude Code OAuth from its local credentials file.',
     claudeCredentialsMissingReason: 'Claude Code OAuth credential was not found in .credentials.json.',
     claudeCredentialsMissingTokensReason: 'Claude Code OAuth credential is missing access or refresh token.',
+    claudeConfigUnreadableReason:
+      'Claude Code config could not be read. Check its owner and permissions (normally node:node in the container).',
+    claudeConfigInvalidReason: 'Claude Code config is not valid JSON.',
+    claudeCredentialsUnreadableReason:
+      'Claude Code OAuth credentials could not be read. Check their owner and permissions (normally node:node in the container).',
+    claudeCredentialsInvalidReason: 'Claude Code OAuth credentials are not valid JSON.',
     codexMissingReason: 'Codex auth.json was not found.',
     boundBadge: 'Bound',
     pausedBadge: 'Paused',
@@ -114,7 +124,7 @@ const messages = {
     fix: 'Fix',
     startClaudeOAuth: 'Start Claude OAuth from the manual add area below.',
     addCredentialTitle: 'Add a credential manually (Recommended for personal use and sharing)',
-    addCredentialBody: 'This node can authorize and add multiple Claude / Codex accounts.',
+    addCredentialBody: 'This node can authorize and add multiple Claude / Codex / Grok / Jimeng accounts.',
     chooseProvider: 'Choose account type',
     claudeOAuth: 'Sign in with Claude OAuth',
     codexOAuth: 'Use device code authorization',
@@ -154,12 +164,33 @@ const messages = {
     startGrokDeviceCode: 'Authorize in Grok',
     grokDeviceCodeLabel: 'Code to enter on the Grok page',
     grokDeviceCodeHint: 'When Grok asks for the code shown in your terminal, use this code.',
+    jimengOAuth: 'Use device code authorization',
+    jimengOAuthTitle: 'Jimeng account authorization',
+    jimengOAuthBody: 'Authorize through the Jimeng CLI installed on this node.',
+    startJimengAuthorization: 'Authorize in Jimeng',
+    openJimengAuthorization: 'Open authorization page',
+    cancelJimengAuthorization: 'Cancel authorization',
+    jimengUserCodeLabel: 'Jimeng authorization code',
+    jimengCliChecking: 'Checking the Jimeng CLI on this node…',
+    jimengCliReady: 'Jimeng CLI ready:',
+    jimengCliUnavailable: 'The Jimeng CLI is not available on this node. Click Install Jimeng CLI to continue.',
+    installJimengCli: 'Install Jimeng CLI',
+    installingJimengCli: 'Installing Jimeng CLI…',
+    jimengCliInstallStarted: 'Downloading and verifying the official Jimeng CLI (about 30 MB)…',
+    jimengCliInstallSucceeded: 'Jimeng CLI installed. You can authorize the account now.',
+    jimengCliInstallFailed: 'Could not install Jimeng CLI. Check the node network and retry.',
+    jimengCliInstallUnsupported: 'One-click installation is not supported on this system or CPU architecture.',
+    jimengCliInstallIntegrityFailed: 'The downloaded Jimeng CLI failed integrity verification. Nothing was installed.',
+    jimengAuthorizationOpened:
+      'Jimeng authorization is open. Approve access in the browser, then return here; this node will save the credential automatically.',
+    jimengAuthorizationWaiting: 'Waiting for Jimeng browser confirmation…',
+    jimengAuthorizationSucceeded: 'Jimeng authorization succeeded. Credential encrypted and saved on Platform.',
+    jimengAuthorizationCancelled: 'Jimeng authorization was cancelled.',
     copyDeviceCode: 'Copy device code',
     deviceCodeStartFirst: 'Generate a device code first.',
     deviceCodeOpened:
       'ChatGPT authorization is open. Enter the device code shown here, then return to this page; this node will save the credential automatically.',
-    deviceCodeCopyBlocked:
-      'The browser blocked copy. The device code is selected; copy it manually.',
+    deviceCodeCopyBlocked: 'The browser blocked copy. The device code is selected; copy it manually.',
     otherOptions: 'Other Options',
     oauthResultPlaceholder: 'OAuth operation results will appear here.',
     unbindTitle: 'Unbind Node',
@@ -207,7 +238,8 @@ const messages = {
     authorizationUrlGenerated: 'Authorization URL generated.',
     deviceWaiting: 'Waiting for device authorization...',
     deviceAuthorized: 'Device authorization succeeded. Credential saved on Platform.',
-    deviceAuthorizationExpired: 'This device authorization session is no longer available. Start device code authorization again.',
+    deviceAuthorizationExpired:
+      'This device authorization session is no longer available. Start device code authorization again.',
     oauthUnsupportedRegion:
       'OpenAI does not support this node’s current exit region. Move the entire Provider Node host to a supported-region network, restart the node, and try again.',
     oauthDnsFailed: 'Could not resolve the authorization service. Check this node’s DNS settings, then retry.',
@@ -217,25 +249,37 @@ const messages = {
       'Could not establish a secure connection to the authorization service. Check the system clock, TLS inspection, and certificates.',
     oauthNetworkError:
       'Could not connect to the authorization service. Check this node’s network or system-wide proxy, then retry.',
-    oauthInvalidResponse: 'The authorization service returned an invalid response. Retry later or update Provider Node.',
+    oauthInvalidResponse:
+      'The authorization service returned an invalid response. Retry later or update Provider Node.',
     oauthBrowserChallenge:
       'The authorization service returned a browser security challenge. Generate a fresh authorization link and try again.',
     oauthRateLimited: 'The authorization service is rate limiting this node. Wait a moment, then retry.',
     oauthUpstreamUnavailable: 'The authorization service is temporarily unavailable. Retry later.',
-    oauthRequestForbidden: 'The authorization service rejected this request. Check the account and this node’s exit region.',
+    oauthRequestForbidden:
+      'The authorization service rejected this request. Check the account and this node’s exit region.',
     oauthAuthorizationInvalid: 'The authorization request is invalid or expired. Start authorization again.',
     oauthAccessDenied: 'Authorization was denied. Start again and approve the requested access.',
     nodeNotBound: 'Connect this Provider Node to your Provider account before authorizing credentials.',
     nodeBindingInvalid: 'Platform rejected this node binding. Rebind the node before authorizing credentials.',
     unsupportedNodeVersion: 'This Provider Node version is no longer supported. Update the node and retry.',
-    nodeAlreadyBound: 'This Node ID is already bound to another Provider. Use that binding or install with a new Node ID.',
+    nodeAlreadyBound:
+      'This Node ID is already bound to another Provider. Use that binding or install with a new Node ID.',
     platformUrlInvalid: 'The Platform URL is invalid or not allowed. Restore the official Wokey Platform URL.',
     credentialAlreadyOwned: 'This account is already connected to another Provider.',
-    credentialIdentityMismatch: 'The authorized account does not match the credential being updated. Start a fresh authorization.',
-    credentialIdentityUnverifiable: 'Platform could not verify the authorized account identity. Retry the authorization.',
+    credentialIdentityMismatch:
+      'The authorized account does not match the credential being updated. Start a fresh authorization.',
+    credentialIdentityUnverifiable:
+      'Platform could not verify the authorized account identity. Retry the authorization.',
     credentialSubscriptionUnsupported: 'This account’s subscription is not supported for Provider supply.',
-    credentialNodeUnavailable: 'The selected Provider Node is offline or not ready. Start or reconnect the node, then retry.',
-    credentialHostNotAllowed: 'This Provider Node version does not allow the required vendor host. Update the node and retry.',
+    credentialNodeUnavailable:
+      'The selected Provider Node is offline or not ready. Start or reconnect the node, then retry.',
+    credentialHostNotAllowed:
+      'This Provider Node version does not allow the required vendor host. Update the node and retry.',
+    jimengAuthNotSupported: 'Platform or this Provider Node version does not support local Jimeng authorization yet.',
+    jimengAuthNodeOffline: 'This Provider Node is not connected to Platform. Reconnect it and retry.',
+    jimengAuthStartTimeout: 'Jimeng CLI did not start authorization in time. Retry once, then check the node logs.',
+    jimengCredentialIdentityMissing:
+      'Platform could not read the Jimeng account identity. Update Provider Node and retry.',
     codexAuthJsonUnreadable: 'Codex auth.json could not be read. Check the file path and permissions.',
     codexAuthJsonInvalid: 'Codex auth.json is not valid JSON.',
     codexAuthJsonMissingTokens: 'Codex auth.json is missing its access or refresh token.',
@@ -329,6 +373,11 @@ const messages = {
     claudeCredentialsAuthorizationReason: '点击授权后导入 Claude Code 本地凭证文件中的 OAuth 凭证。',
     claudeCredentialsMissingReason: '没有在 .credentials.json 找到 Claude Code OAuth 凭证。',
     claudeCredentialsMissingTokensReason: 'Claude Code OAuth 凭证缺少访问令牌或刷新令牌。',
+    claudeConfigUnreadableReason: 'Claude Code 配置文件无法读取，请检查文件属主和权限（容器中通常应为 node:node）。',
+    claudeConfigInvalidReason: 'Claude Code 配置文件不是有效的 JSON。',
+    claudeCredentialsUnreadableReason:
+      'Claude Code OAuth 凭证文件无法读取，请检查文件属主和权限（容器中通常应为 node:node）。',
+    claudeCredentialsInvalidReason: 'Claude Code OAuth 凭证文件不是有效的 JSON。',
     codexMissingReason: '没有找到 Codex auth.json。',
     boundBadge: '已绑定',
     pausedBadge: '已暂停',
@@ -342,7 +391,7 @@ const messages = {
     fix: '处理',
     startClaudeOAuth: '请在下方手动添加区域开始 Claude OAuth。',
     addCredentialTitle: '手动添加授权凭证（推荐，适合自用与共享）',
-    addCredentialBody: '节点可以授权添加多个不同 Claude / Codex 账号',
+    addCredentialBody: '节点可以授权添加多个不同 Claude / Codex / Grok / 即梦账号',
     chooseProvider: '选择账号类型',
     claudeOAuth: '使用 Claude OAuth 登录',
     codexOAuth: '使用设备码授权',
@@ -361,8 +410,7 @@ const messages = {
     authorizationCodeLinkMismatch:
       '这个授权码不属于当前授权链接。请刷新页面，重新生成 Claude 授权链接，再提交新的授权码。',
     pasteOAuthTokenTitle: '其他方式：粘贴 OAuth 凭证',
-    pasteOAuthTokenBody:
-      '仅在你已经有完整 token 或 auth.json 时使用，作用类似导入已扫描到的本机凭证。',
+    pasteOAuthTokenBody: '仅在你已经有完整 token 或 auth.json 时使用，作用类似导入已扫描到的本机凭证。',
     importOAuthToken: '导入 OAuth 凭证',
     oauthTokenPlaceholder: '{"access_token":"...","refresh_token":"..."}',
     oauthTokenRequired: '请先粘贴 OAuth token JSON。',
@@ -380,11 +428,32 @@ const messages = {
     startGrokDeviceCode: '去 Grok 授权',
     grokDeviceCodeLabel: 'Grok 页面要输入的代码',
     grokDeviceCodeHint: 'Grok 页面提示“终端上显示的代码”时，请使用这里的代码。',
+    jimengOAuth: '使用设备码授权',
+    jimengOAuthTitle: '即梦账号授权',
+    jimengOAuthBody: '通过当前节点安装的即梦 CLI 完成授权。',
+    startJimengAuthorization: '去即梦授权',
+    openJimengAuthorization: '打开授权页面',
+    cancelJimengAuthorization: '取消授权',
+    jimengUserCodeLabel: '即梦授权码',
+    jimengCliChecking: '正在检查当前节点的即梦 CLI…',
+    jimengCliReady: '即梦 CLI 已就绪：',
+    jimengCliUnavailable: '当前节点没有可用的即梦 CLI。请点击“安装即梦 CLI”继续。',
+    installJimengCli: '安装即梦 CLI',
+    installingJimengCli: '正在安装即梦 CLI…',
+    jimengCliInstallStarted: '正在下载并校验即梦官方 CLI（约 30 MB）…',
+    jimengCliInstallSucceeded: '即梦 CLI 安装成功，现在可以进行账号授权。',
+    jimengCliInstallFailed: '即梦 CLI 安装失败，请检查节点网络后重试。',
+    jimengCliInstallUnsupported: '当前系统或 CPU 架构暂不支持一键安装。',
+    jimengCliInstallIntegrityFailed: '下载的即梦 CLI 未通过完整性校验，未执行安装。',
+    jimengAuthorizationOpened: '即梦授权页已打开。请在浏览器确认授权；完成后回到本页，节点会自动保存凭证。',
+    jimengAuthorizationWaiting: '正在等待即梦浏览器确认…',
+    jimengAuthorizationSucceeded: '即梦授权成功，凭证已加密保存到 Platform。',
+    jimengAuthorizationCancelled: '即梦授权已取消。',
     copyDeviceCode: '复制设备码',
     deviceCodeStartFirst: '请先点击上方按钮生成设备码。',
-    deviceCodeOpened: 'ChatGPT 授权页已打开。请把这里的设备码填到 ChatGPT 页面；授权完成后回到本页，节点会自动保存凭证。',
-    deviceCodeCopyBlocked:
-      '浏览器阻止了复制。已为你选中设备码，请手动复制。',
+    deviceCodeOpened:
+      'ChatGPT 授权页已打开。请把这里的设备码填到 ChatGPT 页面；授权完成后回到本页，节点会自动保存凭证。',
+    deviceCodeCopyBlocked: '浏览器阻止了复制。已为你选中设备码，请手动复制。',
     otherOptions: '其他方式',
     oauthResultPlaceholder: 'OAuth 操作结果会显示在这里。',
     unbindTitle: '解绑节点',
@@ -454,6 +523,10 @@ const messages = {
     credentialSubscriptionUnsupported: '该账号的订阅类型暂不支持参与 Provider 供给。',
     credentialNodeUnavailable: '所选 Provider Node 离线或尚未就绪。请启动或重新连接节点后重试。',
     credentialHostNotAllowed: '当前 Provider Node 版本未放行厂商所需域名，请更新节点后重试。',
+    jimengAuthNotSupported: 'Platform 或当前 Provider Node 版本尚不支持本地即梦授权。',
+    jimengAuthNodeOffline: '当前 Provider Node 未连接 Platform，请恢复连接后重试。',
+    jimengAuthStartTimeout: '即梦 CLI 未能及时启动授权。请重试一次；仍失败时检查节点日志。',
+    jimengCredentialIdentityMissing: 'Platform 无法读取即梦账号身份，请更新 Provider Node 后重试。',
     codexAuthJsonUnreadable: '无法读取 Codex auth.json，请检查文件路径和权限。',
     codexAuthJsonInvalid: 'Codex auth.json 不是有效的 JSON。',
     codexAuthJsonMissingTokens: 'Codex auth.json 缺少访问令牌或刷新令牌。',
@@ -476,12 +549,18 @@ let statusState = null;
 let activeDeviceAuthId = null;
 let activeCodexDeviceCode = null;
 let activeXaiDeviceCode = null;
+let activeJimengFlow = null;
+let jimengInstallInFlight = false;
 let activeProvider = 'claude';
 let activeClaudeOAuth = null;
 let platformCredentials = null;
 let localCredentialCandidates = null;
 let devicePollTimer = null;
 let devicePollRunId = 0;
+let xaiStatusWatchTimer = null;
+let xaiStatusWatchRunId = 0;
+let jimengPollTimer = null;
+let jimengPollRunId = 0;
 let lastCredentialScanAt = null;
 let authScanInFlight = null;
 let consumedLaunchBindingKey = '';
@@ -491,7 +570,7 @@ let locale =
   ((navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
 
 function t(key) {
-  return (messages[locale]?.[key]) || messages.en[key] || key;
+  return messages[locale]?.[key] || messages.en[key] || key;
 }
 
 function nodeConfirm(message, options = {}) {
@@ -637,6 +716,7 @@ function applyLocale() {
   });
   refreshStatusText();
   setAuthScanButtonLoading(Boolean(authScanInFlight));
+  renderJimengAvailability();
 }
 
 function closeSettingsMenu() {
@@ -711,6 +791,7 @@ function setLocale(next, event) {
   closeTopMenus();
   applyLocale();
   renderDynamicMeta();
+  renderJimengAvailability();
   if (platformCredentials || localCredentialCandidates)
     renderCredentialGrid(platformCredentials || [], localCredentialCandidates || []);
 }
@@ -760,8 +841,9 @@ async function api(path, options = {}, allowCsrfRetry = true) {
     // A server error with no structured message is almost always the Platform being
     // momentarily unreachable (deploy/restart → bare 503/502). Show a friendly localized
     // notice instead of leaking the raw "Service Unavailable" status text or an HTML page.
-    const message = apiMessage
-      || (response.status >= 500 ? t('platformTemporarilyUnavailable') : (response.statusText || 'Request failed'));
+    const message =
+      apiMessage ||
+      (response.status >= 500 ? t('platformTemporarilyUnavailable') : response.statusText || 'Request failed');
     const error = new Error(message);
     error.status = response.status;
     error.body = data;
@@ -841,6 +923,53 @@ function renderDynamicMeta() {
   document.getElementById('syncMeta').textContent = syncAt ? dateLabel(syncAt) : t('notConnected');
 }
 
+function renderJimengAvailability() {
+  const available = Boolean(statusState?.jimeng?.available);
+  const button = document.getElementById('jimengStartButton');
+  const installButton = document.getElementById('jimengInstallButton');
+  const status = document.getElementById('jimengCliStatus');
+  const installSupported = statusState?.jimeng?.install?.supported !== false;
+  const installing = jimengInstallInFlight || statusState?.jimeng?.install?.status === 'installing';
+  if (button) {
+    button.classList.toggle('hidden', !available);
+    button.disabled = !available || Boolean(activeJimengFlow);
+  }
+  if (installButton) {
+    installButton.classList.toggle('hidden', available);
+    installButton.disabled = !installSupported || installing;
+    installButton.textContent = installing ? t('installingJimengCli') : t('installJimengCli');
+  }
+  if (status) {
+    status.textContent = available
+      ? `${t('jimengCliReady')} ${statusState.jimeng.cliVersion || 'unknown'}`
+      : installSupported
+        ? t('jimengCliUnavailable')
+        : t('jimengCliInstallUnsupported');
+    status.classList.toggle('warning', !available);
+  }
+}
+
+async function installJimengCli() {
+  if (jimengInstallInFlight || statusState?.jimeng?.available) return;
+  jimengInstallInFlight = true;
+  renderJimengAvailability();
+  setToast('oauthResult', t('jimengCliInstallStarted'));
+  try {
+    const result = await api('/api/jimeng/cli/install', { method: 'POST', body: '{}' });
+    if (result?.jimeng) statusState.jimeng = result.jimeng;
+    setToast('oauthResult', t('jimengCliInstallSucceeded'), 'success');
+  } catch (error) {
+    setToast('oauthResult', formatApiError(error), 'error');
+  } finally {
+    jimengInstallInFlight = false;
+    try {
+      await refreshStatus(false);
+    } catch (_error) {
+      renderJimengAvailability();
+    }
+  }
+}
+
 async function refreshStatus(autoScan = true) {
   statusState = await api('/api/status');
   if (statusState.binding?.isBound) await refreshPlatformBindingStatus();
@@ -855,12 +984,74 @@ async function refreshStatus(autoScan = true) {
     if (authScanButton) authScanButton.style.display = 'none';
   }
   renderDynamicMeta();
+  renderJimengAvailability();
+  renderXaiAuthorizationStatus(statusState.xai?.deviceAuthorization);
   if (isBound) ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
   if (isBound && autoScan) runBoundPageAuthScan(true).catch(() => undefined);
   if (!isBound && statusState.binding?.serverStatus === 'invalid')
     setToast('unboundResult', t('nodeBindingExpired'), 'error');
   if (isBound && statusState.binding?.serverNodeStatus === 'paused')
     setToast('boundResult', t('nodePausedNotice'), 'warn');
+}
+
+function renderXaiAuthorizationStatus(xaiAuthorization) {
+  if (xaiAuthorization?.status === 'failed') {
+    stopXaiStatusWatch();
+    const statusError = new Error(xaiAuthorization.message || xaiAuthorization.error || t('requestFailed'));
+    statusError.status = xaiAuthorization.upstreamStatus || 400;
+    statusError.body = xaiAuthorization;
+    setToast('oauthResult', formatApiError(statusError), 'error');
+  } else if (xaiAuthorization?.status === 'expired') {
+    stopXaiStatusWatch();
+    setToast('oauthResult', t('deviceAuthorizationExpired'), 'error');
+  } else if (xaiAuthorization?.status === 'pending' && !activeXaiDeviceCode) {
+    setToast('oauthResult', t('deviceWaiting'));
+    scheduleXaiStatusWatch(xaiAuthorization);
+  } else if (xaiAuthorization?.status === 'succeeded' && !activeXaiDeviceCode) {
+    stopXaiStatusWatch();
+    setToast('oauthResult', t('deviceAuthorized'), 'success');
+  } else if (xaiAuthorization?.status !== 'pending') {
+    stopXaiStatusWatch();
+  }
+}
+
+function stopXaiStatusWatch() {
+  if (xaiStatusWatchTimer) clearTimeout(xaiStatusWatchTimer);
+  xaiStatusWatchTimer = null;
+  xaiStatusWatchRunId += 1;
+}
+
+function scheduleXaiStatusWatch(xaiAuthorization, requestedDelayMs) {
+  if (activeXaiDeviceCode || xaiAuthorization?.status !== 'pending') return;
+  if (xaiStatusWatchTimer) clearTimeout(xaiStatusWatchTimer);
+  const untilServerPollMs = Number(xaiAuthorization.nextPollAt) - Date.now() + 250;
+  const delayMs = Number.isFinite(requestedDelayMs)
+    ? Math.max(0, requestedDelayMs)
+    : Number.isFinite(untilServerPollMs)
+      ? Math.max(5_000, Math.min(20_000, untilServerPollMs))
+      : 5_000;
+  const runId = ++xaiStatusWatchRunId;
+  xaiStatusWatchTimer = setTimeout(async () => {
+    xaiStatusWatchTimer = null;
+    if (runId !== xaiStatusWatchRunId || activeXaiDeviceCode) return;
+    if (document.hidden) {
+      scheduleXaiStatusWatch(xaiAuthorization, 20_000);
+      return;
+    }
+    try {
+      const previousAuthorization = statusState?.xai?.deviceAuthorization;
+      const latest = await api('/api/status');
+      if (runId !== xaiStatusWatchRunId || activeXaiDeviceCode) return;
+      statusState = latest;
+      const latestAuthorization = latest.xai?.deviceAuthorization;
+      renderXaiAuthorizationStatus(latestAuthorization);
+      if (previousAuthorization?.status === 'pending' && latestAuthorization?.status === 'succeeded') {
+        await loadCredentials(true);
+      }
+    } catch (_error) {
+      if (runId === xaiStatusWatchRunId) scheduleXaiStatusWatch(xaiAuthorization, 20_000);
+    }
+  }, delayMs);
 }
 
 async function refreshStatusFromAction() {
@@ -992,10 +1183,12 @@ async function requestUninstallNode(event) {
       method: 'POST',
       body: JSON.stringify(confirmation),
     });
-    const message = result.command
-      ? t('uninstallCommandFallback') + result.command
-      : t('uninstallStarted');
-    setToast(statusState?.binding?.isBound ? 'boundResult' : 'unboundResult', message, result.command ? undefined : 'success');
+    const message = result.command ? t('uninstallCommandFallback') + result.command : t('uninstallStarted');
+    setToast(
+      statusState?.binding?.isBound ? 'boundResult' : 'unboundResult',
+      message,
+      result.command ? undefined : 'success',
+    );
   } catch (error) {
     setToast(statusState?.binding?.isBound ? 'boundResult' : 'unboundResult', formatApiError(error), 'error');
   }
@@ -1021,12 +1214,13 @@ async function loadCredentials(silent = false) {
     if (!silent && binding?.server?.status === 'unavailable')
       setToast(
         'credentialResult',
-        t('nodeBindingUnavailable')
-          + (binding.server.errorCode
-            ? ' ' + formatApiError({
-              message: binding.server.error,
-              body: { error: binding.server.errorCode, message: binding.server.error },
-            })
+        t('nodeBindingUnavailable') +
+          (binding.server.errorCode
+            ? ' ' +
+              formatApiError({
+                message: binding.server.error,
+                body: { error: binding.server.errorCode, message: binding.server.error },
+              })
             : ''),
         'error',
       );
@@ -1167,7 +1361,9 @@ function renderPlatformCredentialCards(credentials) {
         '<article class="credential-card"><div class="cred-head"><div class="cred-name"><div><h3>' +
         escapeHtml(platformCredentialCardTitle(item)) +
         '</h3></div></div><span class="badge ' +
-        escapeHtml(item.status === 'active' && item.routeAssigned === false ? 'warn' : statusClass[item.status] || 'warn') +
+        escapeHtml(
+          item.status === 'active' && item.routeAssigned === false ? 'warn' : statusClass[item.status] || 'warn',
+        ) +
         '">' +
         escapeHtml(platformCredentialBadgeLabel(item, statusKey)) +
         '</span></div><div class="details"><div><span>' +
@@ -1458,6 +1654,10 @@ function localCredentialReason(reason) {
   if (reason === 'claude_code_credentials_authorization_required') return t('claudeCredentialsAuthorizationReason');
   if (reason === 'claude_code_credentials_not_found') return t('claudeCredentialsMissingReason');
   if (reason === 'claude_code_credentials_missing_tokens') return t('claudeCredentialsMissingTokensReason');
+  if (reason === 'claude_code_config_unreadable') return t('claudeConfigUnreadableReason');
+  if (reason === 'claude_code_config_invalid') return t('claudeConfigInvalidReason');
+  if (reason === 'claude_code_credentials_unreadable') return t('claudeCredentialsUnreadableReason');
+  if (reason === 'claude_code_credentials_invalid') return t('claudeCredentialsInvalidReason');
   if (reason === 'codex_auth_json_not_found') return t('codexMissingReason');
   return reason;
 }
@@ -1586,6 +1786,21 @@ const API_ERROR_MESSAGE_KEYS = {
   official_exit_node_offline: 'credentialNodeUnavailable',
   official_exit_unavailable: 'credentialNodeUnavailable',
   official_exit_vendor_not_allowed: 'credentialHostNotAllowed',
+  jimeng_cli_unavailable: 'jimengCliUnavailable',
+  jimeng_cli_install_unsupported: 'jimengCliInstallUnsupported',
+  jimeng_cli_install_integrity_missing: 'jimengCliInstallIntegrityFailed',
+  jimeng_cli_install_checksum_mismatch: 'jimengCliInstallIntegrityFailed',
+  jimeng_cli_install_size_rejected: 'jimengCliInstallIntegrityFailed',
+  jimeng_cli_install_source_rejected: 'jimengCliInstallIntegrityFailed',
+  jimeng_cli_install_validation_failed: 'jimengCliInstallIntegrityFailed',
+  jimeng_cli_install_download_failed: 'jimengCliInstallFailed',
+  jimeng_cli_install_failed: 'jimengCliInstallFailed',
+  jimeng_auth_not_supported: 'jimengAuthNotSupported',
+  jimeng_auth_node_offline: 'jimengAuthNodeOffline',
+  jimeng_auth_node_disconnected: 'jimengAuthNodeOffline',
+  jimeng_auth_start_timeout: 'jimengAuthStartTimeout',
+  jimeng_auth_cancelled: 'jimengAuthorizationCancelled',
+  jimeng_credential_identity_missing: 'jimengCredentialIdentityMissing',
   codex_auth_json_not_found: 'codexMissingReason',
   codex_auth_json_unreadable: 'codexAuthJsonUnreadable',
   codex_auth_json_invalid: 'codexAuthJsonInvalid',
@@ -1645,12 +1860,13 @@ async function authorizeDetectedCredential(index) {
 function vendorLabel(vendor) {
   if (vendor === 'anthropic') return 'Claude';
   if (vendor === 'openai') return 'OpenAI / Codex';
+  if (vendor === 'jimeng') return '即梦';
   return vendor || 'OAuth';
 }
 
 function selectProvider(provider) {
   activeProvider = provider;
-  const labels = { claude: 0, codex: 1, grok: 2 };
+  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3 };
   document.querySelectorAll('.provider-option').forEach((item, index) => {
     const selected = index === (labels[provider] || 0);
     item.classList.toggle('selected', selected);
@@ -1659,13 +1875,18 @@ function selectProvider(provider) {
   document.getElementById('claudeAuthPanel')?.classList.toggle('hidden', provider !== 'claude');
   document.getElementById('codexAuthPanel')?.classList.toggle('hidden', provider !== 'codex');
   document.getElementById('xaiAuthPanel')?.classList.toggle('hidden', provider !== 'grok');
-  if (provider === 'claude') ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
+  document.getElementById('jimengAuthPanel')?.classList.toggle('hidden', provider !== 'jimeng');
+  document.getElementById('advancedOAuthOptions')?.classList.toggle('hidden', provider === 'jimeng');
+  const advanced = document.getElementById('advancedOAuthOptions');
+  if (advanced) advanced.style.display = provider === 'jimeng' ? 'none' : '';
+  if (provider === 'claude')
+    ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
+  if (provider === 'jimeng') renderJimengAvailability();
 }
 
 async function startCodexDevice() {
-  const currentDeviceCode = activeCodexDeviceCode && Date.now() < activeCodexDeviceCode.expiresAt
-    ? activeCodexDeviceCode
-    : null;
+  const currentDeviceCode =
+    activeCodexDeviceCode && Date.now() < activeCodexDeviceCode.expiresAt ? activeCodexDeviceCode : null;
   if (currentDeviceCode?.userCode && activeDeviceAuthId) {
     const authWindow = openCodexDeviceAuthPlaceholder();
     openCodexDeviceAuthWindow(currentDeviceCode, authWindow);
@@ -1697,6 +1918,7 @@ function stopDevicePolling() {
   activeCodexDeviceCode = null;
   activeXaiDeviceCode = null;
   devicePollRunId += 1;
+  stopXaiStatusWatch();
 }
 
 function isDeviceAuthNotFound(error) {
@@ -1705,10 +1927,12 @@ function isDeviceAuthNotFound(error) {
 
 function isTransientDevicePollError(error) {
   const code = apiErrorCode(error);
-  return error?.body?.retryable === true
-    || error?.status >= 500
-    || code === 'provider_node_internal_error'
-    || code === 'codex_device_poll_failed';
+  return (
+    error?.body?.retryable === true ||
+    error?.status >= 500 ||
+    code === 'provider_node_internal_error' ||
+    code === 'codex_device_poll_failed'
+  );
 }
 
 async function copyTextToClipboard(text) {
@@ -1860,6 +2084,7 @@ async function copyCodexDeviceCode() {
 
 // ── xAI (Grok) 设备码 —— RFC 8628,直接用 device_code 轮询 token。复用共享轮询计时器/runId。 ──────────
 async function startXaiDevice() {
+  stopXaiStatusWatch();
   if (activeXaiDeviceCode && Date.now() < activeXaiDeviceCode.expiresAt) {
     const authWindow = window.open(activeXaiDeviceCode.verificationUrl, 'wokeyXaiDeviceAuth');
     if (authWindow) authWindow.focus();
@@ -1873,7 +2098,10 @@ async function startXaiDevice() {
     const data = await api('/api/oauth/xai/device/start', { method: 'POST', body: '{}' });
     activeXaiDeviceCode = data;
     document.getElementById('xaiDeviceUserCodeLabel').textContent = data.userCode;
-    if (authWindow) { authWindow.location.href = data.verificationUrl; authWindow.focus(); }
+    if (authWindow) {
+      authWindow.location.href = data.verificationUrl;
+      authWindow.focus();
+    }
     setToast('oauthResult', t('deviceCodeOpened'));
     startXaiDevicePolling(data);
   } catch (error) {
@@ -1883,10 +2111,10 @@ async function startXaiDevice() {
 }
 
 function startXaiDevicePolling(deviceCode) {
+  stopXaiStatusWatch();
   if (devicePollTimer) clearTimeout(devicePollTimer);
   const pollRunId = ++devicePollRunId;
-  const intervalMs = Math.max(2, Number(deviceCode.interval) || 5) * 1000;
-  let transientPollErrors = 0;
+  const baseStatusIntervalMs = Math.max(5, Number(deviceCode.interval) || 5) * 1000;
   setToast('oauthResult', t('deviceWaiting'));
 
   const finish = () => {
@@ -1897,26 +2125,47 @@ function startXaiDevicePolling(deviceCode) {
     devicePollRunId += 1;
     return true;
   };
-  const schedule = () => {
+  const schedule = (nextPollAt) => {
     if (pollRunId !== devicePollRunId || !activeXaiDeviceCode) return;
-    devicePollTimer = setTimeout(pollOnce, intervalMs);
+    const untilServerPollMs = Number(nextPollAt) - Date.now() + 250;
+    const delayMs = Number.isFinite(untilServerPollMs)
+      ? Math.max(5_000, Math.min(20_000, untilServerPollMs))
+      : baseStatusIntervalMs;
+    devicePollTimer = setTimeout(pollOnce, delayMs);
   };
   const pollOnce = async () => {
     if (pollRunId !== devicePollRunId || !activeXaiDeviceCode) return;
     const dc = activeXaiDeviceCode.deviceCode;
     try {
-      const data = await api('/api/oauth/xai/device/poll', { method: 'POST', body: JSON.stringify({ deviceCode: dc }) });
+      const data = await api('/api/oauth/xai/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ deviceCode: dc }),
+      });
       if (pollRunId !== devicePollRunId) return;
-      transientPollErrors = 0;
-      if (data.status === 'pending') { schedule(); return; }
-      if (data.status === 'expired') { if (finish()) setToast('oauthResult', t('deviceAuthorizationExpired'), 'error'); return; }
-      if (data.status !== 'succeeded') { schedule(); return; }
+      if (data.status === 'pending') {
+        schedule(data.nextPollAt);
+        return;
+      }
+      if (data.status === 'expired') {
+        if (finish()) setToast('oauthResult', t('deviceAuthorizationExpired'), 'error');
+        return;
+      }
+      if (data.status === 'failed') {
+        const statusError = new Error(data.message || data.error || t('requestFailed'));
+        statusError.status = data.upstreamStatus || 400;
+        statusError.body = data;
+        if (finish()) setToast('oauthResult', formatApiError(statusError), 'error');
+        return;
+      }
+      if (data.status !== 'succeeded') {
+        schedule(data.nextPollAt);
+        return;
+      }
       if (!finish()) return;
       setToast('oauthResult', t('deviceAuthorized'), 'success');
       await refreshStatus();
     } catch (error) {
       if (pollRunId !== devicePollRunId) return;
-      if (error?.status >= 500 && transientPollErrors < 5) { transientPollErrors += 1; schedule(); return; }
       if (finish()) setToast('oauthResult', formatApiError(error), 'error');
     }
   };
@@ -1935,6 +2184,158 @@ async function copyXaiDeviceCode() {
     return;
   }
   setToast('oauthResult', t('deviceCodeCopied'));
+}
+
+function openJimengAuthorizationPlaceholder() {
+  const authWindow = window.open('about:blank', 'wokeyJimengAuth');
+  if (!authWindow) return null;
+  try {
+    const title = locale === 'zh' ? '正在打开即梦授权页' : 'Opening Jimeng authorization';
+    const body = locale === 'zh' ? '正在生成授权码，请稍候…' : 'Generating an authorization code. Please wait...';
+    authWindow.document.title = title;
+    authWindow.document.head.innerHTML = '<meta name="referrer" content="no-referrer">';
+    authWindow.document.body.innerHTML =
+      '<main style="font:16px system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;min-height:100vh;display:grid;place-items:center;margin:0;background:#fff;color:#0b1c30"><div style="text-align:center"><h1 style="font-size:20px;margin:0 0 8px">' +
+      title +
+      '</h1><p style="margin:0;color:#5f6f7f">' +
+      body +
+      '</p></div></main>';
+  } catch (_error) {
+    // Navigation below still works if the browser blocks placeholder writes.
+  }
+  return authWindow;
+}
+
+function openJimengAuthorizationWindow(flow, authWindow) {
+  const target = authWindow || window.open('about:blank', 'wokeyJimengAuth');
+  const authorizationUrl = flow?.verificationUriComplete || flow?.verificationUri;
+  if (!target || !authorizationUrl) return false;
+  try {
+    target.opener = null;
+  } catch (_error) {
+    // Some browsers expose opener as read-only; navigation remains usable.
+  }
+  target.location.replace(authorizationUrl);
+  target.focus();
+  return true;
+}
+
+function finishJimengPolling() {
+  if (jimengPollTimer) clearTimeout(jimengPollTimer);
+  jimengPollTimer = null;
+  activeJimengFlow = null;
+  jimengPollRunId += 1;
+  document.getElementById('jimengCancelButton')?.classList.add('hidden');
+  const authorizationLink = document.getElementById('jimengAuthorizationLink');
+  authorizationLink?.classList.add('hidden');
+  authorizationLink?.removeAttribute('href');
+  renderJimengAvailability();
+}
+
+async function startJimengAuthorization() {
+  if (!statusState?.jimeng?.available) {
+    setToast('oauthResult', t('jimengCliUnavailable'), 'error');
+    return;
+  }
+  finishJimengPolling();
+  const authWindow = openJimengAuthorizationPlaceholder();
+  const button = document.getElementById('jimengStartButton');
+  if (button) button.disabled = true;
+  setToast('oauthResult', t('jimengAuthorizationWaiting'));
+  try {
+    const flow = await api('/api/oauth/jimeng/start', { method: 'POST', body: '{}' });
+    activeJimengFlow = flow;
+    document.getElementById('jimengUserCodeLabel').textContent = flow.userCode || '--------------------------------';
+    document.getElementById('jimengCancelButton')?.classList.remove('hidden');
+    const authorizationUrl = flow.verificationUriComplete || flow.verificationUri;
+    const authorizationLink = document.getElementById('jimengAuthorizationLink');
+    if (authorizationUrl && authorizationLink) {
+      authorizationLink.href = authorizationUrl;
+      authorizationLink.classList.remove('hidden');
+    }
+    openJimengAuthorizationWindow(flow, authWindow);
+    setToast('oauthResult', t('jimengAuthorizationOpened'));
+    startJimengPolling();
+    renderJimengAvailability();
+  } catch (error) {
+    if (authWindow && !authWindow.closed) authWindow.close();
+    finishJimengPolling();
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+function startJimengPolling() {
+  if (!activeJimengFlow?.flowId) return;
+  if (jimengPollTimer) clearTimeout(jimengPollTimer);
+  const runId = ++jimengPollRunId;
+  let transientErrors = 0;
+  const schedule = () => {
+    if (runId !== jimengPollRunId || !activeJimengFlow?.flowId) return;
+    jimengPollTimer = setTimeout(pollOnce, 2000);
+  };
+  const pollOnce = async () => {
+    if (runId !== jimengPollRunId || !activeJimengFlow?.flowId) return;
+    const flowId = activeJimengFlow.flowId;
+    try {
+      const flow = await api(`/api/oauth/jimeng/${encodeURIComponent(flowId)}/status`);
+      if (runId !== jimengPollRunId || flowId !== activeJimengFlow?.flowId) return;
+      transientErrors = 0;
+      activeJimengFlow = flow;
+      if (flow.status === 'starting' || flow.status === 'pending') {
+        setToast('oauthResult', t('jimengAuthorizationWaiting'));
+        schedule();
+        return;
+      }
+      if (flow.status === 'succeeded') {
+        finishJimengPolling();
+        setToast('oauthResult', t('jimengAuthorizationSucceeded'), 'success');
+        await refreshStatus();
+        return;
+      }
+      const variant = flow.status === 'cancelled' ? 'warn' : 'error';
+      const message =
+        flow.status === 'cancelled'
+          ? t('jimengAuthorizationCancelled')
+          : formatApiError({ code: flow.errorCode, message: flow.errorCode });
+      finishJimengPolling();
+      setToast('oauthResult', message, variant);
+    } catch (error) {
+      if (runId !== jimengPollRunId) return;
+      if ((error?.status >= 500 || error?.body?.retryable === true) && transientErrors < 5) {
+        transientErrors += 1;
+        schedule();
+        return;
+      }
+      finishJimengPolling();
+      setToast('oauthResult', formatApiError(error), 'error');
+    }
+  };
+  schedule();
+}
+
+async function cancelJimengAuthorization() {
+  const flowId = activeJimengFlow?.flowId;
+  if (!flowId) return;
+  try {
+    await api(`/api/oauth/jimeng/${encodeURIComponent(flowId)}/cancel`, {
+      method: 'POST',
+      body: '{}',
+    });
+    finishJimengPolling();
+    setToast('oauthResult', t('jimengAuthorizationCancelled'), 'warn');
+  } catch (error) {
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+async function copyJimengUserCode() {
+  const code = document.getElementById('jimengUserCodeLabel')?.textContent?.trim();
+  if (!code || /^-+$/.test(code)) {
+    setToast('oauthResult', t('deviceCodeStartFirst'));
+    return;
+  }
+  const copied = await copyTextToClipboard(code);
+  setToast('oauthResult', copied ? t('deviceCodeCopied') : t('deviceCodeCopyBlocked'));
 }
 
 async function ensureClaudeOAuthStart() {
@@ -2115,8 +2516,11 @@ Object.assign(window, {
   bindNode,
   copyClaudeAuthorizationLink,
   copyCodexDeviceCode,
+  copyJimengUserCode,
   copyXaiDeviceCode,
+  cancelJimengAuthorization,
   importDetectedCredential,
+  installJimengCli,
   refreshStatusFromAction,
   requestUninstallNode,
   rescanCredentials,
@@ -2125,6 +2529,7 @@ Object.assign(window, {
   showBindingHelp,
   startClaudeOAuth,
   startCodexDevice,
+  startJimengAuthorization,
   startXaiDevice,
   submitClaudeAuthorizationCode,
   submitManualOAuthToken,
@@ -2143,7 +2548,13 @@ window.addEventListener('hashchange', consumeLaunchBindingParamsSoon);
 window.addEventListener('pageshow', consumeLaunchBindingParamsSoon);
 window.addEventListener('focus', consumeLaunchBindingParamsSoon);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) consumeLaunchBindingParamsSoon();
+  if (!document.hidden) {
+    consumeLaunchBindingParamsSoon();
+    const xaiAuthorization = statusState?.xai?.deviceAuthorization;
+    if (xaiAuthorization?.status === 'pending' && !activeXaiDeviceCode) {
+      scheduleXaiStatusWatch(xaiAuthorization, 0);
+    }
+  }
 });
 applyLocale();
 syncThemeToggle();

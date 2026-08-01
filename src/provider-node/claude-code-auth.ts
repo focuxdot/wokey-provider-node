@@ -104,19 +104,28 @@ export function detectClaudeCodeAuth(path?: string, options: ClaudeCodeAuthDetec
   }
 
   if (!options.readSecret) {
-    const metadata = readClaudeCodeMetadata();
-    return {
-      path: path ? resolveClaudeCodePath(path) : claudeDir,
-      exists: true,
-      ready: false,
-      requiresAuthorization: true,
-      accountEmail: metadata.accountEmail,
-      organizationId: metadata.organizationId,
-      claudeCodeAccountUuid: metadata.claudeCodeAccountUuid,
-      subscriptionType: metadata.subscriptionType,
-      subscriptionDisplayName: subscriptionPlanDisplayName('anthropic', metadata.subscriptionType),
-      error: 'claude_code_credentials_authorization_required',
-    };
+    try {
+      const metadata = readClaudeCodeMetadata();
+      return {
+        path: path ? resolveClaudeCodePath(path) : claudeDir,
+        exists: true,
+        ready: false,
+        requiresAuthorization: true,
+        accountEmail: metadata.accountEmail,
+        organizationId: metadata.organizationId,
+        claudeCodeAccountUuid: metadata.claudeCodeAccountUuid,
+        subscriptionType: metadata.subscriptionType,
+        subscriptionDisplayName: subscriptionPlanDisplayName('anthropic', metadata.subscriptionType),
+        error: 'claude_code_credentials_authorization_required',
+      };
+    } catch (error) {
+      return {
+        path: path ? resolveClaudeCodePath(path) : configPath,
+        exists: true,
+        ready: false,
+        error: error instanceof Error ? error.message : 'claude_code_config_invalid',
+      };
+    }
   }
 
   try {
@@ -176,16 +185,20 @@ function loadClaudeCodeOAuth(path?: string): ProviderOAuthConfig {
 }
 
 function readClaudeCodeCredentialsPayload(path?: string): ClaudeCodeCredentialsPayload | null {
-  if (path) return readJsonFile<ClaudeCodeCredentialsPayload>(resolveClaudeCodePath(path));
+  if (path) {
+    return readJsonFile<ClaudeCodeCredentialsPayload>(resolveClaudeCodePath(path), 'claude_code_credentials');
+  }
 
   const credentialsPath = defaultClaudeCodeCredentialsPath();
-  if (existsSync(credentialsPath)) return readJsonFile<ClaudeCodeCredentialsPayload>(credentialsPath);
+  if (existsSync(credentialsPath)) {
+    return readJsonFile<ClaudeCodeCredentialsPayload>(credentialsPath, 'claude_code_credentials');
+  }
 
   return null;
 }
 
 export function readClaudeCodeMetadata(): ClaudeCodeOAuthMetadata {
-  const parsed = readJsonFile<ClaudeCodeConfigPayload>(defaultClaudeCodeConfigPath());
+  const parsed = readJsonFile<ClaudeCodeConfigPayload>(defaultClaudeCodeConfigPath(), 'claude_code_config');
   const account = parsed?.oauthAccount;
   return {
     accountEmail: stringValue(account?.emailAddress),
@@ -238,9 +251,19 @@ function sameNormalizedValue(left?: string, right?: string): boolean {
   return Boolean(left && right && left.trim().toLowerCase() === right.trim().toLowerCase());
 }
 
-function readJsonFile<T>(path: string): T | null {
+function readJsonFile<T>(path: string, errorPrefix: 'claude_code_config' | 'claude_code_credentials'): T | null {
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, 'utf8')) as T;
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    throw new Error(`${errorPrefix}_unreadable`);
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`${errorPrefix}_invalid`);
+  }
 }
 
 function resolveClaudeCodePath(path: string): string {

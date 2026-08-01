@@ -36,9 +36,25 @@ fi
 
 if rg -n --glob '!docs/**' --glob '!README.md' --glob '!CONTRIBUTING.md' \
   --glob '!scripts/audit-oss-boundary.sh' \
+  --glob '!src/provider-node/jimeng-credential-store.ts' \
+  --glob '!tests/jimeng_auth.test.ts' \
   'exchangeAnthropicSessionKey|detectClaudeBrowserSession|readClaudeBrowserSession|Network/Cookies|Chrome Safe Storage|sessionKey=|browser-session/import|from-session|scopeBrowserSession|browserUserAgent|Keychain|find-generic-password|Claude Code-credentials|/usr/bin/security' \
   src tests packaging scripts web; then
   fail "browser cookie/session import code must not be present"
+fi
+
+# The Jimeng CLI stores its own credential in the native macOS Keychain. Keep
+# that narrowly scoped exception auditable: the implementation and its tests
+# may use /usr/bin/security, but must never grow browser/Claude import behavior,
+# and the production target must remain the fixed Jimeng service and account.
+if rg -n \
+  'exchangeAnthropicSessionKey|detectClaudeBrowserSession|readClaudeBrowserSession|Network/Cookies|Chrome Safe Storage|sessionKey=|browser-session/import|from-session|scopeBrowserSession|browserUserAgent|Claude Code-credentials' \
+  src/provider-node/jimeng-credential-store.ts tests/jimeng_auth.test.ts; then
+  fail "Jimeng keychain support must not import browser or Claude secrets"
+fi
+if ! rg -q "const KEYRING_SERVICE = 'dreamina';" src/provider-node/jimeng-credential-store.ts \
+  || ! rg -q "const KEYRING_ACCOUNT = 'byted_cli_user_token';" src/provider-node/jimeng-credential-store.ts; then
+  fail "Jimeng keychain support must use the fixed dreamina credential target"
 fi
 
 if rg -n 'web/public/downloads/provider-node|src/platform/|deploy/scripts|prod-exec' . \

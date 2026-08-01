@@ -280,7 +280,8 @@ export async function requestXaiDeviceCode(): Promise<XaiDeviceCode> {
 
 export async function pollXaiDeviceCode(input: {
   deviceCode: string;
-}): Promise<{ status: 'pending' } | { status: 'succeeded'; token: OAuthTokenResponse }> {
+  signal?: AbortSignal;
+}): Promise<{ status: 'pending'; intervalIncreaseMs?: number } | { status: 'succeeded'; token: OAuthTokenResponse }> {
   const response = await fetchOAuth(XAI_OAUTH.tokenUrl, {
     method: 'POST',
     headers: {
@@ -293,13 +294,15 @@ export async function pollXaiDeviceCode(input: {
       client_id: XAI_OAUTH.clientId,
       device_code: input.deviceCode,
     }).toString(),
+    signal: input.signal,
   });
   const text = await response.text();
   if (response.ok) return { status: 'succeeded', token: parseSuccessfulOAuthJson<OAuthTokenResponse>(text) };
   const body = parseJsonRecord(text);
   const error = stringField(body, 'error');
   // RFC 8628:未授权/限速 → 继续轮询;拒绝/过期 → 硬错(上层映射为设备码失效)。
-  if (error === 'authorization_pending' || error === 'slow_down') return { status: 'pending' };
+  if (error === 'authorization_pending') return { status: 'pending' };
+  if (error === 'slow_down') return { status: 'pending', intervalIncreaseMs: 5_000 };
   throw oauthResponseError(response, text);
 }
 

@@ -198,6 +198,30 @@ It cannot:
 | `wokey-node update` | Re-run the latest release installer |
 | `wokey-node logs` | Show service logs, where supported |
 
+Run service commands on the node machine as the same operating-system user that
+runs Provider Node. A normal update keeps the node binding, credentials, and
+local configuration:
+
+```bash
+wokey-node version
+wokey-node update
+wokey-node status
+```
+
+Uninstall support differs by platform:
+
+| Platform | Remove runtime or service | Remove local data too |
+| --- | --- | --- |
+| macOS | `wokey-node uninstall` | `wokey-node uninstall --purge` |
+| Linux `.deb` | `wokey-node uninstall-service`, then `sudo apt remove wokey-provider-node` | Also remove `~/.config/wokey-provider-node` |
+| Linux tarball | `wokey-node uninstall-service`, then remove the installed runtime paths listed in [Linux Installer](docs/LINUX_INSTALLER.md) | Also remove `~/.config/wokey-provider-node` |
+| Windows | `wokey-node uninstall-service`, then remove `%LOCALAPPDATA%\WokeyProviderNode` | Also remove `%APPDATA%\Wokey Provider Node` |
+| Docker | `docker compose down` | `docker compose down -v` |
+
+`uninstall-service` only removes the background service or Scheduled Task; it
+does not remove the runtime or user data. See the platform installer documents
+for full commands and paths.
+
 ## Verifying A Release
 
 Official releases publish `checksums.txt`, `checksums.txt.sig`, and `checksums.txt.pem`. Installers always verify each artifact's SHA-256 against `checksums.txt`. If `cosign` is installed, they also verify the GitHub Actions keyless signature over `checksums.txt` to confirm the release came from the official release workflow.

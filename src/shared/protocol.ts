@@ -11,10 +11,7 @@ export interface ProviderCapability {
   officialExit?: ProviderOfficialExitMetadata;
 }
 
-export type ProviderRouteMode =
-  | 'dev_mock'
-  | 'dev_compatible'
-  | 'official_exit';
+export type ProviderRouteMode = 'dev_mock' | 'dev_compatible' | 'official_exit';
 
 export type ProviderNodeRuntimeMode = 'development' | 'official_exit';
 
@@ -52,6 +49,30 @@ export interface OfficialExitHealth {
   reasonCodes: string[];
 }
 
+export const JIMENG_AUTH_CONTROL_PROTOCOL_VERSION = 1;
+export type JimengAuthControlProtocolVersion = typeof JIMENG_AUTH_CONTROL_PROTOCOL_VERSION;
+export const JIMENG_CLI_INSTALL_PROTOCOL_VERSION = 1;
+export type JimengCliInstallProtocolVersion = typeof JIMENG_CLI_INSTALL_PROTOCOL_VERSION;
+export const JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION = 2;
+export type JimengVideoControlProtocolVersion = typeof JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION;
+
+export interface ProviderNodeControlCapabilities {
+  jimengCliInstall?: {
+    protocolVersions: JimengCliInstallProtocolVersion[];
+  };
+  jimengAuth?: {
+    protocolVersions: JimengAuthControlProtocolVersion[];
+    cliVersion: string;
+  };
+  jimengVideo?: {
+    protocolVersions: JimengVideoControlProtocolVersion[];
+    cliVersion: string;
+    generationModes: Array<'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference'>;
+    upstreamModelVersions: string[];
+    resolutions: string[];
+  };
+}
+
 export interface ProviderHello {
   type: 'provider.hello';
   nodeId: string;
@@ -61,6 +82,7 @@ export interface ProviderHello {
   runtimeMode?: ProviderNodeRuntimeMode;
   capabilities: ProviderNodeCapability[];
   transportCapabilities?: ProviderTransportCapabilities;
+  controlCapabilities?: ProviderNodeControlCapabilities;
   officialExit?: OfficialExitHealth;
   acceptingSessions?: boolean;
 }
@@ -147,6 +169,165 @@ export interface PlatformDrainAck {
   nodeId: string;
 }
 
+export interface PlatformJimengAuthStart {
+  type: 'platform.jimeng_auth_start';
+  protocolVersion: JimengAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  providerId: string;
+  nodeId: string;
+  deadlineMs: number;
+}
+
+export interface PlatformJimengAuthCancel {
+  type: 'platform.jimeng_auth_cancel';
+  protocolVersion: JimengAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+}
+
+export interface ProviderJimengAuthStarted {
+  type: 'provider.jimeng_auth_started';
+  protocolVersion: JimengAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  userCode: string;
+  expiresAt: string;
+}
+
+export interface ProviderJimengAuthCompleted {
+  type: 'provider.jimeng_auth_completed';
+  protocolVersion: JimengAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+  encodedCredentialBundle: string;
+}
+
+export type JimengAuthFailureStage =
+  | 'launch'
+  | 'device_authorization'
+  | 'user_authorization'
+  | 'credential_validation'
+  | 'credential_capture'
+  | 'cleanup';
+
+export interface ProviderJimengAuthFailed {
+  type: 'provider.jimeng_auth_failed';
+  protocolVersion: JimengAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+  stage: JimengAuthFailureStage;
+  errorCode: string;
+  retryable: boolean;
+}
+
+export interface PlatformJimengCliInstall {
+  type: 'platform.jimeng_cli_install';
+  protocolVersion: JimengCliInstallProtocolVersion;
+  requestId: string;
+  providerId: string;
+  nodeId: string;
+}
+
+export interface ProviderJimengCliInstallCompleted {
+  type: 'provider.jimeng_cli_install_completed';
+  protocolVersion: JimengCliInstallProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  cliVersion: string;
+}
+
+export interface ProviderJimengCliInstallFailed {
+  type: 'provider.jimeng_cli_install_failed';
+  protocolVersion: JimengCliInstallProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  errorCode: string;
+  retryable: boolean;
+}
+
+export interface PlatformJimengVideoExecute {
+  type: 'platform.jimeng_video_execute';
+  protocolVersion: JimengVideoControlProtocolVersion;
+  requestId: string;
+  videoJobId: string;
+  providerId: string;
+  nodeId: string;
+  deadlineMs: number;
+  encodedCredentialBundle: string;
+  operation:
+    | {
+      type: 'submit';
+      mode: 'text_to_video' | 'image_to_video' | 'first_last_frames' | 'multimodal_reference';
+      modelVersion: string;
+      prompt: string;
+      durationSeconds: number;
+      ratio: string;
+      resolution: string;
+      mediaInputs: Array<{
+        id: string;
+        kind: 'image' | 'video' | 'audio';
+        role?: 'first_frame' | 'last_frame' | 'reference';
+        filename: string;
+        contentType: string;
+        bytes: number;
+        sha256: string;
+        downloadUrl: string;
+      }>;
+    }
+    | {
+      type: 'query';
+      submitId: string;
+      encodedTaskStateBundle: string;
+      artifactUpload: { url: string; maxBytes: number };
+    };
+}
+
+export interface PlatformJimengVideoCancel {
+  type: 'platform.jimeng_video_cancel';
+  protocolVersion: JimengVideoControlProtocolVersion;
+  requestId: string;
+  videoJobId: string;
+  nodeId: string;
+}
+
+export interface ProviderJimengVideoCompleted {
+  type: 'provider.jimeng_video_completed';
+  protocolVersion: JimengVideoControlProtocolVersion;
+  requestId: string;
+  videoJobId: string;
+  nodeId: string;
+  operation: 'submit' | 'query';
+  submitId: string;
+  reusedSubmission: boolean;
+  encodedTaskStateBundle: string;
+  encodedCredentialBundle?: string;
+  credentialChanged: boolean;
+  upstreamResult: Record<string, unknown>;
+  outputArtifact?: { contentType: 'video/mp4'; bytes: number; sha256: string };
+}
+
+export type JimengVideoFailureStage = 'validation' | 'receipt' | 'credential_injection' | 'media_transfer' | 'task_state_restore' | 'cli_execution' | 'task_state_capture' | 'credential_capture' | 'cleanup';
+
+export interface ProviderJimengVideoFailed {
+  type: 'provider.jimeng_video_failed';
+  protocolVersion: JimengVideoControlProtocolVersion;
+  requestId: string;
+  videoJobId: string;
+  nodeId: string;
+  operation: 'submit' | 'query';
+  stage: JimengVideoFailureStage;
+  errorCode: string;
+  retryable: boolean;
+  submissionUnknown: boolean;
+}
+
 // Only the fields the node actually consumes to open and bound the relay socket.
 // Platform may send additional routing/policy fields; they are ignored here and
 // deliberately not declared, to keep Platform-internal vocabulary out of the
@@ -221,6 +402,11 @@ export type ProviderToPlatformMessage =
   | ProviderHeartbeat
   | ProviderDrainNotice
   | ProviderCredentialMirrorUpdate
+  | ProviderJimengAuthStarted
+  | ProviderJimengAuthCompleted
+  | ProviderJimengAuthFailed
+  | ProviderJimengCliInstallCompleted
+  | ProviderJimengCliInstallFailed
   | OfficialExitOpenResponse
   | OfficialExitDataFrame
   | OfficialExitClose
@@ -231,6 +417,9 @@ export type PlatformToProviderMessage =
   | PlatformCredentialMirrorUpdateAck
   | PlatformCredentialRefreshHint
   | PlatformUpgradeAvailable
+  | PlatformJimengAuthStart
+  | PlatformJimengAuthCancel
+  | PlatformJimengCliInstall
   | OfficialExitOpenRequest
   | OfficialExitDataFrame
   | OfficialExitClose;

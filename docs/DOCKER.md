@@ -89,6 +89,21 @@ Stop:
 docker compose stop
 ```
 
+Remove the container and network while keeping the Provider Node data volume:
+
+```bash
+docker compose down
+```
+
+Remove the container, network, and local Provider Node data:
+
+```bash
+docker compose down -v
+```
+
+`docker compose down -v` removes the node binding and locally stored
+authorization data. Use it only when you intend to purge the node.
+
 ## Where Data Is Stored
 
 Node config and authorization data are stored in this Docker volume:

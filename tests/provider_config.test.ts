@@ -3,7 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getProviderNodeBuildInfo } from '../src/provider-node/build-info.js';
-import { defaultConfig, loadConfig, platformFallbackUrl, redactConfig, saveConfig } from '../src/provider-node/config.js';
+import {
+  decryptProviderNodeLocalSecret,
+  defaultConfig,
+  encryptProviderNodeLocalSecret,
+  loadConfig,
+  platformFallbackUrl,
+  redactConfig,
+  saveConfig,
+} from '../src/provider-node/config.js';
 
 describe('platform fallback url', () => {
   it('swaps the direct primary host for the CDN-proxied fallback, preserving scheme/port/path', () => {
@@ -286,6 +294,19 @@ describe('provider node config', () => {
       saveConfig(path, loaded);
       expect(readFileSync(path, 'utf8')).not.toContain('legacy-node-secret');
       expect(loadConfig(path).providerNodeSecret).toBe('legacy-node-secret');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('encrypts auxiliary node-local state with the same installation key', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'provider-local-secret-'));
+    try {
+      const path = join(dir, 'provider-node.json');
+      const ciphertext = encryptProviderNodeLocalSecret(path, 'refreshed-jimeng-token');
+      expect(ciphertext).toMatch(/^enc:v1:/);
+      expect(ciphertext).not.toContain('refreshed-jimeng-token');
+      expect(decryptProviderNodeLocalSecret(path, ciphertext)).toBe('refreshed-jimeng-token');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

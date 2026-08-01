@@ -10,6 +10,8 @@ let app: FastifyInstance;
 let mergeConfigPatch: (current: ProviderNodeConfig, patch: Partial<ProviderNodeConfig>) => ProviderNodeConfig;
 let parseJsonResponse: <T>(response: Response) => Promise<T>;
 let dir: string;
+const originalHome = process.env.HOME;
+const originalDreaminaCliPath = process.env.DREAMINA_CLI_PATH;
 
 beforeAll(async () => {
   // Import the server without binding a port or starting the outbound bridge.
@@ -17,6 +19,10 @@ beforeAll(async () => {
   process.env.PROVIDER_NODE_NO_AUTOSTART = '1';
   process.env.PROVIDER_CONFIG_PATH = join(dir, 'provider-node.json');
   process.env.LOG_LEVEL = 'silent';
+  // Keep CLI discovery hermetic even when the developer machine has the
+  // official Dreamina CLI installed in its default path.
+  process.env.HOME = dir;
+  delete process.env.DREAMINA_CLI_PATH;
   const mod = await import('../src/provider-node/server.js');
   app = mod.app;
   mergeConfigPatch = mod.mergeConfigPatch;
@@ -26,6 +32,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  if (originalDreaminaCliPath === undefined) delete process.env.DREAMINA_CLI_PATH;
+  else process.env.DREAMINA_CLI_PATH = originalDreaminaCliPath;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -43,6 +53,11 @@ describe('console routes', () => {
     expect(res.body).toContain('Object.assign(window');
     expect(res.body).toContain('selectProvider:');
     expect(res.body).toContain('startCodexDevice:');
+    expect(res.body).toContain('startJimengAuthorization:');
+    expect(res.body).toContain('installJimengCli:');
+    expect(res.body).toContain('cancelJimengAuthorization:');
+    expect(res.body).toContain('id="jimengInstallButton"');
+    expect(res.body).toContain('id="jimengAuthorizationLink"');
     expect(res.body).toContain('toggleSettingsMenu:');
     expect(res.body).toContain('requestUninstallNode:');
   });
@@ -52,12 +67,48 @@ describe('console routes', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.config.providerNodeSecret).toBe('***');
+    expect(body.xai).toEqual({});
+    expect(body.jimeng).toMatchObject({
+      available: false,
+      configured: false,
+      install: {
+        supported: true,
+        status: 'idle',
+      },
+    });
   });
 
   it('GET /api/config never returns raw secrets', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/config', headers: { host: HOST } });
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain('dev-provider-secret');
+  });
+
+  it('exposes Jimeng flow routes but requires a bound node', async () => {
+    const token = await csrfToken();
+    const start = await app.inject({
+      method: 'POST',
+      url: '/api/oauth/jimeng/start',
+      headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': token },
+      payload: {},
+    });
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/oauth/jimeng/flow-1/status',
+      headers: { host: HOST },
+    });
+    const cancel = await app.inject({
+      method: 'POST',
+      url: '/api/oauth/jimeng/flow-1/cancel',
+      headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': token },
+      payload: {},
+    });
+    expect([start, status, cancel].map((response) => response.statusCode)).toEqual([400, 400, 400]);
+    expect([start, status, cancel].map((response) => JSON.parse(response.body).error)).toEqual([
+      'node_not_bound',
+      'node_not_bound',
+      'node_not_bound',
+    ]);
   });
 
   it('guards Codex device polling against stale overlapping results', () => {
@@ -77,6 +128,41 @@ describe('console routes', () => {
     expect(script).toContain('let transientPollErrors = 0;');
     expect(script).toContain('const scheduleNextPoll = () =>');
     expect(script).toContain("setToast('oauthResult', t('deviceAuthorizationExpired'), 'error')");
+  });
+
+  it('keeps Grok polling in the node process with a bounded browser status loop', () => {
+    const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
+    const server = readFileSync(new URL('../src/provider-node/server.ts', import.meta.url), 'utf8');
+
+    expect(server).toContain('new BoundedDevicePoller<Record<string, unknown>>()');
+    expect(server).toContain('new SingleFlight<Record<string, unknown>>()');
+    expect(server).toContain('return xaiDeviceStarts.run(startXaiDeviceAuthorization)');
+    expect(server).toContain('currentXaiDeviceCode?.deviceCode === current.id');
+    expect(server).toContain('vendorIntervalMs: deviceCode.interval * 1_000');
+    expect(server).toContain('return xaiDeviceAuthorizationStatus(body.deviceCode)');
+    expect(server).toContain('xaiDeviceAuthorizations.current()');
+    expect(server).toContain('Token 兑换成功后只重试 Platform 上传');
+    expect(script).toContain('schedule(data.nextPollAt)');
+    expect(script).toContain("if (data.status === 'failed')");
+    expect(script).toContain('statusState.xai?.deviceAuthorization');
+    expect(script).toContain('scheduleXaiStatusWatch(xaiAuthorization)');
+    expect(script).toContain("const latest = await api('/api/status')");
+    expect(script).toContain("previousAuthorization?.status === 'pending'");
+    expect(script).toContain('await loadCredentials(true)');
+    expect(script).toContain('if (document.hidden)');
+  });
+
+  it('keeps Jimeng authorization local-console state isolated and cancellable', () => {
+    const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
+
+    expect(script).toContain('let activeJimengFlow = null;');
+    expect(script).toContain('let jimengPollRunId = 0;');
+    expect(script).toContain('function startJimengPolling()');
+    expect(script).toContain('async function cancelJimengAuthorization()');
+    expect(script).toContain('target.opener = null');
+    expect(script).toContain("authorizationLink.classList.remove('hidden')");
+    expect(script).toContain("status.classList.toggle('warning', !available)");
+    expect(script).toContain("t('jimengAuthorizationSucceeded')");
   });
 
   it('refreshes the console CSRF token once after a stale-token response', () => {
@@ -214,16 +300,19 @@ describe('error envelope', () => {
   });
 
   it('preserves a structured Platform error instead of collapsing it to internal_error', async () => {
-    const response = new Response(JSON.stringify({
-      error: {
-        code: 'official_exit_node_offline',
-        message: 'Provider node is not online',
-        type: 'invalid_request_error',
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          code: 'official_exit_node_offline',
+          message: 'Provider node is not online',
+          type: 'invalid_request_error',
+        },
+      }),
+      {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
       },
-    }), {
-      status: 503,
-      headers: { 'content-type': 'application/json' },
-    });
+    );
 
     await expect(parseJsonResponse(response)).rejects.toMatchObject({
       name: 'PlatformHttpError',
@@ -259,7 +348,10 @@ describe('mergeConfigPatch secret-sentinel', () => {
       nodeVersion: '0.0.0',
       upstream: { mode: 'openai-compatible', apiKey: 'real-key', oauth: { accessToken: 'real-access' } },
       capability: {
-        model: 'm', vendor: 'openai', supportsStreaming: true, supportsTools: false,
+        model: 'm',
+        vendor: 'openai',
+        supportsStreaming: true,
+        supportsTools: false,
       },
     } as ProviderNodeConfig;
   }

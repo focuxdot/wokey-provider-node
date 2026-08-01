@@ -70,6 +70,7 @@ Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_
 - Claude OAuth authorization code flow
 - Codex device code / OAuth flow
 - xAI/Grok device code / OAuth flow
+- Jimeng/Dreamina CLI device authorization
 
 Browser cookie/session import is intentionally unsupported. Provider Node does not scan browser cookie databases and does not read browser safe-storage secrets.
 
@@ -79,6 +80,15 @@ to `verification_uri_complete` with the user code prefilled, and polls until the
 credential is ready. Because the console is served from `localhost` (including
 through a loopback SSH tunnel), this navigation does not expose a Wokey public
 web origin. The visible user code remains available only as a recovery control.
+
+When the official Jimeng CLI is missing, the Jimeng panel shows an install
+button. Provider Node downloads the operating-system and CPU-specific artifact
+from Jimeng's official HTTPS CDN, requires the CDN `Content-MD5` metadata,
+checks the declared and actual size, runs the staged binary with `--version`,
+and only then moves it into the official default path. It does not run a remote
+shell script or modify shell profiles. A configured `DREAMINA_CLI_PATH` is used
+as the target instead. Successful installation activates Jimeng authorization
+and video capabilities immediately without restarting Provider Node.
 
 ## Local Console Security
 
@@ -106,6 +116,29 @@ wokey-node update
 wokey-node status
 wokey-node doctor
 ```
+
+Update from the node machine as the same operating-system user that runs the
+service:
+
+```bash
+wokey-node version
+wokey-node update
+wokey-node status
+```
+
+Updates preserve the node binding and local data. Uninstall commands are
+platform-specific:
+
+- macOS: `wokey-node uninstall`; add `--purge` to remove local data.
+- Linux: run `wokey-node uninstall-service`, then remove the `.deb` package or
+  tarball runtime. Local data remains under `~/.config/wokey-provider-node`.
+- Windows: run `wokey-node uninstall-service`, then remove the runtime under
+  `%LOCALAPPDATA%\WokeyProviderNode`. Local data remains under
+  `%APPDATA%\Wokey Provider Node`.
+- Docker: `docker compose down` keeps the data volume; `docker compose down -v`
+  removes it.
+
+See the platform installer documents for exact removal commands and paths.
 
 ## Development
 

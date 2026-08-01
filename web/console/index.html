@@ -150,6 +150,13 @@
                   </svg>
                   <span class="provider-copy"><b>Grok</b><span data-i18n="grokOAuth">Use device code authorization</span></span>
                 </button>
+                <button class="provider-option" id="jimengProviderTab" type="button" role="tab" aria-selected="false" aria-controls="jimengAuthPanel" onclick="selectProvider('jimeng')">
+                  <svg class="provider-icon jimeng-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="5" width="18" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"></rect>
+                    <path fill="currentColor" d="m10 9l5 3l-5 3z"></path>
+                  </svg>
+                  <span class="provider-copy"><b>即梦</b><span data-i18n="jimengOAuth">Use device code authorization</span></span>
+                </button>
               </div>
               <div class="auth-options">
               <div class="provider-panel" id="claudeAuthPanel" role="tabpanel" aria-labelledby="claudeProviderTab">
@@ -205,7 +212,29 @@
                   <p class="code-hint muted" data-i18n="grokDeviceCodeHint">When Grok asks for the code shown in your terminal, use this code.</p>
                 </div>
               </div>
-              <details class="advanced-oauth">
+              <div class="provider-panel hidden" id="jimengAuthPanel" role="tabpanel" aria-labelledby="jimengProviderTab">
+                <div class="auth-option primary">
+                  <div class="auth-row">
+                    <div>
+                      <h4 data-i18n="jimengOAuthTitle">Jimeng account authorization</h4>
+                      <p class="muted" data-i18n="jimengOAuthBody">Authorize through the Jimeng CLI installed on this node.</p>
+                    </div>
+                    <div class="button-row">
+                      <button class="primary-btn jimeng-install hidden" id="jimengInstallButton" type="button" onclick="installJimengCli()" data-i18n="installJimengCli">Install Jimeng CLI</button>
+                      <button class="primary-btn jimeng-start" id="jimengStartButton" type="button" onclick="startJimengAuthorization()" data-i18n="startJimengAuthorization">Authorize in Jimeng</button>
+                      <a class="secondary-btn jimeng-auth-link hidden" id="jimengAuthorizationLink" target="_blank" rel="noopener noreferrer" data-i18n="openJimengAuthorization">Open authorization page</a>
+                      <button class="secondary-btn jimeng-cancel hidden" id="jimengCancelButton" type="button" onclick="cancelJimengAuthorization()" data-i18n="cancelJimengAuthorization">Cancel authorization</button>
+                    </div>
+                  </div>
+                  <div class="code-label" data-i18n="jimengUserCodeLabel">Jimeng authorization code</div>
+                  <div class="code-row">
+                    <div class="code-box" id="jimengUserCodeLabel">--------------------------------</div>
+                    <button class="icon-btn" type="button" onclick="copyJimengUserCode()" data-i18n-aria-label="copyDeviceCode" aria-label="Copy device code">⧉</button>
+                  </div>
+                  <p class="code-hint muted jimeng-cli-status" id="jimengCliStatus" data-i18n="jimengCliChecking">Checking the Jimeng CLI on this node…</p>
+                </div>
+              </div>
+              <details class="advanced-oauth" id="advancedOAuthOptions">
                 <summary data-i18n="pasteOAuthTokenTitle">Other option: paste OAuth credential</summary>
                 <div class="advanced-oauth-body">
                   <p class="muted" data-i18n="pasteOAuthTokenBody">Use this only if you already have a complete token or auth.json. This is similar to importing a detected local credential.</p>

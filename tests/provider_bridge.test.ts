@@ -195,10 +195,9 @@ describe('ProviderBridge endpoint failover', () => {
       const messages = fakeSockets[0].sent
         .filter((message): message is string => typeof message === 'string')
         .map((message) => JSON.parse(message) as Record<string, unknown>);
-      const heartbeat = messages.find((message) => (
-        message.type === 'provider.heartbeat'
-        && message.acceptingSessions === false
-      ));
+      const heartbeat = messages.find(
+        (message) => message.type === 'provider.heartbeat' && message.acceptingSessions === false,
+      );
       const notice = messages.find((message) => message.type === 'provider.drain');
 
       expect(heartbeat).toMatchObject({ acceptingSessions: false });
@@ -207,12 +206,127 @@ describe('ProviderBridge endpoint failover', () => {
         acceptingSessions: false,
       });
 
-      fakeSockets[0].emit('message', Buffer.from(JSON.stringify({
-        type: 'platform.drain_ack',
-        requestId: notice?.requestId,
-        nodeId: notice?.nodeId,
-      })), false);
+      fakeSockets[0].emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.drain_ack',
+            requestId: notice?.requestId,
+            nodeId: notice?.nodeId,
+          }),
+        ),
+        false,
+      );
       await drainPromise;
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('advertises and routes Jimeng video control messages through the authenticated socket', async () => {
+    const { defaultConfig } = await import('../src/provider-node/config.js');
+    const { ProviderBridge } = await import('../src/provider-node/bridge.js');
+    const config = defaultConfig();
+    const execute = vi.fn();
+    const cancel = vi.fn();
+    const cancelAll = vi.fn();
+    const jimengVideo = {
+      capability: () => ({
+        protocolVersions: [1],
+        cliVersion: '1.4.14',
+        generationModes: ['text_to_video'],
+        upstreamModelVersions: ['seedance2.0mini'],
+        resolutions: ['720p'],
+      }),
+      execute,
+      cancel,
+      cancelAll,
+    };
+    const bridge = new ProviderBridge(() => config, { jimengVideo: jimengVideo as never });
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+      const hello = fakeSockets[0].sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello');
+      expect(hello).toMatchObject({
+        controlCapabilities: {
+          jimengVideo: {
+            protocolVersions: [1],
+            cliVersion: '1.4.14',
+            generationModes: ['text_to_video'],
+            upstreamModelVersions: ['seedance2.0mini'],
+          },
+        },
+      });
+
+      const command = {
+        type: 'platform.jimeng_video_execute',
+        protocolVersion: 1,
+        requestId: 'request-1',
+        videoJobId: 'video-job-1',
+        providerId: config.providerId,
+        nodeId: config.nodeId,
+        deadlineMs: 10_000,
+        encodedCredentialBundle: '{}',
+        operation: {
+          type: 'submit',
+          mode: 'text_to_video',
+          modelVersion: 'seedance2.0mini',
+          prompt: 'a cat',
+          durationSeconds: 5,
+          ratio: '16:9',
+          resolution: '720p',
+        },
+      };
+      fakeSockets[0].emit('message', Buffer.from(JSON.stringify(command)), false);
+      expect(execute).toHaveBeenCalledWith(command, expect.any(Function));
+
+      const cancellation = {
+        type: 'platform.jimeng_video_cancel',
+        protocolVersion: 1,
+        requestId: 'request-1',
+        videoJobId: 'video-job-1',
+        nodeId: config.nodeId,
+      };
+      fakeSockets[0].emit('message', Buffer.from(JSON.stringify(cancellation)), false);
+      expect(cancel).toHaveBeenCalledWith(cancellation);
+    } finally {
+      bridge.stop();
+      expect(cancelAll).toHaveBeenCalled();
+    }
+  });
+
+  it('publishes newly installed Jimeng capabilities without reconnecting', async () => {
+    const { defaultConfig } = await import('../src/provider-node/config.js');
+    const { ProviderBridge } = await import('../src/provider-node/bridge.js');
+    const bridge = new ProviderBridge(() => defaultConfig());
+    const jimengAuthorization = {
+      capability: () => ({ protocolVersions: [1], cliVersion: '1.4.15' }),
+      start: vi.fn(),
+      cancel: vi.fn(),
+      cancelAll: vi.fn(),
+    };
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+
+      bridge.setJimengHandlers({ authorization: jimengAuthorization as never });
+
+      expect(fakeSockets).toHaveLength(1);
+      const hellos = fakeSockets[0].sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .filter((message) => message.type === 'provider.hello');
+      expect(hellos).toHaveLength(2);
+      expect(hellos[1]).toMatchObject({
+        controlCapabilities: {
+          jimengAuth: { protocolVersions: [1], cliVersion: '1.4.15' },
+        },
+      });
     } finally {
       bridge.stop();
     }

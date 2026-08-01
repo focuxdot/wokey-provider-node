@@ -104,6 +104,10 @@ const zhText = {
   unavailable: '不可用',
   pathLabel: '路径',
   reasonLabel: '原因',
+  claudeConfigUnreadable: 'Claude Code 配置文件无法读取，请检查文件属主和权限（容器中通常应为 node:node）。',
+  claudeConfigInvalid: 'Claude Code 配置文件不是有效的 JSON。',
+  claudeCredentialsUnreadable: 'Claude Code OAuth 凭证文件无法读取，请检查文件属主和权限（容器中通常应为 node:node）。',
+  claudeCredentialsInvalid: 'Claude Code OAuth 凭证文件不是有效的 JSON。',
   authorized: '已授权',
   credential: '授权',
   consoleUnreachable: 'Provider Node 本地控制台无法访问',
@@ -213,6 +217,10 @@ const enText = {
   unavailable: 'unavailable',
   pathLabel: 'path',
   reasonLabel: 'reason',
+  claudeConfigUnreadable: 'Claude Code config could not be read. Check its owner and permissions (normally node:node in the container).',
+  claudeConfigInvalid: 'Claude Code config is not valid JSON.',
+  claudeCredentialsUnreadable: 'Claude Code OAuth credentials could not be read. Check their owner and permissions (normally node:node in the container).',
+  claudeCredentialsInvalid: 'Claude Code OAuth credentials are not valid JSON.',
   authorized: 'Authorized',
   credential: 'credential',
   consoleUnreachable: 'Provider Node console is not reachable',
@@ -392,6 +400,8 @@ async function guidedAdd(status, rl) {
     printCandidates(importable);
   } else {
     console.log(`\n${yellow(text.noImportableLocalCredentials)}`);
+    const failed = candidates.filter((item) => item.status === 'error');
+    if (failed.length) printCandidates(failed);
   }
 
   const options = [];
@@ -699,9 +709,17 @@ function printCandidates(candidates) {
     const identity = item.accountEmail || item.organizationId || item.claudeCodeAccountUuid || '';
     const suffix = identity ? ` (${identity})` : '';
     const path = item.path ? `\n    ${text.pathLabel}: ${item.path}` : '';
-    const reason = item.reason ? `\n    ${text.reasonLabel}: ${item.reason}` : '';
+    const reason = item.reason ? `\n    ${text.reasonLabel}: ${localCredentialReason(item.reason)}` : '';
     console.log(`${green(`${index + 1}.`)} ${item.label || item.source} [${item.vendor}] ${status}${suffix}${path}${reason}`);
   });
+}
+
+function localCredentialReason(reason) {
+  if (reason === 'claude_code_config_unreadable') return text.claudeConfigUnreadable;
+  if (reason === 'claude_code_config_invalid') return text.claudeConfigInvalid;
+  if (reason === 'claude_code_credentials_unreadable') return text.claudeCredentialsUnreadable;
+  if (reason === 'claude_code_credentials_invalid') return text.claudeCredentialsInvalid;
+  return reason;
 }
 
 function printAuthorizationResult(result, vendor) {

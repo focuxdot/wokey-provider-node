@@ -84,6 +84,44 @@ describe('Claude Code auth import', () => {
     }
   });
 
+  it('returns a candidate error instead of throwing when Claude Code config is invalid', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-code-auth-'));
+    try {
+      vi.stubEnv('HOME', dir);
+      mkdirSync(join(dir, '.claude'));
+      writeFileSync(join(dir, '.claude.json'), '{not-json');
+
+      expect(detectClaudeCodeAuth()).toMatchObject({
+        path: join(dir, '.claude.json'),
+        exists: true,
+        ready: false,
+        error: 'claude_code_config_invalid',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a candidate error instead of throwing when Claude Code config is unreadable', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claude-code-auth-'));
+    try {
+      vi.stubEnv('HOME', dir);
+      mkdirSync(join(dir, '.claude'));
+      mkdirSync(join(dir, '.claude.json'));
+
+      expect(detectClaudeCodeAuth()).toMatchObject({
+        path: join(dir, '.claude.json'),
+        exists: true,
+        ready: false,
+        error: 'claude_code_config_unreadable',
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('prefers concrete Claude rate limit tier over payment channel metadata', () => {
     const dir = mkdtempSync(join(tmpdir(), 'claude-code-auth-'));
     try {
