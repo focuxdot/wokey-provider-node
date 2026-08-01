@@ -224,7 +224,7 @@ export class JimengAuthorizationHandler {
           flow,
         );
         assertNotCancelled(flow);
-        const material = parseDeviceAuthorization(startResult.stdout);
+        const material = parseDeviceAuthorization(startResult);
         const expiresAtMs = Math.min(
           this.now() + message.deadlineMs,
           material.expiresInSeconds ? this.now() + material.expiresInSeconds * 1_000 : Number.POSITIVE_INFINITY,
@@ -554,18 +554,17 @@ function completedEventFor(
   };
 }
 
-function parseDeviceAuthorization(stdout: string): {
+function parseDeviceAuthorization(output: CommandResult): {
   verificationUri: string;
   verificationUriComplete?: string;
   userCode: string;
   deviceCode: string;
   expiresInSeconds?: number;
 } {
-  const fields = new Map<string, string>();
-  for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*([a-z_]+)\s*:\s*(.+?)\s*$/.exec(line);
-    if (match?.[1] && match[2]) fields.set(match[1], match[2]);
-  }
+  const fields = mergeDeviceAuthorizationFields(
+    parseDeviceAuthorizationFields(output.stdout),
+    parseDeviceAuthorizationFields(output.stderr),
+  );
   const verificationUri = fields.get('verification_uri');
   const userCode = fields.get('user_code');
   const deviceCode = fields.get('device_code');
@@ -593,6 +592,56 @@ function parseDeviceAuthorization(stdout: string): {
     deviceCode,
     expiresInSeconds: Number.isFinite(expires) && expires > 0 ? expires : undefined,
   };
+}
+
+const DEVICE_AUTHORIZATION_FIELDS = new Set([
+  'verification_uri',
+  'verification_uri_complete',
+  'user_code',
+  'device_code',
+  'expires_in',
+]);
+
+function parseDeviceAuthorizationFields(output: string): Map<string, string> {
+  const fields = new Map<string, string>();
+  const trimmed = output.trim();
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [rawKey, rawValue] of Object.entries(parsed as Record<string, unknown>)) {
+          const key = rawKey.toLowerCase().replaceAll('-', '_');
+          if (!DEVICE_AUTHORIZATION_FIELDS.has(key)) continue;
+          if (typeof rawValue === 'string' && rawValue.trim()) fields.set(key, rawValue.trim());
+          else if (typeof rawValue === 'number' && Number.isFinite(rawValue)) fields.set(key, String(rawValue));
+        }
+      }
+    } catch {
+      // Official builds normally emit labeled lines. JSON is accepted for
+      // machine-readable builds, while unrelated CLI diagnostics are ignored.
+    }
+  }
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^\s*([a-z][a-z0-9_-]*)\s*:\s*(.+?)\s*$/i.exec(line);
+    if (!match?.[1] || !match[2]) continue;
+    const key = match[1].toLowerCase().replaceAll('-', '_');
+    if (DEVICE_AUTHORIZATION_FIELDS.has(key)) fields.set(key, match[2]);
+  }
+  return fields;
+}
+
+function mergeDeviceAuthorizationFields(...sources: Map<string, string>[]): Map<string, string> {
+  const merged = new Map<string, string>();
+  for (const source of sources) {
+    for (const [key, value] of source) {
+      const existing = merged.get(key);
+      if (existing !== undefined && existing !== value) {
+        throw new Error('jimeng_device_authorization_output_conflict');
+      }
+      merged.set(key, value);
+    }
+  }
+  return merged;
 }
 
 function isOfficialJimengVerificationUri(uri: URL): boolean {

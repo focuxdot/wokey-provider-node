@@ -419,6 +419,118 @@ describe('JimengAuthorizationHandler', () => {
   });
 
   it.each([
+    {
+      label: 'labeled authorization material written to stderr',
+      result: {
+        stdout: '',
+        stderr: [
+          'verification_uri: https://auth.jianying.com/device',
+          'user_code: ABCD-EFGH',
+          'device_code: node-only-secret',
+          'expires_in: 300',
+        ].join('\n'),
+      },
+    },
+    {
+      label: 'machine-readable JSON authorization material',
+      result: {
+        stdout: JSON.stringify({
+          verification_uri: 'https://auth.jianying.com/device',
+          verification_uri_complete: 'https://auth.jianying.com/device?code=ABCD-EFGH',
+          user_code: 'ABCD-EFGH',
+          device_code: 'node-only-secret',
+          expires_in: 300,
+        }),
+        stderr: 'warning: machine-readable output enabled',
+      },
+    },
+    {
+      label: 'authorization material split across stdout and stderr',
+      result: {
+        stdout: ['verification_uri: https://auth.jianying.com/device', 'user_code: ABCD-EFGH'].join('\n'),
+        stderr: 'device_code: node-only-secret',
+      },
+    },
+  ])('accepts $label without exposing the device code', async ({ result }) => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-output-compat-test-'));
+    tempDirs.push(parent);
+    const auth = Buffer.from(
+      JSON.stringify({
+        access_token: 'access-secret',
+        refresh_token: 'refresh-secret',
+        token_expires_at: 1_900_000_000,
+        device_key: { device_id: 'device-secret' },
+        user_info: { user_id: 'jimeng-user-1' },
+      }),
+    );
+    const handler = new JimengAuthorizationHandler({
+      cli: { path: '/opt/dreamina', version: 'a857341-dirty' },
+      platform: 'linux',
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      tempParentDir: parent,
+      createCredentialStore: () => ({
+        snapshot: async () => undefined,
+        capture: async () => auth,
+        restore: async () => {},
+      }),
+      runCommand: async (_executable, args) => {
+        if (args.includes('--headless')) return result;
+        return { stdout: args[0] === 'user_credit' ? 'user_id: jimeng-user-1' : 'login success', stderr: '' };
+      },
+    });
+
+    const events: JimengAuthEvent[] = [];
+    await new Promise<void>((resolve) => {
+      handler.start(startMessage(), (event) => {
+        events.push(event);
+        if (event.type === 'provider.jimeng_auth_completed' || event.type === 'provider.jimeng_auth_failed') resolve();
+      });
+    });
+
+    expect(events.map((event) => event.type)).toEqual([
+      'provider.jimeng_auth_started',
+      'provider.jimeng_auth_completed',
+    ]);
+    expect(events[0]).toMatchObject({
+      verificationUri: 'https://auth.jianying.com/device',
+      userCode: 'ABCD-EFGH',
+    });
+    expect(JSON.stringify(events)).not.toContain('node-only-secret');
+  });
+
+  it('fails closed when stdout and stderr contain conflicting authorization material', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-output-conflict-test-'));
+    tempDirs.push(parent);
+    const handler = new JimengAuthorizationHandler({
+      cli: { path: '/opt/dreamina', version: 'a857341-dirty' },
+      platform: 'linux',
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      tempParentDir: parent,
+      runCommand: async () => ({
+        stdout: [
+          'verification_uri: https://auth.jianying.com/device',
+          'user_code: ABCD-EFGH',
+          'device_code: stdout-secret',
+        ].join('\n'),
+        stderr: 'device_code: conflicting-secret',
+      }),
+    });
+
+    const event = await new Promise<JimengAuthEvent>((resolve) => {
+      handler.start(startMessage(), (value) => {
+        if (value.type === 'provider.jimeng_auth_failed') resolve(value);
+      });
+    });
+    expect(event).toMatchObject({
+      type: 'provider.jimeng_auth_failed',
+      stage: 'device_authorization',
+      errorCode: 'jimeng_device_authorization_output_conflict',
+      retryable: false,
+    });
+    expect(JSON.stringify(event)).not.toContain('secret');
+  });
+
+  it.each([
     [
       'verification URI',
       ['verification_uri: http://phishing.invalid/device', 'user_code: ABCD-EFGH', 'device_code: secret'],
