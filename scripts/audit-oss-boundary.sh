@@ -9,6 +9,15 @@ fail() {
   exit 1
 }
 
+grep_scan() {
+  grep "$@"
+  local status=$?
+  if [ "${status}" -gt 1 ]; then
+    fail "grep failed while scanning the repository"
+  fi
+  return "${status}"
+}
+
 if [ -d src/platform ]; then
   fail "src/platform must not exist in the public Provider Node repository"
 fi
@@ -34,10 +43,10 @@ if [ -d dist ]; then
   done < <(find dist -type f -name '*.js' | sort)
 fi
 
-if rg -n --glob '!docs/**' --glob '!README.md' --glob '!CONTRIBUTING.md' \
-  --glob '!scripts/audit-oss-boundary.sh' \
-  --glob '!src/provider-node/jimeng-credential-store.ts' \
-  --glob '!tests/jimeng_auth.test.ts' \
+if grep_scan -EnR --binary-files=without-match \
+  --exclude='audit-oss-boundary.sh' \
+  --exclude='jimeng-credential-store.ts' \
+  --exclude='jimeng_auth.test.ts' \
   'exchangeAnthropicSessionKey|detectClaudeBrowserSession|readClaudeBrowserSession|Network/Cookies|Chrome Safe Storage|sessionKey=|browser-session/import|from-session|scopeBrowserSession|browserUserAgent|Keychain|find-generic-password|Claude Code-credentials|/usr/bin/security' \
   src tests packaging scripts web; then
   fail "browser cookie/session import code must not be present"
@@ -47,21 +56,23 @@ fi
 # that narrowly scoped exception auditable: the implementation and its tests
 # may use /usr/bin/security, but must never grow browser/Claude import behavior,
 # and the production target must remain the fixed Jimeng service and account.
-if rg -n \
+if grep_scan -En \
   'exchangeAnthropicSessionKey|detectClaudeBrowserSession|readClaudeBrowserSession|Network/Cookies|Chrome Safe Storage|sessionKey=|browser-session/import|from-session|scopeBrowserSession|browserUserAgent|Claude Code-credentials' \
   src/provider-node/jimeng-credential-store.ts tests/jimeng_auth.test.ts; then
   fail "Jimeng keychain support must not import browser or Claude secrets"
 fi
-if ! rg -q "const KEYRING_SERVICE = 'dreamina';" src/provider-node/jimeng-credential-store.ts \
-  || ! rg -q "const KEYRING_ACCOUNT = 'byted_cli_user_token';" src/provider-node/jimeng-credential-store.ts; then
+if ! grep_scan -Fq "const KEYRING_SERVICE = 'dreamina';" src/provider-node/jimeng-credential-store.ts \
+  || ! grep_scan -Fq "const KEYRING_ACCOUNT = 'byted_cli_user_token';" src/provider-node/jimeng-credential-store.ts; then
   fail "Jimeng keychain support must use the fixed dreamina credential target"
 fi
 
-if rg -n 'web/public/downloads/provider-node|src/platform/|deploy/scripts|prod-exec' . \
-  --glob '!node_modules/**' \
-  --glob '!release/**' \
-  --glob '!.tmp/**' \
-  --glob '!scripts/audit-oss-boundary.sh'; then
+if grep_scan -EnR --binary-files=without-match \
+  --exclude-dir='.git' \
+  --exclude-dir='node_modules' \
+  --exclude-dir='release' \
+  --exclude-dir='.tmp' \
+  --exclude='audit-oss-boundary.sh' \
+  'web/public/downloads/provider-node|src/platform/|deploy/scripts|prod-exec' .; then
   fail "private monorepo paths must not be referenced"
 fi
 
@@ -70,15 +81,16 @@ fi
 # demand-side jargon ("seeker"), internal milestone tags ("(M3)"), and internal
 # subsystem vocabulary the node never consumes (tunnel broker, entitlement check,
 # slot scheduling, official-exit governance fields, credential safety tiers).
-if rg -n \
-  --glob '!node_modules/**' \
-  --glob '!release/**' \
-  --glob '!.tmp/**' \
-  --glob '!package-lock.json' \
-  --glob '!scripts/audit-oss-boundary.sh' \
+if grep_scan -EnR --binary-files=without-match \
+  --exclude-dir='.git' \
+  --exclude-dir='node_modules' \
+  --exclude-dir='release' \
+  --exclude-dir='.tmp' \
+  --exclude='package-lock.json' \
+  --exclude='audit-oss-boundary.sh' \
   -e 'grey-?cloud' \
   -e '[Cc]loudflare' \
-  -e '\bseeker\b' \
+  -e '(^|[^[:alnum:]_])seeker([^[:alnum:]_]|$)' \
   -e '\(M[0-9]+\)' \
   -e 'entitlementCheckId' \
   -e 'tunnelEndpointId|tunnelToken|tunnelNonce' \
