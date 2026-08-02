@@ -220,7 +220,11 @@ export class JimengAuthorizationHandler {
       if (!encodedCredentialBundle) {
         stage = 'device_authorization';
         const startResult = await this.runCommand(
-          ['login', '--headless'],
+          // `login` may reuse CLI state that is invisible to our credential
+          // snapshot and exit successfully without printing Device Flow
+          // material. At this point no usable credential was captured, so
+          // force the fresh OAuth path explicitly.
+          ['relogin', '--headless'],
           env,
           Math.min(LOGIN_START_TIMEOUT_MS, message.deadlineMs),
           flow,

@@ -239,7 +239,7 @@ describe('JimengAuthorizationHandler', () => {
       'snapshot',
       'capture-1',
       'delete',
-      'login --headless',
+      'relogin --headless',
       'login checklogin --device_code=node-only-secret --poll=60',
       'capture-2',
       'user_credit',
