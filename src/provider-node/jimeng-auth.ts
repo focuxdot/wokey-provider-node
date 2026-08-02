@@ -23,6 +23,7 @@ import { JIMENG_AUTH_CONTROL_PROTOCOL_VERSION } from '../shared/protocol.js';
 
 const MAX_AUTH_FILE_BYTES = 64 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 64 * 1024;
+const MAX_SAFE_DIAGNOSTIC_CHARS = 2_000;
 const LOGIN_START_TIMEOUT_MS = 30_000;
 const CREDENTIAL_VALIDATION_TIMEOUT_MS = 30_000;
 const CANCEL_GRACE_MS = 1_000;
@@ -44,6 +45,17 @@ export interface DreaminaCliDescriptor {
 interface CommandResult {
   stdout: string;
   stderr: string;
+}
+
+class JimengCommandError extends Error {
+  constructor(
+    message: string,
+    readonly exitCode?: number,
+    readonly diagnostic?: string,
+  ) {
+    super(message);
+    this.name = 'JimengCommandError';
+  }
 }
 
 interface JimengAccountProfile {
@@ -292,7 +304,15 @@ export class JimengAuthorizationHandler {
       );
       completedEvent = completedEventFor(message, encodedCredentialBundle);
     } catch (error) {
-      failed = failedEvent(message, stage, errorCode(error), retryableError(error));
+      failed = failedEvent(message, stage, errorCode(error), retryableError(error), {
+        command: commandForFailureStage(stage),
+        ...(error instanceof JimengCommandError && error.exitCode !== undefined
+          ? { exitCode: error.exitCode }
+          : {}),
+        ...(error instanceof JimengCommandError && error.diagnostic
+          ? { diagnostic: error.diagnostic }
+          : {}),
+      });
     } finally {
       stage = 'cleanup';
       let cleanupFailed = false;
@@ -724,7 +744,9 @@ function spawnBounded(
       }
     });
     child.once('error', (error) => finish(error));
-    child.once('exit', (code, signal) => {
+    // `close` fires after stdout/stderr have closed, while `exit` can arrive
+    // before the final diagnostic bytes have been drained from those streams.
+    child.once('close', (code, signal) => {
       if (code === 0) {
         finish(undefined, {
           stdout: Buffer.concat(stdoutChunks).toString('utf8'),
@@ -732,14 +754,27 @@ function spawnBounded(
         });
         return;
       }
-      finish(
-        new Error(options.flow.cancelled ? 'jimeng_auth_cancelled' : `jimeng_cli_exit_${code ?? signal ?? 'unknown'}`),
-      );
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf8');
+      finish(options.flow.cancelled
+        ? new Error('jimeng_auth_cancelled')
+        : new JimengCommandError(
+            `jimeng_cli_exit_${code ?? signal ?? 'unknown'}`,
+            typeof code === 'number' ? code : undefined,
+            safeJimengDiagnosticSummary(stdout, stderr),
+          ));
     });
     const timer = setTimeout(
       () => {
         terminateProcessGroup(child);
-        finish(new Error('jimeng_cli_timeout'));
+        finish(new JimengCommandError(
+          'jimeng_cli_timeout',
+          undefined,
+          safeJimengDiagnosticSummary(
+            Buffer.concat(stdoutChunks).toString('utf8'),
+            Buffer.concat(stderrChunks).toString('utf8'),
+          ),
+        ));
       },
       Math.max(1, options.timeoutMs),
     );
@@ -776,6 +811,7 @@ function failedEvent(
   stage: JimengAuthFailureStage,
   errorCodeValue: string,
   retryable: boolean,
+  diagnostic: Pick<ProviderJimengAuthFailed, 'command' | 'exitCode' | 'diagnostic'> = {},
 ): ProviderJimengAuthFailed {
   return {
     type: 'provider.jimeng_auth_failed',
@@ -786,7 +822,61 @@ function failedEvent(
     stage,
     errorCode: errorCodeValue,
     retryable,
+    ...diagnostic,
   };
+}
+
+function commandForFailureStage(
+  stage: JimengAuthFailureStage,
+): ProviderJimengAuthFailed['command'] {
+  if (stage === 'device_authorization') return 'relogin';
+  if (stage === 'user_authorization') return 'checklogin';
+  if (stage === 'credential_validation') return 'user_credit';
+  return undefined;
+}
+
+export function safeJimengDiagnosticSummary(stdout: string, stderr: string): string | undefined {
+  const sections = [
+    ['stderr', stderr],
+    ['stdout', stdout],
+  ] as const;
+  const summary = sections
+    .map(([label, value]) => {
+      const sanitized = sanitizeJimengDiagnostic(value);
+      return sanitized ? `${label}: ${sanitized}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+  return summary ? summary.slice(0, MAX_SAFE_DIAGNOSTIC_CHARS) : undefined;
+}
+
+function sanitizeJimengDiagnostic(value: string): string {
+  const printable = [...value]
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code !== 127);
+    })
+    .join('');
+  return printable
+    .replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
+    .replace(
+      /\b(access[_-]?token|refresh[_-]?token|id[_-]?token|device[_-]?code|user[_-]?code|device[_-]?key|authorization|cookie|secret|password)\b\s*[:=]\s*[^\s,;]+/gi,
+      '$1: [REDACTED]',
+    )
+    .replace(/https?:\/\/[^\s<>"']+/gi, redactDiagnosticUrl)
+    .replace(/[A-Z]:\\Users\\[^\\\s]+/gi, 'C:\\Users\\[USER]')
+    .replace(/\/(?:Users|home)\/[^/\s]+/g, '/Users/[USER]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[EMAIL]')
+    .trim();
+}
+
+function redactDiagnosticUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname}${url.search || url.hash ? '?[REDACTED]' : ''}`;
+  } catch {
+    return '[URL]';
+  }
 }
 
 function errorCode(error: unknown): string {

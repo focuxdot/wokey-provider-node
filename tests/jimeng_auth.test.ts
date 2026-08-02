@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   detectDreaminaCli,
   JimengAuthorizationHandler,
+  safeJimengDiagnosticSummary,
   type JimengAuthEvent,
 } from '../src/provider-node/jimeng-auth.js';
 import {
@@ -34,6 +35,16 @@ function startMessage(): PlatformJimengAuthStart {
 }
 
 describe('JimengAuthorizationHandler', () => {
+  it('redacts sensitive CLI diagnostics while keeping actionable errors', () => {
+    expect(safeJimengDiagnosticSummary(
+      'user_code: ABCD-EFGH\ndevice_code=secret-device\n',
+      'request failed for test@example.com at https://api.example.com/oauth?token=secret\n',
+    )).toBe([
+      'stderr: request failed for [EMAIL] at https://api.example.com/oauth?[REDACTED]',
+      'stdout: user_code: [REDACTED]\ndevice_code: [REDACTED]',
+    ].join('\n'));
+  });
+
   it.each(['linux', 'darwin', 'win32'] as const)('detects the CLI version on %s', async (platform) => {
     const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-version-test-'));
     tempDirs.push(parent);
@@ -549,6 +560,46 @@ describe('JimengAuthorizationHandler', () => {
       type: 'provider.jimeng_auth_failed',
       stage: 'device_authorization',
       errorCode,
+    });
+  });
+
+  it('returns the failed command, exit code, and redacted CLI output', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-exit-diagnostic-test-'));
+    tempDirs.push(parent);
+    const executable = join(parent, 'dreamina');
+    await writeFile(executable, [
+      '#!/bin/sh',
+      'echo "get device code failed: request timeout" >&2',
+      'echo "device_code: node-secret" >&2',
+      'exit 1',
+    ].join('\n'));
+    await chmod(executable, 0o755);
+    const handler = new JimengAuthorizationHandler({
+      cli: { path: executable, version: '1.4.14' },
+      platform: 'linux',
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      tempParentDir: parent,
+      createCredentialStore: () => ({
+        snapshot: async () => undefined,
+        capture: async () => { throw new Error('unexpected capture'); },
+        restore: async () => {},
+      }),
+    });
+
+    const event = await new Promise<JimengAuthEvent>((resolve) => handler.start(startMessage(), resolve));
+
+    expect(event).toEqual({
+      type: 'provider.jimeng_auth_failed',
+      protocolVersion: JIMENG_AUTH_CONTROL_PROTOCOL_VERSION,
+      requestId: 'request-1',
+      flowId: 'flow-1',
+      nodeId: 'node-1',
+      stage: 'device_authorization',
+      errorCode: 'jimeng_cli_exit_1',
+      retryable: true,
+      command: 'relogin',
+      exitCode: 1,
+      diagnostic: 'stderr: get device code failed: request timeout\ndevice_code: [REDACTED]',
     });
   });
 

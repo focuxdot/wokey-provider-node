@@ -243,6 +243,9 @@ export interface ProviderJimengAuthFailed {
   stage: JimengAuthFailureStage;
   errorCode: string;
   retryable: boolean;
+  command?: 'relogin' | 'checklogin' | 'user_credit';
+  exitCode?: number;
+  diagnostic?: string;
 }
 
 export interface PlatformJimengCliInstall {
