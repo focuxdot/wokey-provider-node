@@ -259,10 +259,16 @@ describe('JimengAuthorizationHandler', () => {
     const nativeHomeDir = join(parent, 'native-home');
     await mkdir(nativeHomeDir, { mode: 0o700 });
     if (platform === 'win32') {
+      vi.stubEnv('HOME', 'C:\\Users\\interactive-home-override');
+      vi.stubEnv('USERPROFILE', nativeHomeDir);
       vi.stubEnv('APPDATA', join(nativeHomeDir, 'AppData', 'Roaming'));
       vi.stubEnv('LOCALAPPDATA', join(nativeHomeDir, 'AppData', 'Local'));
       vi.stubEnv('TEMP', join(nativeHomeDir, 'AppData', 'Local', 'Temp'));
       vi.stubEnv('TMP', join(nativeHomeDir, 'AppData', 'Local', 'Temp'));
+      vi.stubEnv('XDG_CONFIG_HOME', 'C:\\Users\\interactive\\xdg-config');
+      vi.stubEnv('XDG_DATA_HOME', 'C:\\Users\\interactive\\xdg-data');
+      vi.stubEnv('XDG_CACHE_HOME', 'C:\\Users\\interactive\\xdg-cache');
+      vi.stubEnv('XDG_RUNTIME_DIR', 'C:\\Users\\interactive\\xdg-runtime');
     }
     const observedEnvironments: NodeJS.ProcessEnv[] = [];
     const preparedHomes: string[] = [];
@@ -318,21 +324,28 @@ describe('JimengAuthorizationHandler', () => {
     expect(preparedHomes).toEqual([platform === 'linux' ? observedEnvironments[0]?.HOME : nativeHomeDir]);
     expect(observedEnvironments).toHaveLength(4);
     for (const env of observedEnvironments) {
-      if (platform !== 'linux') expect(env.HOME).toBe(nativeHomeDir);
-      else {
-        expect(env.HOME).not.toBe(nativeHomeDir);
-        expect(env.HOME).toMatch(new RegExp(`^${parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/wokey-jimeng-auth-`));
-      }
-      expect(env.XDG_CONFIG_HOME).not.toBe(nativeHomeDir);
-      expect(env.XDG_DATA_HOME).not.toBe(nativeHomeDir);
-      expect(env.XDG_CACHE_HOME).not.toBe(nativeHomeDir);
-      expect(env.XDG_RUNTIME_DIR).not.toBe(nativeHomeDir);
       if (platform === 'win32') {
-        expect(env.USERPROFILE).toBe(nativeHomeDir);
+        expect(env.HOME).toBe(process.env.HOME);
+        expect(env.USERPROFILE).toBe(process.env.USERPROFILE);
         expect(env.APPDATA).toBe(process.env.APPDATA);
         expect(env.LOCALAPPDATA).toBe(process.env.LOCALAPPDATA);
         expect(env.TEMP).toBe(process.env.TEMP);
         expect(env.TMP).toBe(process.env.TMP);
+        expect(env.XDG_CONFIG_HOME).toBe(process.env.XDG_CONFIG_HOME);
+        expect(env.XDG_DATA_HOME).toBe(process.env.XDG_DATA_HOME);
+        expect(env.XDG_CACHE_HOME).toBe(process.env.XDG_CACHE_HOME);
+        expect(env.XDG_RUNTIME_DIR).toBe(process.env.XDG_RUNTIME_DIR);
+      } else if (platform === 'darwin') {
+        expect(env.HOME).toBe(nativeHomeDir);
+      } else {
+        expect(env.HOME).not.toBe(nativeHomeDir);
+        expect(env.HOME).toMatch(new RegExp(`^${parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/wokey-jimeng-auth-`));
+      }
+      if (platform !== 'win32') {
+        expect(env.XDG_CONFIG_HOME).not.toBe(nativeHomeDir);
+        expect(env.XDG_DATA_HOME).not.toBe(nativeHomeDir);
+        expect(env.XDG_CACHE_HOME).not.toBe(nativeHomeDir);
+        expect(env.XDG_RUNTIME_DIR).not.toBe(nativeHomeDir);
       }
     }
   });

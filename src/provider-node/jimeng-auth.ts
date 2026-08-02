@@ -166,24 +166,25 @@ export class JimengAuthorizationHandler {
       const platform = this.options.platform ?? process.platform;
       if (!isSupportedDreaminaPlatform(platform)) throw new Error('jimeng_platform_unsupported');
 
-      // macOS and Windows authorization depend on the logged-in user's native
-      // profile as well as the OS credential vault. Keep Linux file-backed
-      // credentials isolated, but match an interactive CLI invocation on the
-      // native-vault platforms. The credential itself is still snapshotted and
-      // restored around the operation below.
+      // Windows authorization must run with the exact logged-in user
+      // environment. In particular, setting HOME or any XDG_* variable changes
+      // where some Dreamina CLI builds look for configuration and which
+      // keyring backend they select. That made the scheduled Provider Node
+      // invocation fail even though the same binary succeeded in PowerShell.
+      // Keep Windows untouched; Linux remains fully isolated and macOS keeps
+      // its isolated XDG view while using the native login keychain.
       const nativeHomeDir = this.options.nativeHomeDir ?? homedir();
       const commandHomeDir = platform === 'linux' ? homeDir : nativeHomeDir;
-      const env: NodeJS.ProcessEnv = {
-        ...process.env,
-        HOME: commandHomeDir,
-        XDG_CONFIG_HOME: configDir,
-        XDG_DATA_HOME: dataDir,
-        XDG_CACHE_HOME: cacheDir,
-        XDG_RUNTIME_DIR: runtimeDir,
-      };
-      if (platform === 'win32') {
-        env.USERPROFILE = nativeHomeDir;
-      }
+      const env: NodeJS.ProcessEnv = platform === 'win32'
+        ? { ...process.env }
+        : {
+            ...process.env,
+            HOME: commandHomeDir,
+            XDG_CONFIG_HOME: configDir,
+            XDG_DATA_HOME: dataDir,
+            XDG_CACHE_HOME: cacheDir,
+            XDG_RUNTIME_DIR: runtimeDir,
+          };
       await Promise.all([
         mkdir(configDir, { mode: 0o700 }),
         mkdir(dataDir, { mode: 0o700 }),
