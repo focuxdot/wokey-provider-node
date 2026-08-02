@@ -277,7 +277,7 @@ describe('ProviderBridge endpoint failover', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(heartbeats()).toBe(1);
 
-      // …but never silent either: the 90s floor report still goes out.
+      // …but never silent either: the 85s floor report still goes out.
       await vi.advanceTimersByTimeAsync(30_000);
       expect(heartbeats()).toBe(2);
     } finally {
