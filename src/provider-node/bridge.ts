@@ -47,6 +47,11 @@ import type { JimengAuthorizationHandler } from './jimeng-auth.js';
 import type { JimengVideoHandler } from './jimeng-video.js';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
+// Official-exit nodes report state less often: tunnel traffic already carries
+// the per-request signals, but the Platform still routes on the heartbeat's
+// inFlight / risk / cooldown / acceptingSessions numbers, so they must never
+// go fully stale — keep a low-frequency floor instead of no heartbeat at all.
+const HEARTBEAT_FLOOR_INTERVAL_MS = 60_000;
 // Low-level WebSocket ping fallback for older Platform versions or a one-way
 // control-plane failure. Current Platform versions already ping every 30s, so
 // once the node observes that probe it suppresses its duplicate ping while the
@@ -371,11 +376,11 @@ export class ProviderBridge {
       this.sendHello();
       scheduleKeepalivePing(KEEPALIVE_PING_INTERVAL_MS, KEEPALIVE_PING_INTERVAL_MS);
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-      if (this.shouldSendBusinessHeartbeat(config)) {
-        this.sendHeartbeat();
-        this.heartbeatTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
-      }
+      this.sendHeartbeat();
+      this.heartbeatTimer = setInterval(
+        () => this.sendHeartbeat(),
+        this.heartbeatIntervalMs(config),
+      );
     });
 
     socket.on('ping', () => {
@@ -730,8 +735,8 @@ export class ProviderBridge {
     });
   }
 
-  private shouldSendBusinessHeartbeat(config: ProviderNodeConfig): boolean {
-    return !config.officialExit?.enabled;
+  private heartbeatIntervalMs(config: ProviderNodeConfig): number {
+    return config.officialExit?.enabled ? HEARTBEAT_FLOOR_INTERVAL_MS : HEARTBEAT_INTERVAL_MS;
   }
 
   private nextReconnectDelayMs(): number {

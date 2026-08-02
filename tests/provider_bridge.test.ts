@@ -176,13 +176,14 @@ describe('ProviderBridge endpoint failover', () => {
     vi.useRealTimers();
   });
 
-  async function makeBridge(preferFallbackEndpoint = false) {
+  async function makeBridge(preferFallbackEndpoint = false, officialExitEnabled = false) {
     const { defaultConfig } = await import('../src/provider-node/config.js');
     const { ProviderBridge } = await import('../src/provider-node/bridge.js');
     const config = {
       ...defaultConfig(),
       platformWsUrl: 'wss://node.wokey.ai:8443/internal/provider/connect',
       preferFallbackEndpoint,
+      officialExit: { enabled: officialExitEnabled },
     };
     return new ProviderBridge(() => config);
   }
@@ -251,6 +252,34 @@ describe('ProviderBridge endpoint failover', () => {
 
       await vi.advanceTimersByTimeAsync(30_000);
       expect(socket.pingCount).toBe(2);
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('keeps a floor heartbeat on official-exit nodes so Platform routing state stays fresh', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const socket = fakeSockets[0];
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.emit('open');
+
+      const heartbeats = () => socket.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as { type?: string })
+        .filter((message) => message.type === 'provider.heartbeat').length;
+
+      // One immediate state report on connect.
+      expect(heartbeats()).toBe(1);
+
+      // Not the chatty 10s cadence official-exit nodes deliberately avoid…
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heartbeats()).toBe(1);
+
+      // …but never silent either: the 60s floor report still goes out.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(heartbeats()).toBe(2);
     } finally {
       bridge.stop();
     }
