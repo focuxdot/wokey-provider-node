@@ -47,11 +47,13 @@ import type { JimengAuthorizationHandler } from './jimeng-auth.js';
 import type { JimengVideoHandler } from './jimeng-video.js';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
-// Low-level WebSocket ping to keep the relay warm through intermediaries that
-// idle out quiet connections (a CDN-proxied fallback path typically cuts idle
-// sockets at ~100s). A bound official-exit node sends no business heartbeat, so
-// without this an idle node on the fallback would be dropped and reconnect-churn.
+// Low-level WebSocket ping fallback for older Platform versions or a one-way
+// control-plane failure. Current Platform versions already ping every 30s, so
+// once the node observes that probe it suppresses its duplicate ping while the
+// Platform remains active. The 60s fallback stays below the ~100s idle cutoff
+// seen on CDN-proxied connections.
 const KEEPALIVE_PING_INTERVAL_MS = 30_000;
+const PLATFORM_ACTIVITY_FALLBACK_AFTER_MS = 60_000;
 // Max time for a single connect+upgrade attempt. Keeps a blocked/blackholed
 // endpoint from hanging on the OS TCP timeout so the primary↔fallback flip is
 // quick. Must stay well under the reconnect cadence.
@@ -223,7 +225,7 @@ export class ProviderBridge {
     this.acceptingSessions = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
     this.keepaliveTimer = null;
@@ -335,6 +337,24 @@ export class ProviderBridge {
     this.controlScheduler?.close();
     this.controlScheduler = this.createScheduler(socket, PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES);
     let opened = false;
+    let platformPingObserved = false;
+    const scheduleKeepalivePing = (delayMs: number, retryDelayMs: number) => {
+      if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
+      this.keepaliveTimer = setTimeout(() => {
+        if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        socket.ping();
+        scheduleKeepalivePing(retryDelayMs, retryDelayMs);
+      }, delayMs);
+      this.keepaliveTimer.unref?.();
+    };
+    const markPlatformActivity = () => {
+      if (this.socket === socket && platformPingObserved) {
+        scheduleKeepalivePing(
+          PLATFORM_ACTIVITY_FALLBACK_AFTER_MS,
+          KEEPALIVE_PING_INTERVAL_MS,
+        );
+      }
+    };
 
     socket.on('open', () => {
       const config = this.getConfig();
@@ -349,11 +369,7 @@ export class ProviderBridge {
         this.options.onEndpointPreferenceChange?.(this.useFallback);
       }
       this.sendHello();
-      if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
-      this.keepaliveTimer = setInterval(() => {
-        if (socket.readyState === WebSocket.OPEN) socket.ping();
-      }, KEEPALIVE_PING_INTERVAL_MS);
-      this.keepaliveTimer.unref?.();
+      scheduleKeepalivePing(KEEPALIVE_PING_INTERVAL_MS, KEEPALIVE_PING_INTERVAL_MS);
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
       if (this.shouldSendBusinessHeartbeat(config)) {
@@ -362,7 +378,13 @@ export class ProviderBridge {
       }
     });
 
+    socket.on('ping', () => {
+      platformPingObserved = true;
+      markPlatformActivity();
+    });
+    socket.on('pong', markPlatformActivity);
     socket.on('message', (raw, isBinary) => {
+      markPlatformActivity();
       if (isBinary) {
         try {
           const encoded = rawDataBuffer(raw);
@@ -398,7 +420,7 @@ export class ProviderBridge {
     this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error(`provider_bridge_${reason}`));
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+    if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
     this.heartbeatTimer = null;
     this.keepaliveTimer = null;
     if (shouldSuppressProviderBridgeReconnect(reason)) {

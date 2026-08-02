@@ -14,12 +14,14 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
     url: string;
     options?: { headers?: Record<string, string> };
     readyState: number;
+    pingCount: number;
     sent: Array<string | Buffer>;
     emit: (event: string, ...args: unknown[]) => void;
   }> = [];
   class FakeWebSocket {
     static OPEN = 1;
     readyState = 0;
+    pingCount = 0;
     url: string;
     options?: { headers?: Record<string, string> };
     sent: Array<string | Buffer> = [];
@@ -38,7 +40,9 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
       for (const fn of this.handlers[event] || []) fn(...args);
     }
     close() {}
-    ping() {}
+    ping() {
+      this.pingCount += 1;
+    }
     send(data: string | Buffer) {
       this.sent.push(data);
     }
@@ -214,6 +218,39 @@ describe('ProviderBridge endpoint failover', () => {
 
       expect(fakeSockets).toHaveLength(2);
       expect(fakeSockets[1].url).toBe('wss://node.wokey.ai:8443/internal/provider/connect');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('suppresses duplicate pings after observing Platform keepalive and restores the fallback after silence', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      const socket = fakeSockets[0];
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.emit('open');
+
+      // Preserve compatibility with older Platform versions until this
+      // connection proves that Platform is the heartbeat initiator.
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.pingCount).toBe(1);
+
+      socket.emit('ping');
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.pingCount).toBe(1);
+
+      // Any inbound Platform frame proves the connection is active and pushes
+      // the fallback deadline out, even when no business heartbeat is enabled.
+      socket.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.ready',
+        nodeId: 'node_123',
+      })), false);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.pingCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(socket.pingCount).toBe(2);
     } finally {
       bridge.stop();
     }
