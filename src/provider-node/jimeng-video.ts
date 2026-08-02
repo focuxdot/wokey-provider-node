@@ -288,7 +288,7 @@ export class JimengVideoHandler {
     if (message.operation.type === 'submit') {
       const operation = message.operation;
       validateSubmitOperation(operation, this.modelsByMode, this.resolutions, this.allowedTransferOrigins);
-      const requestHash = sha256(Buffer.from(stableJson(operation)));
+      const requestHash = submissionReceiptHash(operation);
       const existing = await this.receiptStore.prepare(message.videoJobId, requestHash);
       if (existing.state === 'submitted') {
         if (
@@ -1476,6 +1476,24 @@ function validIdentifier(value: string, max: number): boolean {
 }
 function sha256(value: Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
+}
+function submissionReceiptHash(
+  operation: Extract<PlatformJimengVideoExecute['operation'], { type: 'submit' }>,
+): string {
+  const { mediaInputs, ...stableOperation } = operation;
+  const stableMediaInputs = mediaInputs?.map((input) => ({
+    id: input.id,
+    kind: input.kind,
+    role: input.role,
+    filename: input.filename,
+    contentType: input.contentType,
+    bytes: input.bytes,
+    sha256: input.sha256,
+  }));
+  return sha256(Buffer.from(stableJson({
+    ...stableOperation,
+    ...(stableMediaInputs ? { mediaInputs: stableMediaInputs } : {}),
+  })));
 }
 function isNodeError(error: unknown, code: string): boolean {
   return !!error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === code;

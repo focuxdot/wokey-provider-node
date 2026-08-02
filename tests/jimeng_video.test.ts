@@ -439,6 +439,83 @@ describe('Jimeng Provider Node video executor', () => {
     }
   });
 
+  it('replays a submitted receipt when only temporary media download URLs change', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-video-replay-url-'));
+    const image = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.from('reference-image'),
+    ]);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(image, {
+      status: 200,
+      headers: { 'content-type': 'image/png', 'content-length': String(image.length) },
+    })));
+    let calls = 0;
+    const handler = new JimengVideoHandler({
+      cli: { path: '/opt/dreamina', version: '1.4.14' },
+      receiptsDirectory: join(parent, 'receipts'),
+      ...receiptCodec,
+      tempParentDir: parent,
+      platform: 'linux',
+      allowedTransferOrigins: ['https://node.test'],
+      getIdentity: () => ({ nodeId: 'node-1', providerId: 'provider-1' }),
+      runCommand: async (_binary, _args, options) => {
+        calls += 1;
+        const taskDir = join(commandHome(options.env), '.dreamina_cli');
+        await mkdir(taskDir, { recursive: true });
+        await writeFile(join(taskDir, 'tasks.db'), sqliteDatabase());
+        return { stdout: '{"submit_id":"submit-url-replay"}', stderr: '' };
+      },
+    });
+    const mediaInput = (downloadUrl: string) => ({
+      id: 'reference-image',
+      kind: 'image' as const,
+      role: 'reference' as const,
+      filename: 'reference.png',
+      contentType: 'image/png',
+      bytes: image.length,
+      sha256: createHash('sha256').update(image).digest('hex'),
+      downloadUrl,
+    });
+    try {
+      const first = submitMessage({ requestId: 'request-first', videoJobId: 'video-url-replay' });
+      if (first.operation.type !== 'submit') throw new Error('expected submit');
+      first.operation.mode = 'image_to_video';
+      first.operation.mediaInputs = [mediaInput('https://node.test/grant-first')];
+      expect(await execute(handler, first)).toMatchObject({
+        type: 'provider.jimeng_video_completed',
+        submitId: 'submit-url-replay',
+        reusedSubmission: false,
+      });
+      await nextTurn();
+
+      const retry = submitMessage({ requestId: 'request-retry', videoJobId: 'video-url-replay' });
+      if (retry.operation.type !== 'submit') throw new Error('expected submit');
+      retry.operation.mode = 'image_to_video';
+      retry.operation.mediaInputs = [mediaInput('https://node.test/grant-retry')];
+      expect(await execute(handler, retry)).toMatchObject({
+        type: 'provider.jimeng_video_completed',
+        submitId: 'submit-url-replay',
+        reusedSubmission: true,
+      });
+      await nextTurn();
+
+      const changed = submitMessage({ requestId: 'request-changed', videoJobId: 'video-url-replay' });
+      if (changed.operation.type !== 'submit') throw new Error('expected submit');
+      changed.operation.mode = 'image_to_video';
+      changed.operation.mediaInputs = [{
+        ...mediaInput('https://node.test/grant-changed'),
+        sha256: 'f'.repeat(64),
+      }];
+      expect(await execute(handler, changed)).toMatchObject({
+        type: 'provider.jimeng_video_failed',
+        errorCode: 'jimeng_receipt_request_conflict',
+      });
+      expect(calls).toBe(1);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('only cancels the matching active video job', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-video-cancel-'));
     const handler = new JimengVideoHandler({
