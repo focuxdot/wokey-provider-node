@@ -17,6 +17,7 @@ import { JIMENG_AUTH_CONTROL_PROTOCOL_VERSION, type PlatformJimengAuthStart } fr
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -257,6 +258,12 @@ describe('JimengAuthorizationHandler', () => {
     tempDirs.push(parent);
     const nativeHomeDir = join(parent, 'native-home');
     await mkdir(nativeHomeDir, { mode: 0o700 });
+    if (platform === 'win32') {
+      vi.stubEnv('APPDATA', join(nativeHomeDir, 'AppData', 'Roaming'));
+      vi.stubEnv('LOCALAPPDATA', join(nativeHomeDir, 'AppData', 'Local'));
+      vi.stubEnv('TEMP', join(nativeHomeDir, 'AppData', 'Local', 'Temp'));
+      vi.stubEnv('TMP', join(nativeHomeDir, 'AppData', 'Local', 'Temp'));
+    }
     const observedEnvironments: NodeJS.ProcessEnv[] = [];
     const preparedHomes: string[] = [];
     const auth = Buffer.from(
@@ -308,10 +315,10 @@ describe('JimengAuthorizationHandler', () => {
     });
 
     expect(event.type).toBe('provider.jimeng_auth_completed');
-    expect(preparedHomes).toEqual([platform === 'darwin' ? nativeHomeDir : observedEnvironments[0]?.HOME]);
+    expect(preparedHomes).toEqual([platform === 'linux' ? observedEnvironments[0]?.HOME : nativeHomeDir]);
     expect(observedEnvironments).toHaveLength(4);
     for (const env of observedEnvironments) {
-      if (platform === 'darwin') expect(env.HOME).toBe(nativeHomeDir);
+      if (platform !== 'linux') expect(env.HOME).toBe(nativeHomeDir);
       else {
         expect(env.HOME).not.toBe(nativeHomeDir);
         expect(env.HOME).toMatch(new RegExp(`^${parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/wokey-jimeng-auth-`));
@@ -321,11 +328,11 @@ describe('JimengAuthorizationHandler', () => {
       expect(env.XDG_CACHE_HOME).not.toBe(nativeHomeDir);
       expect(env.XDG_RUNTIME_DIR).not.toBe(nativeHomeDir);
       if (platform === 'win32') {
-        expect(env.USERPROFILE).toBe(env.HOME);
-        expect(env.APPDATA).toMatch(/\/config\/Roaming$/);
-        expect(env.LOCALAPPDATA).toMatch(/\/data\/Local$/);
-        expect(env.TEMP).toBe(env.XDG_CACHE_HOME);
-        expect(env.TMP).toBe(env.XDG_CACHE_HOME);
+        expect(env.USERPROFILE).toBe(nativeHomeDir);
+        expect(env.APPDATA).toBe(process.env.APPDATA);
+        expect(env.LOCALAPPDATA).toBe(process.env.LOCALAPPDATA);
+        expect(env.TEMP).toBe(process.env.TEMP);
+        expect(env.TMP).toBe(process.env.TMP);
       }
     }
   });

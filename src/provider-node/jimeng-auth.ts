@@ -166,10 +166,13 @@ export class JimengAuthorizationHandler {
       const platform = this.options.platform ?? process.platform;
       if (!isSupportedDreaminaPlatform(platform)) throw new Error('jimeng_platform_unsupported');
 
-      // On macOS, go-keyring resolves the default native credential vault
-      // through the user's real HOME. Linux deliberately stores the credential
-      // in the isolated HOME, while Windows resolves its native vault directly.
-      const commandHomeDir = platform === 'darwin' ? (this.options.nativeHomeDir ?? homedir()) : homeDir;
+      // macOS and Windows authorization depend on the logged-in user's native
+      // profile as well as the OS credential vault. Keep Linux file-backed
+      // credentials isolated, but match an interactive CLI invocation on the
+      // native-vault platforms. The credential itself is still snapshotted and
+      // restored around the operation below.
+      const nativeHomeDir = this.options.nativeHomeDir ?? homedir();
+      const commandHomeDir = platform === 'linux' ? homeDir : nativeHomeDir;
       const env: NodeJS.ProcessEnv = {
         ...process.env,
         HOME: commandHomeDir,
@@ -179,11 +182,7 @@ export class JimengAuthorizationHandler {
         XDG_RUNTIME_DIR: runtimeDir,
       };
       if (platform === 'win32') {
-        env.USERPROFILE = homeDir;
-        env.APPDATA = join(configDir, 'Roaming');
-        env.LOCALAPPDATA = join(dataDir, 'Local');
-        env.TEMP = cacheDir;
-        env.TMP = cacheDir;
+        env.USERPROFILE = nativeHomeDir;
       }
       await Promise.all([
         mkdir(configDir, { mode: 0o700 }),
