@@ -241,6 +241,59 @@ describe('Jimeng Provider Node video executor', () => {
     }
   });
 
+  it('returns reference-image upload network failures as retryable and permits a safe resubmit', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-video-upload-retry-'));
+    let calls = 0;
+    const handler = new JimengVideoHandler({
+      cli: { path: '/opt/dreamina', version: '1.4.14' },
+      receiptsDirectory: join(parent, 'receipts'),
+      ...receiptCodec,
+      tempParentDir: parent,
+      platform: 'linux',
+      getIdentity: () => ({ nodeId: 'node-1', providerId: 'provider-1' }),
+      runCommand: async (_binary, _args, options) => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            stdout: JSON.stringify({
+              submit_id: 'local-submit-failed',
+              gen_status: 'fail',
+              fail_reason:
+                'upload resource "/tmp/reference.png": upload image: apply phase: dial tcp: lookup imagex.bytedanceapi.com on 127.0.0.53:53: connection refused',
+            }),
+            stderr: '',
+          };
+        }
+        const dir = join(commandHome(options.env), '.dreamina_cli');
+        await mkdir(dir, { recursive: true });
+        await writeFile(join(dir, 'tasks.db'), sqliteDatabase());
+        return { stdout: '{"submit_id":"submit-after-retry","gen_status":"querying"}', stderr: '' };
+      },
+    });
+    try {
+      const failed = await execute(handler, submitMessage());
+      expect(failed).toMatchObject({
+        type: 'provider.jimeng_video_failed',
+        operation: 'submit',
+        stage: 'media_transfer',
+        errorCode: 'jimeng_video_input_upload_unavailable',
+        retryable: true,
+        submissionUnknown: false,
+      });
+      await nextTurn();
+      const retried = await execute(handler, submitMessage({ requestId: 'request-retry' }));
+      expect(retried).toMatchObject({
+        type: 'provider.jimeng_video_completed',
+        operation: 'submit',
+        submitId: 'submit-after-retry',
+        reusedSubmission: false,
+      });
+      expect(calls).toBe(2);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('replays a durable receipt without submitting to Dreamina twice', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-video-replay-'));
     let calls = 0;

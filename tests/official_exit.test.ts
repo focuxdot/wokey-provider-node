@@ -103,15 +103,20 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('notgrok.com', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('grok.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('bytetsd-router.byted.org', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('imagex.bytedanceapi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jimeng.jianying.com', defaults)).toBe(true);
     // Deliberately allow future official subdomains without a Node rebuild.
     expect(isOfficialExitHostAllowed('future-service.byted.org', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('future-service.bytedanceapi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('future-api.jianying.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('byted.org', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('bytedanceapi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jianying.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('v9-artist.vlabvod.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jimeng.jianying.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('notbyted.org', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('notbytedanceapi.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('bytedanceapi.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('vlabvod.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);

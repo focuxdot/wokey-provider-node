@@ -327,6 +327,11 @@ export class JimengVideoHandler {
         }
         try {
           const upstreamResult = parseCliJson(command.stdout);
+          const retryableSubmitFailure = retryableInputUploadFailure(upstreamResult);
+          if (retryableSubmitFailure) {
+            await this.receiptStore.resetPrepared(submitting);
+            throw videoError('media_transfer', retryableSubmitFailure, true, false);
+          }
           const submitId = nestedString(upstreamResult, 'submit_id', 'submitId', 'task_id', 'taskId');
           if (!submitId || !validIdentifier(submitId, 256))
             throw videoError('cli_execution', 'jimeng_submit_id_missing', false, true);
@@ -354,6 +359,7 @@ export class JimengVideoHandler {
             upstreamResult,
           });
         } catch (error) {
+          if (error instanceof JimengVideoError && error.code === 'jimeng_video_input_upload_unavailable') throw error;
           await this.receiptStore.markUnknown(submitting, 'submit_acceptance_not_durable');
           const detail =
             error instanceof JimengVideoError
@@ -1121,6 +1127,16 @@ class SubmissionReceiptStore {
     });
   }
 
+  async resetPrepared(current: SubmissionReceipt): Promise<SubmissionReceipt> {
+    return await this.transition(current, {
+      schemaVersion: current.schemaVersion,
+      videoJobId: current.videoJobId,
+      requestHash: current.requestHash,
+      state: 'prepared',
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   async markSubmitted(
     current: SubmissionReceipt,
     result: {
@@ -1336,6 +1352,30 @@ function nestedString(value: Record<string, unknown>, ...keys: string[]): string
   if (value.data && typeof value.data === 'object' && !Array.isArray(value.data))
     return nestedString(value.data as Record<string, unknown>, ...keys);
   return undefined;
+}
+
+function retryableInputUploadFailure(value: Record<string, unknown>): string | undefined {
+  const status = nestedString(value, 'gen_status', 'status', 'state', 'task_status', 'taskStatus')
+    ?.trim()
+    .toLowerCase();
+  if (!status || !['fail', 'failed', 'failure', 'error'].includes(status)) return undefined;
+  const reason = nestedString(value, 'fail_reason', 'failReason', 'failure_reason', 'failureReason')
+    ?.trim()
+    .toLowerCase();
+  if (!reason?.includes('upload resource') || !reason.includes('upload image:')) return undefined;
+  if (
+    ![
+      'connection refused',
+      'connection reset',
+      'no such host',
+      'network is unreachable',
+      'i/o timeout',
+      'context deadline exceeded',
+      'temporary failure in name resolution',
+    ].some((marker) => reason.includes(marker))
+  )
+    return undefined;
+  return 'jimeng_video_input_upload_unavailable';
 }
 
 function completedEvent(

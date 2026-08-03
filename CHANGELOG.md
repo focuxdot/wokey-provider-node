@@ -4,6 +4,21 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.68]
+
+### Added
+- Allow Jimeng / Dreamina image uploads to use the official
+  `*.bytedanceapi.com` root domain and future subdomains.
+
+### Fixed
+- Classify reference-media upload DNS and transport failures as retryable,
+  reset the durable submission receipt safely, and permit a clean resubmit
+  instead of persisting a terminal upstream task failure.
+
+### Security
+- Update the transitive `fast-uri` dependency to `3.1.5` to address its host
+  confusion advisory.
+
 ## [0.1.67]
 
 ### Fixed
