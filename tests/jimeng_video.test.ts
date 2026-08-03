@@ -566,7 +566,7 @@ describe('Jimeng Provider Node video executor', () => {
     }
   });
 
-  it('maps image, first/last-frame, and multimodal inputs to the exact CLI commands after verified downloads', async () => {
+  it('maps media inputs to CLI commands after transport integrity checks without format validation', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'wokey-jimeng-video-modes-'));
     const mediaById = new Map<string, Buffer>();
     vi.stubGlobal(
@@ -652,6 +652,24 @@ describe('Jimeng Provider Node video executor', () => {
         input('ref-audio', 'audio'),
       ];
       expect((await execute(handler, multimodal)).type).toBe('provider.jimeng_video_completed');
+      await nextTurn();
+
+      const passthrough = submitMessage({ requestId: 'request-passthrough', videoJobId: 'video-passthrough' });
+      if (passthrough.operation.type !== 'submit') throw new Error('expected submit');
+      passthrough.operation.mode = 'image_to_video';
+      const opaqueMedia = Buffer.from('platform-validated-media');
+      mediaById.set('passthrough-image', opaqueMedia);
+      passthrough.operation.mediaInputs = [{
+        id: 'passthrough-image',
+        kind: 'image',
+        role: 'reference',
+        filename: 'passthrough.png',
+        contentType: 'image/png',
+        bytes: opaqueMedia.length,
+        sha256: createHash('sha256').update(opaqueMedia).digest('hex'),
+        downloadUrl: 'https://node.test/passthrough-image',
+      }];
+      expect((await execute(handler, passthrough)).type).toBe('provider.jimeng_video_completed');
 
       expect(calls[0]?.[0]).toBe('image2video');
       expect(calls[0]?.some((arg) => arg.startsWith('--image='))).toBe(true);
@@ -660,6 +678,7 @@ describe('Jimeng Provider Node video executor', () => {
       expect(calls[1]?.some((arg) => arg.startsWith('--last='))).toBe(true);
       expect(calls[2]?.[0]).toBe('multimodal2video');
       expect(calls[2]?.filter((arg) => /^--(?:image|video|audio)=/.test(arg))).toHaveLength(3);
+      expect(calls[3]?.[0]).toBe('image2video');
     } finally {
       await rm(parent, { recursive: true, force: true });
     }

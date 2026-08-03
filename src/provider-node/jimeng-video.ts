@@ -714,14 +714,11 @@ async function downloadMediaInputs(
       throw videoError('media_transfer', 'jimeng_video_input_length_mismatch', false, false);
     const hash = createHash('sha256');
     let bytes = 0;
-    let header = Buffer.alloc(0);
     const verifier = new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         bytes += chunk.byteLength;
         if (bytes > input.bytes || bytes > MAX_MEDIA_INPUT_BYTES) throw new Error('too_large');
         hash.update(chunk);
-        if (header.byteLength < 16)
-          header = Buffer.concat([header, Buffer.from(chunk).subarray(0, 16 - header.byteLength)]);
         controller.enqueue(chunk);
       },
     });
@@ -735,8 +732,6 @@ async function downloadMediaInputs(
     }
     if (bytes !== input.bytes || hash.digest('hex') !== input.sha256)
       throw videoError('media_transfer', 'jimeng_video_input_sha256_mismatch', false, false);
-    if (!validMediaMagic(header, input.contentType))
-      throw videoError('media_transfer', 'jimeng_video_input_content_mismatch', false, false);
     files.set(input.id, path);
   }
   return files;
@@ -823,25 +818,6 @@ function safeFilename(value: string): string {
     .replace(/^\.+/, '')
     .slice(0, 160);
   return filename || 'input.bin';
-}
-
-function validMediaMagic(data: Buffer, rawContentType: string): boolean {
-  const contentType = rawContentType.toLowerCase().split(';')[0]?.trim();
-  const ascii = (start: number, end: number) => data.subarray(start, end).toString('ascii');
-  if (contentType === 'image/png')
-    return data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
-  if (contentType === 'image/jpeg') return data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
-  if (contentType === 'image/webp') return ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP';
-  if (contentType === 'image/gif') return ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a';
-  if (contentType === 'video/mp4' || contentType === 'video/quicktime' || contentType === 'audio/mp4')
-    return ascii(4, 8) === 'ftyp';
-  if (contentType === 'video/webm') return data.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
-  if (contentType === 'audio/wav' || contentType === 'audio/x-wav')
-    return ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE';
-  if (contentType === 'audio/ogg') return ascii(0, 4) === 'OggS';
-  if (contentType === 'audio/mpeg')
-    return ascii(0, 3) === 'ID3' || (data[0] === 0xff && ((data[1] ?? 0) & 0xe0) === 0xe0);
-  return false;
 }
 
 function deadlineSignal(timeoutMs: number, parent: AbortSignal): AbortSignal {
