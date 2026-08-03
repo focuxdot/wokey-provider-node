@@ -4,6 +4,17 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.67]
+
+### Fixed
+- Allow completed Jimeng / Dreamina videos to download from signed
+  `*.vlabvod.com` media URLs, preventing successful upstream jobs from being
+  left in repeated `jimeng_cli_process_failed` polling states.
+- Preserve the CLI's default aspect-ratio behavior when Platform omits the
+  optional `ratio` field.
+- Report privacy-safe CLI failure diagnostics (exit status plus stderr byte
+  count and SHA-256) without exposing raw stderr or credential material.
+
 ## [0.1.54]
 
 ### Added

@@ -329,7 +329,7 @@ export interface PlatformJimengVideoExecute {
         modelVersion: string;
         prompt: string;
         durationSeconds: number;
-        ratio: string;
+        ratio?: string;
         resolution: string;
         mediaInputs: Array<{
           id: string;
@@ -396,6 +396,12 @@ export interface ProviderJimengVideoFailed {
   errorCode: string;
   retryable: boolean;
   submissionUnknown: boolean;
+  diagnostic?: {
+    exitCode?: number;
+    exitSignal?: string;
+    stderrBytes?: number;
+    stderrSha256?: string;
+  };
 }
 
 // Only the fields the node actually consumes to open and bound the relay socket.

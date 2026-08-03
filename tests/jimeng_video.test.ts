@@ -181,7 +181,9 @@ describe('Jimeng Provider Node video executor', () => {
     });
 
     try {
-      const event = await execute(handler, submitMessage());
+      const message = submitMessage();
+      if (message.operation.type === 'submit') delete message.operation.ratio;
+      const event = await execute(handler, message);
       expect(event).toMatchObject({
         type: 'provider.jimeng_video_completed',
         operation: 'submit',
@@ -195,7 +197,6 @@ describe('Jimeng Provider Node video executor', () => {
           '--prompt=a cat running',
           '--model_version=seedance2.0mini',
           '--duration=5',
-          '--ratio=16:9',
           '--video_resolution=720p',
           '--poll=0',
         ],
@@ -219,7 +220,9 @@ describe('Jimeng Provider Node video executor', () => {
       });
       const receipt = await readFile(join(receipts, 'video-job-1.json'), 'utf8');
       expect(receipt).not.toContain('refreshed-access');
-      const replayed = await execute(handler, submitMessage({ requestId: 'request-replay' }));
+      const replayMessage = submitMessage({ requestId: 'request-replay' });
+      if (replayMessage.operation.type === 'submit') delete replayMessage.operation.ratio;
+      const replayed = await execute(handler, replayMessage);
       expect(replayed).toMatchObject({
         type: 'provider.jimeng_video_completed',
         reusedSubmission: true,

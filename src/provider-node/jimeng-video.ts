@@ -606,7 +606,8 @@ function validateSubmitOperation(
     input.durationSeconds > maxDuration
   )
     throw videoError('validation', 'jimeng_video_duration_invalid', false, false);
-  if (!RATIOS.has(input.ratio)) throw videoError('validation', 'jimeng_video_ratio_invalid', false, false);
+  if (input.ratio !== undefined && !RATIOS.has(input.ratio))
+    throw videoError('validation', 'jimeng_video_ratio_invalid', false, false);
   if (!resolutions.has(input.resolution))
     throw videoError('validation', 'jimeng_video_resolution_unsupported', false, false);
   if (input.modelVersion === 'seedance2.5') {
@@ -626,7 +627,7 @@ function submitArgs(
     `--prompt=${input.prompt.trim()}`,
     `--model_version=${input.modelVersion}`,
     `--duration=${input.durationSeconds}`,
-    `--ratio=${input.ratio}`,
+    ...(input.ratio ? [`--ratio=${input.ratio}`] : []),
     `--video_resolution=${input.resolution}`,
     '--poll=0',
   ];
@@ -1279,6 +1280,8 @@ function spawnBounded(
               signal ? `jimeng_cli_signal_${signal.toLowerCase()}` : `jimeng_cli_exit_${code ?? 'unknown'}`,
               true,
               false,
+              undefined,
+              cliFailureDiagnostic(stderr, code, signal),
             ),
       ),
     );
@@ -1356,6 +1359,7 @@ function failedEvent(
   code: string,
   canRetry: boolean,
   submissionUnknown: boolean,
+  diagnostic?: ProviderJimengVideoFailed['diagnostic'],
 ): ProviderJimengVideoFailed {
   return {
     type: 'provider.jimeng_video_failed',
@@ -1368,6 +1372,7 @@ function failedEvent(
     errorCode: code,
     retryable: canRetry,
     submissionUnknown,
+    ...(diagnostic ? { diagnostic } : {}),
   };
 }
 
@@ -1380,7 +1385,15 @@ function errorEvent(
     error instanceof JimengVideoError
       ? error
       : videoError('cli_execution', errorCode(error), retryable(error), false, error);
-  return failedEvent(message, operation, detail.stage, detail.code, detail.retryable, detail.submissionUnknown);
+  return failedEvent(
+    message,
+    operation,
+    detail.stage,
+    detail.code,
+    detail.retryable,
+    detail.submissionUnknown,
+    detail.diagnostic,
+  );
 }
 
 function usageFailedEvent(
@@ -1413,6 +1426,7 @@ class JimengVideoError extends Error {
     readonly retryable: boolean,
     readonly submissionUnknown: boolean,
     options?: { cause?: unknown },
+    readonly diagnostic?: ProviderJimengVideoFailed['diagnostic'],
   ) {
     super(code, options);
   }
@@ -1424,8 +1438,30 @@ function videoError(
   canRetry: boolean,
   submissionUnknown: boolean,
   cause?: unknown,
+  diagnostic?: ProviderJimengVideoFailed['diagnostic'],
 ): JimengVideoError {
-  return new JimengVideoError(stage, code, canRetry, submissionUnknown, cause === undefined ? undefined : { cause });
+  return new JimengVideoError(
+    stage,
+    code,
+    canRetry,
+    submissionUnknown,
+    cause === undefined ? undefined : { cause },
+    diagnostic,
+  );
+}
+
+function cliFailureDiagnostic(
+  stderrChunks: Buffer[],
+  exitCode: number | null,
+  exitSignal: NodeJS.Signals | null,
+): ProviderJimengVideoFailed['diagnostic'] {
+  const stderr = Buffer.concat(stderrChunks);
+  return {
+    ...(exitCode == null ? {} : { exitCode }),
+    ...(exitSignal ? { exitSignal } : {}),
+    stderrBytes: stderr.byteLength,
+    stderrSha256: createHash('sha256').update(stderr).digest('hex'),
+  };
 }
 
 function errorCode(error: unknown): string {
