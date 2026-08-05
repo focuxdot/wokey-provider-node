@@ -35,7 +35,7 @@ Each official-exit request names the `targetHost`/`targetPort` to dial. By defau
 - DeepSeek: `*.deepseek.com`
 - Google Gemini: `generativelanguage.googleapis.com`
 - xAI / Grok: `*.x.ai`, `*.grok.com`
-- Jimeng / Dreamina: `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`
+- Jimeng / Dreamina: `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com`
 
 Operators can narrow or extend that local egress allowlist:
 

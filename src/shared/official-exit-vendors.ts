@@ -75,9 +75,10 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // endpoints before; narrowing these entries would force needless Node
     // rebuilds whenever another official subdomain is introduced. Completed
     // Image uploads apply through imagex under bytedanceapi.com, then send the
-    // bytes to the upload host returned by ImageX under snssdk.com;
+    // bytes to upload hosts returned by ImageX under snssdk.com or
+    // bytedancevod.com;
     // completed videos use signed vlabvod.com URLs during query_result downloads.
-    allowedHosts: ['*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com', '*.snssdk.com'],
+    allowedHosts: ['*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com', '*.snssdk.com', '*.bytedancevod.com'],
   },
 ]);
 
