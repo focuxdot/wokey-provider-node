@@ -1,6 +1,6 @@
 {
   "name": "wokey-provider-node",
-  "version": "0.1.70",
+  "version": "0.1.71",
   "description": "Wokey Provider Node runtime, local console, CLI, and installers.",
   "type": "module",
   "license": "Apache-2.0",
@@ -47,6 +47,7 @@
     "fastify": "^5.10.0",
     "nanoid": "^5.1.16",
     "pino": "^10.1.0",
+    "sigstore": "5.0.0",
     "ws": "^8.21.1"
   },
   "devDependencies": {

@@ -34,6 +34,7 @@ done < <(find "${RELEASE_DIR}" -type f \
   ! -name 'checksums.txt.sig' \
   ! -name 'checksums.txt.pem' \
   ! -name 'checksums.txt.bundle' \
+  ! -name 'checksums.txt.sigstore.json' \
   | sort)
 
 mv "${tmp}" "${CHECKSUMS}"
@@ -47,10 +48,11 @@ elif { [ "${WOKEY_PROVIDER_NODE_COSIGN_KEYLESS:-}" = "1" ] || [ -n "${COSIGN_EXP
   # signer, so there is no long-lived private key. Emits a detached signature
   # plus the short-lived Fulcio certificate that installers verify against.
   cosign sign-blob --yes \
+    --bundle "${CHECKSUMS}.sigstore.json" \
     --output-signature "${CHECKSUMS}.sig" \
     --output-certificate "${CHECKSUMS}.pem" \
     "${CHECKSUMS}"
-  echo "Wrote ${CHECKSUMS}.sig and ${CHECKSUMS}.pem (cosign keyless)"
+  echo "Wrote ${CHECKSUMS}.sig, ${CHECKSUMS}.pem, and ${CHECKSUMS}.sigstore.json (cosign keyless)"
 else
   echo "No signing key/tool configured; checksums were generated without a detached signature."
 fi

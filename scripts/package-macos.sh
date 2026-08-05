@@ -20,6 +20,8 @@ PRODUCT_DISTRIBUTION="${BUILD_DIR}/Distribution.xml"
 FINAL_PKG="${PKG_DIR}/WokeyProviderNode-${VERSION}.pkg"
 DMG_STAGING="${BUILD_DIR}/dmg"
 FINAL_DMG="${PKG_DIR}/WokeyProviderNode-${VERSION}.dmg"
+RUNTIME_ARM64="${PKG_DIR}/WokeyProviderNode-macos-runtime-arm64-${VERSION}.tar.gz"
+RUNTIME_X64="${PKG_DIR}/WokeyProviderNode-macos-runtime-x64-${VERSION}.tar.gz"
 
 require_tool() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -85,18 +87,22 @@ npm run build
 
 rm -rf "${BUILD_DIR}"
 mkdir -p \
-  "${ROOTFS}/usr/local/wokey-provider-node/app" \
+  "${ROOTFS}/usr/local/wokey-provider-node/seed/runtime/bin" \
   "${ROOTFS}/usr/local/wokey-provider-node/bin" \
   "${ROOTFS}/usr/local/bin" \
   "${ROOTFS}/Library/LaunchAgents" \
   "${PKG_SCRIPTS}" \
   "${PKG_DIR}"
 
-copy_tree "${ROOT_DIR}/dist" "${ROOTFS}/usr/local/wokey-provider-node/app/dist"
-install -m 644 "${ROOT_DIR}/package.json" "${ROOTFS}/usr/local/wokey-provider-node/app/package.json"
-install -m 644 "${ROOT_DIR}/package-lock.json" "${ROOTFS}/usr/local/wokey-provider-node/app/package-lock.json"
-install -m 644 "${ROOT_DIR}/README.md" "${ROOTFS}/usr/local/wokey-provider-node/app/README.md"
+RUNTIME_SEED="${ROOTFS}/usr/local/wokey-provider-node/seed/runtime"
+copy_tree "${ROOT_DIR}/dist" "${RUNTIME_SEED}/dist"
+install -m 644 "${ROOT_DIR}/package.json" "${RUNTIME_SEED}/package.json"
+install -m 644 "${ROOT_DIR}/package-lock.json" "${RUNTIME_SEED}/package-lock.json"
+install -m 644 "${ROOT_DIR}/README.md" "${RUNTIME_SEED}/README.md"
+install -m 755 "${ROOT_DIR}/packaging/linux/provider-node-cli.mjs" "${RUNTIME_SEED}/bin/provider-node-cli.mjs"
+printf '%s\n' "${VERSION}" > "${ROOTFS}/usr/local/wokey-provider-node/seed/VERSION"
 install -m 755 "${ROOT_DIR}/packaging/macos/provider-node" "${ROOTFS}/usr/local/wokey-provider-node/bin/provider-node"
+install -m 755 "${ROOT_DIR}/packaging/macos/bootstrap.mjs" "${ROOTFS}/usr/local/wokey-provider-node/bin/bootstrap.mjs"
 install -m 755 "${ROOT_DIR}/packaging/linux/provider-node-cli.mjs" "${ROOTFS}/usr/local/wokey-provider-node/bin/provider-node-cli.mjs"
 install -m 644 "${ROOT_DIR}/packaging/macos/ai.wokey.provider-node.plist" "${ROOTFS}/Library/LaunchAgents/ai.wokey.provider-node.plist"
 ln -sf /usr/local/wokey-provider-node/bin/provider-node "${ROOTFS}/usr/local/bin/wokey-node"
@@ -108,11 +114,22 @@ chmod 644 "${ROOTFS}/Library/LaunchAgents/ai.wokey.provider-node.plist"
 chmod 755 "${PKG_SCRIPTS}/preinstall" "${PKG_SCRIPTS}/postinstall"
 
 (
-  cd "${ROOTFS}/usr/local/wokey-provider-node/app"
+  cd "${RUNTIME_SEED}"
   npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 )
 
+if find "${RUNTIME_SEED}/node_modules" -type f -name '*.node' -print -quit | grep -q .; then
+  echo "macOS runtime contains native Node modules; separate architecture builds are required" >&2
+  exit 1
+fi
+
 clean_macos_metadata
+
+rm -f "${RUNTIME_ARM64}" "${RUNTIME_X64}"
+COPYFILE_DISABLE=1 tar -czf "${RUNTIME_ARM64}" -C "${RUNTIME_SEED}" .
+cp "${RUNTIME_ARM64}" "${RUNTIME_X64}"
+echo "Built ${RUNTIME_ARM64}"
+echo "Built ${RUNTIME_X64}"
 
 COPYFILE_DISABLE=1 pkgbuild \
   --root "${ROOTFS}" \
@@ -155,7 +172,11 @@ Installed locations:
 - /usr/local/wokey-provider-node
 - /usr/local/bin/wokey-node
 - /Library/LaunchAgents/ai.wokey.provider-node.plist
-- ~/Library/Application Support/Wokey Provider Node
+- ~/Library/Application Support/Wokey Provider Node/runtime
+
+The installer may ask for an administrator password once to install the stable
+launcher and LaunchAgent. Future Provider Node runtime updates are installed in
+your user data directory and do not require sudo.
 
 Common commands:
 - wokey-node

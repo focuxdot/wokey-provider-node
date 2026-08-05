@@ -7,15 +7,28 @@ INSTALL_DIR="/usr/local/wokey-provider-node"
 BIN="${INSTALL_DIR}/bin/provider-node"
 CONSOLE_URL="http://127.0.0.1:16888/"
 CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+SEED_DIR="${INSTALL_DIR}/seed/runtime"
+VERSION="$(/bin/cat "${INSTALL_DIR}/seed/VERSION" 2>/dev/null || true)"
+
+case "${VERSION}" in
+  ''|*[!0-9A-Za-z.-]*)
+    echo "Invalid Provider Node runtime seed version: ${VERSION}" >&2
+    exit 1
+    ;;
+esac
+if [ ! -f "${SEED_DIR}/package.json" ] || [ ! -f "${SEED_DIR}/dist/provider-node/server.js" ]; then
+  echo "Provider Node runtime seed is incomplete." >&2
+  exit 1
+fi
 
 wait_for_console() {
   attempt=0
-  while [ "${attempt}" -lt 40 ]; do
+  while [ "${attempt}" -lt 120 ]; do
     if /usr/bin/curl -fsS "${CONSOLE_URL}api/status" >/dev/null 2>&1; then
       return 0
     fi
     attempt=$((attempt + 1))
-    /bin/sleep 0.25
+    /bin/sleep 0.5
   done
   return 1
 }
@@ -36,8 +49,24 @@ if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
 
   if [ -n "${USER_HOME}" ]; then
     DATA_DIR="${USER_HOME}/Library/Application Support/Wokey Provider Node"
-    /bin/mkdir -p "${DATA_DIR}"
-    /usr/sbin/chown -R "${CONSOLE_USER}:staff" "${DATA_DIR}" || true
+    RUNTIME_ROOT="${DATA_DIR}/runtime"
+    VERSIONS_DIR="${RUNTIME_ROOT}/versions"
+    TARGET_DIR="${VERSIONS_DIR}/${VERSION}"
+    CURRENT_LINK="${RUNTIME_ROOT}/current"
+    PREVIOUS_TARGET="$(/bin/readlink "${CURRENT_LINK}" 2>/dev/null || true)"
+    /bin/mkdir -p "${VERSIONS_DIR}"
+    if [ ! -f "${TARGET_DIR}/package.json" ]; then
+      STAGING_DIR="${VERSIONS_DIR}/.${VERSION}.installing.$$"
+      /bin/rm -rf "${STAGING_DIR}"
+      /usr/bin/ditto --norsrc "${SEED_DIR}" "${STAGING_DIR}"
+      /bin/mv "${STAGING_DIR}" "${TARGET_DIR}"
+    fi
+    TEMP_LINK="${RUNTIME_ROOT}/.current-installing.$$"
+    /bin/rm -f "${TEMP_LINK}"
+    /bin/ln -s "versions/${VERSION}" "${TEMP_LINK}"
+    /bin/mv -fh "${TEMP_LINK}" "${CURRENT_LINK}"
+    /usr/sbin/chown -R "${CONSOLE_USER}:staff" "${RUNTIME_ROOT}" || true
+    /bin/chmod 700 "${RUNTIME_ROOT}" "${VERSIONS_DIR}" || true
   fi
 
   if [ -n "${CONSOLE_UID}" ]; then
@@ -45,8 +74,24 @@ if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
     /bin/launchctl bootstrap "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
     /bin/launchctl enable "gui/${CONSOLE_UID}/${LABEL}" >/dev/null 2>&1 || true
     /bin/launchctl kickstart -k "gui/${CONSOLE_UID}/${LABEL}" >/dev/null 2>&1 || true
-    wait_for_console || true
-    open_console_for_user
+    if wait_for_console; then
+      open_console_for_user
+    else
+      /bin/launchctl bootout "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
+      if [ -n "${PREVIOUS_TARGET:-}" ] \
+        && [ -f "${RUNTIME_ROOT}/${PREVIOUS_TARGET}/package.json" ] \
+        && [ -f "${RUNTIME_ROOT}/${PREVIOUS_TARGET}/dist/provider-node/server.js" ]; then
+        TEMP_LINK="${RUNTIME_ROOT}/.current-rollback.$$"
+        /bin/ln -s "${PREVIOUS_TARGET}" "${TEMP_LINK}"
+        /bin/mv -fh "${TEMP_LINK}" "${CURRENT_LINK}"
+      else
+        /bin/rm -f "${CURRENT_LINK}"
+      fi
+      /bin/launchctl bootstrap "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
+      /bin/launchctl kickstart -k "gui/${CONSOLE_UID}/${LABEL}" >/dev/null 2>&1 || true
+      echo "Wokey Provider Node ${VERSION} did not become healthy; attempted to restore the previous runtime." >&2
+      exit 1
+    fi
   fi
 fi
 

@@ -2,12 +2,45 @@
 set -eu
 
 LABEL="ai.wokey.provider-node"
-PLIST="/Library/LaunchAgents/${LABEL}.plist"
-CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+PLIST="${PROVIDER_NODE_PLIST:-/Library/LaunchAgents/${LABEL}.plist}"
+INSTALL_DIR="${PROVIDER_NODE_INSTALL_DIR:-/usr/local/wokey-provider-node}"
+LEGACY_APP_DIR="${INSTALL_DIR}/app"
+CONSOLE_USER="${PROVIDER_NODE_CONSOLE_USER:-$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)}"
+
+snapshot_legacy_runtime() {
+  [ -f "${LEGACY_APP_DIR}/package.json" ] || return 0
+  [ -f "${LEGACY_APP_DIR}/dist/provider-node/server.js" ] || return 0
+  USER_HOME="${PROVIDER_NODE_USER_HOME:-$(/usr/bin/dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}' || true)}"
+  [ -n "${USER_HOME}" ] || return 0
+  LEGACY_VERSION="$(/usr/bin/sed -nE 's/.*"version":[[:space:]]*"([^"]+)".*/\1/p' "${LEGACY_APP_DIR}/package.json" | /usr/bin/head -n 1)"
+  case "${LEGACY_VERSION}" in
+    ''|*[!0-9A-Za-z.-]*) return 0 ;;
+  esac
+
+  RUNTIME_ROOT="${USER_HOME}/Library/Application Support/Wokey Provider Node/runtime"
+  VERSIONS_DIR="${RUNTIME_ROOT}/versions"
+  LEGACY_TARGET="${VERSIONS_DIR}/${LEGACY_VERSION}"
+  CURRENT_LINK="${RUNTIME_ROOT}/current"
+  /bin/mkdir -p "${VERSIONS_DIR}"
+  if [ ! -f "${LEGACY_TARGET}/dist/provider-node/server.js" ]; then
+    STAGING_DIR="${VERSIONS_DIR}/.${LEGACY_VERSION}.migrating.$$"
+    /bin/rm -rf "${STAGING_DIR}" "${LEGACY_TARGET}"
+    /usr/bin/ditto --norsrc "${LEGACY_APP_DIR}" "${STAGING_DIR}"
+    /bin/mv "${STAGING_DIR}" "${LEGACY_TARGET}"
+  fi
+  if [ ! -e "${CURRENT_LINK}" ] && [ ! -L "${CURRENT_LINK}" ]; then
+    TEMP_LINK="${RUNTIME_ROOT}/.current-migrating.$$"
+    /bin/ln -s "versions/${LEGACY_VERSION}" "${TEMP_LINK}"
+    /bin/mv -fh "${TEMP_LINK}" "${CURRENT_LINK}"
+  fi
+  /usr/sbin/chown -R "${CONSOLE_USER}:staff" "${RUNTIME_ROOT}" || true
+  /bin/chmod 700 "${RUNTIME_ROOT}" "${VERSIONS_DIR}" || true
+}
 
 if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
+  snapshot_legacy_runtime
   CONSOLE_UID="$(/usr/bin/id -u "${CONSOLE_USER}" 2>/dev/null || true)"
-  if [ -n "${CONSOLE_UID}" ]; then
+  if [ -n "${CONSOLE_UID}" ] && [ "${PROVIDER_NODE_SKIP_SERVICE_CONTROL:-0}" != "1" ]; then
     /bin/launchctl bootout "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
   fi
 fi

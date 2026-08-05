@@ -46,7 +46,7 @@ Windows PowerShell:
 irm https://github.com/focuxdot/wokey-provider-node/releases/latest/download/install.ps1 | iex
 ```
 
-Node.js 20+ is required, and the installer installs it automatically when it is missing (winget or the official package on Windows, Homebrew or the official package on macOS, the official prebuilt binaries on Linux). The installer downloads `checksums.txt` and verifies the downloaded artifact's SHA-256 before installing. If `cosign` is already installed, it also verifies official release provenance automatically; installation still works without `cosign`.
+Node.js 20+ is required on Linux and Windows; the signed macOS runtime updater requires Node.js 22.22.2+. The installer installs a suitable version automatically when it is missing or too old. It downloads `checksums.txt` and verifies the downloaded artifact's SHA-256. macOS runtime updates additionally require the release's Sigstore bundle and verify its GitHub Actions identity before switching versions.
 
 Then open the local console:
 

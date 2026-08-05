@@ -111,6 +111,7 @@ jobs:
         run: |
           test -f release/checksums.txt.sig || { echo "missing checksums.txt.sig — signing did not run" >&2; exit 1; }
           test -f release/checksums.txt.pem || { echo "missing checksums.txt.pem — signing did not run" >&2; exit 1; }
+          test -f release/checksums.txt.sigstore.json || { echo "missing checksums.txt.sigstore.json — bundle signing did not run" >&2; exit 1; }
       - name: Prepare release assets
         run: |
           mkdir -p release-assets

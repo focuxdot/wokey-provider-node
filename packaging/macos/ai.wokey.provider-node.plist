@@ -27,7 +27,7 @@
   <key>KeepAlive</key>
   <true/>
   <key>WorkingDirectory</key>
-  <string>/usr/local/wokey-provider-node/app</string>
+  <string>/usr/local/wokey-provider-node</string>
   <key>StandardOutPath</key>
   <string>/tmp/wokey-provider-node.out.log</string>
   <key>StandardErrorPath</key>

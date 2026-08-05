@@ -1,12 +1,12 @@
 #!/bin/sh
 set -eu
 
-APP_DIR="${PROVIDER_NODE_APP_DIR:-/usr/local/wokey-provider-node/app}"
+INSTALL_DIR="${PROVIDER_NODE_INSTALL_DIR:-/usr/local/wokey-provider-node}"
+LEGACY_APP_DIR="${PROVIDER_NODE_APP_DIR:-${INSTALL_DIR}/app}"
 DEFAULT_DATA_DIR="${HOME}/Library/Application Support/Wokey Provider Node"
 DEFAULT_CONFIG_PATH="${DEFAULT_DATA_DIR}/provider-node.json"
 DEFAULT_CONSOLE_PORT="16888"
 DEFAULT_CONSOLE_HOST="127.0.0.1"
-DEFAULT_DOWNLOAD_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/latest/download"
 LABEL="ai.wokey.provider-node"
 PLIST="/Library/LaunchAgents/${LABEL}.plist"
 # Must match StandardOutPath/StandardErrorPath in ai.wokey.provider-node.plist.
@@ -17,6 +17,82 @@ LOG_ERR="/tmp/wokey-provider-node.err.log"
 # version managers like nvm/fnm/volta) can reuse the very same binary.
 NODE_HINT_FILE="${DEFAULT_DATA_DIR}/node-path"
 CONSOLE_READY_TIMEOUT_SECONDS="${PROVIDER_CONSOLE_READY_TIMEOUT:-15}"
+BOOTSTRAP="${INSTALL_DIR}/bin/bootstrap.mjs"
+SEED_DIR="${INSTALL_DIR}/seed/runtime"
+SEED_VERSION_FILE="${INSTALL_DIR}/seed/VERSION"
+
+runtime_current_dir() {
+  printf '%s\n' "${DEFAULT_DATA_DIR}/runtime/current"
+}
+
+install_seed_runtime() {
+  [ -r "${SEED_VERSION_FILE}" ] || return 1
+  [ -f "${SEED_DIR}/package.json" ] || return 1
+  [ -f "${SEED_DIR}/dist/provider-node/server.js" ] || return 1
+  seed_version="$(cat "${SEED_VERSION_FILE}" 2>/dev/null || true)"
+  case "${seed_version}" in
+    ''|*[!0-9A-Za-z.-]*) return 1 ;;
+  esac
+
+  runtime_root="${DEFAULT_DATA_DIR}/runtime"
+  versions_dir="${runtime_root}/versions"
+  target_dir="${versions_dir}/${seed_version}"
+  mkdir -p "${versions_dir}"
+  chmod 700 "${runtime_root}" "${versions_dir}" 2>/dev/null || true
+  if [ ! -f "${target_dir}/package.json" ] || [ ! -f "${target_dir}/dist/provider-node/server.js" ]; then
+    rm -rf "${target_dir}"
+    staging_dir="${versions_dir}/.${seed_version}.seeding.$$"
+    rm -rf "${staging_dir}"
+    if command -v ditto >/dev/null 2>&1; then
+      ditto --norsrc "${SEED_DIR}" "${staging_dir}"
+    else
+      mkdir -p "${staging_dir}"
+      cp -R "${SEED_DIR}/." "${staging_dir}/"
+    fi
+    if ! mv "${staging_dir}" "${target_dir}" 2>/dev/null; then
+      rm -rf "${staging_dir}"
+      [ -f "${target_dir}/dist/provider-node/server.js" ] || return 1
+    fi
+  fi
+
+  temporary_link="${runtime_root}/.current-seeding.$$"
+  rm -f "${temporary_link}"
+  ln -s "versions/${seed_version}" "${temporary_link}"
+  mv -fh "${temporary_link}" "$(runtime_current_dir)"
+}
+
+resolve_app_dir() {
+  current_dir="$(runtime_current_dir)"
+  if [ -f "${current_dir}/package.json" ] && [ -f "${current_dir}/dist/provider-node/server.js" ]; then
+    printf '%s\n' "${current_dir}"
+    return 0
+  fi
+  install_seed_runtime >/dev/null 2>&1 || true
+  if [ -f "${current_dir}/package.json" ] && [ -f "${current_dir}/dist/provider-node/server.js" ]; then
+    printf '%s\n' "${current_dir}"
+    return 0
+  fi
+  if [ -f "${LEGACY_APP_DIR}/package.json" ] && [ -f "${LEGACY_APP_DIR}/dist/provider-node/server.js" ]; then
+    printf '%s\n' "${LEGACY_APP_DIR}"
+    return 0
+  fi
+  echo "Provider Node runtime is missing. Reinstall the macOS migration package." >&2
+  return 1
+}
+
+node_is_supported() {
+  [ -n "${1:-}" ] && [ -x "$1" ] || return 1
+  "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)' >/dev/null 2>&1
+}
+
+resolve_cli_path() {
+  app_dir="$1"
+  if [ -f "${app_dir}/bin/provider-node-cli.mjs" ]; then
+    printf '%s\n' "${app_dir}/bin/provider-node-cli.mjs"
+  else
+    printf '%s\n' "${INSTALL_DIR}/bin/provider-node-cli.mjs"
+  fi
+}
 
 find_node() {
   if [ -n "${PROVIDER_NODE_NODE:-}" ] && [ -x "${PROVIDER_NODE_NODE}" ]; then
@@ -29,22 +105,25 @@ find_node() {
   # PATH (nvm/fnm/volta) — launchd does not load the login shell environment.
   if [ -r "${NODE_HINT_FILE}" ]; then
     hint_node="$(cat "${NODE_HINT_FILE}" 2>/dev/null || true)"
-    if [ -n "${hint_node}" ] && [ -x "${hint_node}" ]; then
+    if node_is_supported "${hint_node}"; then
       printf '%s\n' "${hint_node}"
       return 0
     fi
   fi
 
   for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-    if [ -x "${candidate}" ]; then
+    if node_is_supported "${candidate}"; then
       printf '%s\n' "${candidate}"
       return 0
     fi
   done
 
   if command -v node >/dev/null 2>&1; then
-    command -v node
-    return 0
+    path_node="$(command -v node)"
+    if node_is_supported "${path_node}"; then
+      printf '%s\n' "${path_node}"
+      return 0
+    fi
   fi
 
   return 1
@@ -53,13 +132,12 @@ find_node() {
 ensure_node() {
   NODE_BIN="$(find_node || true)"
   if [ -z "${NODE_BIN}" ]; then
-    echo "Provider Node requires Node.js 20 or newer. Install Node.js, then run: wokey-node restart" >&2
+    echo "Provider Node requires Node.js 22.22.2 or newer. Install the current Node.js LTS, then run: wokey-node restart" >&2
     exit 70
   fi
 
-  NODE_MAJOR="$("${NODE_BIN}" -p "Number(process.versions.node.split('.')[0])")"
-  if [ "${NODE_MAJOR}" -lt 20 ]; then
-    echo "Provider Node requires Node.js 20 or newer. Found $("${NODE_BIN}" --version)." >&2
+  if ! "${NODE_BIN}" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)' >/dev/null 2>&1; then
+    echo "Provider Node requires Node.js 22.22.2 or newer. Found $("${NODE_BIN}" --version)." >&2
     exit 70
   fi
 }
@@ -108,6 +186,11 @@ probe();
 serve() {
   ensure_node
   provider_env
+  if [ -f "${BOOTSTRAP}" ]; then
+    "${NODE_BIN}" "${BOOTSTRAP}"
+  fi
+  export PROVIDER_BOOTSTRAP_MANAGES_UPGRADE_START=1
+  APP_DIR="$(resolve_app_dir)"
   cd "${APP_DIR}"
   exec "${NODE_BIN}" dist/provider-node/server.js
 }
@@ -200,29 +283,27 @@ restart_service() {
 }
 
 update_node() {
-  if ! command -v curl >/dev/null 2>&1; then
-    echo "curl is required to update Wokey Provider Node." >&2
-    exit 69
+  automatic=0
+  if [ "${1:-}" = "--automatic" ]; then
+    automatic=1
+    shift
   fi
-  if ! command -v bash >/dev/null 2>&1; then
-    echo "bash is required to update Wokey Provider Node." >&2
-    exit 69
+  if [ -n "${1:-}" ]; then
+    echo "Usage: provider-node update [--automatic]" >&2
+    exit 64
   fi
-  if ! command -v mktemp >/dev/null 2>&1; then
-    echo "mktemp is required to update Wokey Provider Node." >&2
-    exit 69
+  ensure_node
+  provider_env
+  APP_DIR="$(resolve_app_dir)"
+  updater="${APP_DIR}/dist/provider-node/macos-runtime-updater.js"
+  if [ ! -f "${updater}" ]; then
+    echo "This installation cannot perform user-scoped updates. Install the latest macOS migration package once." >&2
+    exit 66
   fi
-
-  base_url="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_DOWNLOAD_BASE_URL}}"
-  base_url="${base_url%/}"
-  tmpdir="$(mktemp -d)"
-  trap 'rm -rf "${tmpdir}"' EXIT
-  installer="${tmpdir}/install.sh"
-
-  echo "Downloading Wokey Provider Node installer from ${base_url}/install.sh"
-  curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${base_url}/install.sh?update=$(date +%s)" -o "${installer}"
-  chmod 755 "${installer}"
-  WOKEY_PROVIDER_NODE_BASE_URL="${base_url}" bash "${installer}"
+  "${NODE_BIN}" "${updater}"
+  if [ "${automatic}" -eq 0 ]; then
+    restart_service
+  fi
 }
 
 uninstall_node() {
@@ -298,14 +379,18 @@ auth_cli() {
   ensure_node
   provider_env
   export PROVIDER_NODE_CLI_BASE_URL="${PROVIDER_NODE_CLI_BASE_URL:-http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}}"
-  exec "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" "$@"
+  APP_DIR="$(resolve_app_dir)"
+  CLI_PATH="$(resolve_cli_path "${APP_DIR}")"
+  exec "${NODE_BIN}" "${CLI_PATH}" "$@"
 }
 
 print_cli_status() {
   export PROVIDER_NODE_CLI_BASE_URL="${PROVIDER_NODE_CLI_BASE_URL:-http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}}"
-  if "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" api-status >/dev/null 2>&1; then
+  APP_DIR="$(resolve_app_dir)"
+  CLI_PATH="$(resolve_cli_path "${APP_DIR}")"
+  if "${NODE_BIN}" "${CLI_PATH}" api-status >/dev/null 2>&1; then
     echo
-    "${NODE_BIN}" "${APP_DIR}/../bin/provider-node-cli.mjs" api-status || true
+    "${NODE_BIN}" "${CLI_PATH}" api-status || true
   fi
 }
 
@@ -346,6 +431,7 @@ case "${1:-menu}" in
     ;;
   version)
     ensure_node
+    APP_DIR="$(resolve_app_dir)"
     cd "${APP_DIR}"
     "${NODE_BIN}" -e "const pkg=require('./package.json'); console.log(pkg.version)"
     ;;
@@ -353,7 +439,7 @@ case "${1:-menu}" in
     ensure_node
     provider_env
     echo "node=${NODE_BIN}"
-    echo "app=${APP_DIR}"
+    echo "app=$(resolve_app_dir)"
     echo "config=${PROVIDER_CONFIG_PATH}"
     echo "console=http://${PROVIDER_CONSOLE_HOST}:${PROVIDER_CONSOLE_PORT}/"
     ;;

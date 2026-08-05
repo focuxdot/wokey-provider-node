@@ -4,11 +4,13 @@ The macOS package installs Wokey Provider Node as a LaunchAgent-backed local dae
 
 ## Installed Files
 
-- `/usr/local/wokey-provider-node/app`
 - `/usr/local/wokey-provider-node/bin/provider-node`
+- `/usr/local/wokey-provider-node/bin/bootstrap.mjs`
 - `/usr/local/bin/wokey-node`
 - `/Library/LaunchAgents/ai.wokey.provider-node.plist`
 - `~/Library/Application Support/Wokey Provider Node/provider-node.json`
+- `~/Library/Application Support/Wokey Provider Node/runtime/versions/<version>`
+- `~/Library/Application Support/Wokey Provider Node/runtime/current`
 
 ## Build
 
@@ -28,7 +30,7 @@ The installer downloads `checksums.txt`, verifies the package SHA-256, then runs
 
 ### Node.js runtime
 
-Provider Node runs on Node.js 20+. If a suitable Node.js is not already present, the installer installs it automatically — via Homebrew when available, otherwise the official universal Node.js `.pkg` from nodejs.org (Intel and Apple Silicon). To set it up yourself instead, install Node.js 20+ from [nodejs.org](https://nodejs.org) (or `brew install node`) before running the installer.
+Provider Node runs on Node.js 22.22.2+. If a suitable Node.js is not already present, the installer installs it automatically — via Homebrew when available, otherwise the official universal Node.js `.pkg` from nodejs.org (Intel and Apple Silicon). To set it up yourself instead, install the current Node.js LTS from [nodejs.org](https://nodejs.org) (or `brew install node`) before running the installer.
 
 ## Troubleshooting
 
@@ -49,9 +51,18 @@ wokey-node update
 wokey-node status
 ```
 
-The updater downloads the latest signed release installer, verifies the
-artifact, reinstalls the package, and restarts the LaunchAgent. It keeps the
-node binding and local data.
+The first migration from an older installation uses the `.pkg` once and macOS
+may request an administrator password because the stable launcher and
+LaunchAgent live in system locations. Later updates do not reinstall the
+package and do not use `sudo`.
+
+The updater verifies the release's Sigstore bundle, GitHub Actions workflow
+identity, transparency-log proof, signed checksum, and the hash sent by the
+Wokey Platform. It stages the new runtime in the user's data directory, swaps
+`runtime/current` atomically, then restarts the LaunchAgent. The previous
+runtime stays available for local rollback. A new runtime is marked stable
+after 60 seconds; three failed starts roll back before the broken runtime is
+launched again.
 
 ## Uninstall
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.70}"
+VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.71}"
 PACKAGE_REVISION="${WOKEY_PROVIDER_NODE_PACKAGE_REVISION:-${VERSION}}"
 DEFAULT_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/download/v${VERSION}"
 BASE_URL="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_BASE_URL}}"
@@ -47,13 +47,13 @@ signature_required() {
   esac
 }
 
-node_major() {
-  node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0
-}
-
 node_ok() {
   command -v node >/dev/null 2>&1 || return 1
-  [ "$(node_major)" -ge 20 ]
+  if [ "$(uname -s)" = "Darwin" ]; then
+    node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)' >/dev/null 2>&1
+  else
+    [ "$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)" -ge 20 ]
+  fi
 }
 
 # Run Debian/Ubuntu package operations without opening debconf/needrestart
@@ -155,10 +155,10 @@ install_node_macos() {
   # No Homebrew: the official universal .pkg works on every macOS and arch.
   local ver pkg url
   ver="$(latest_lts_version || true)"
-  [ -n "${ver}" ] || fail "could not resolve the latest Node.js LTS version from nodejs.org. Install Node.js 20+ from https://nodejs.org and rerun."
+  [ -n "${ver}" ] || fail "could not resolve the latest Node.js LTS version from nodejs.org. Install Node.js 22.22.2+ from https://nodejs.org and rerun."
   url="https://nodejs.org/dist/${ver}/node-${ver}.pkg"
   curl -fsIL --connect-timeout 10 --max-time 30 "${url}" >/dev/null 2>&1 \
-    || fail "Node.js ${ver} package is not available yet. Install Node.js 20+ from https://nodejs.org and rerun."
+    || fail "Node.js ${ver} package is not available yet. Install Node.js 22.22.2+ from https://nodejs.org and rerun."
   pkg="${INSTALLER_TMPDIR:-$(mktemp -d)}/node-${ver}.pkg"
   log "Installing Node.js ${ver} from the official package"
   download "${url}" "${pkg}"
@@ -167,20 +167,20 @@ install_node_macos() {
   export PATH="/usr/local/bin:${PATH}"
 }
 
-# Ensure a Node.js 20+ runtime is present, installing one automatically if not.
+# Ensure a suitable Node.js runtime is present, installing one automatically if not.
 ensure_node() {
   if node_ok; then
     return 0
   fi
   if command -v node >/dev/null 2>&1; then
-    log "Node.js $(node --version) is too old (Node.js 20+ required); installing a newer Node.js automatically"
+    log "Node.js $(node --version) is too old (Node.js 20+ required; macOS updates require 22.22.2+); installing a newer Node.js automatically"
   else
-    log "Node.js 20+ was not found; installing it automatically"
+    log "A suitable Node.js runtime was not found; installing it automatically"
   fi
   case "$(uname -s)" in
     Darwin) install_node_macos ;;
     Linux) install_node_linux ;;
-    *) fail "automatic Node.js install is not supported on $(uname -s). Install Node.js 20+ from https://nodejs.org and rerun." ;;
+    *) fail "automatic Node.js install is not supported on $(uname -s). Install the current Node.js LTS from https://nodejs.org and rerun." ;;
   esac
   # Drop any cached lookup of an old `node`; each installer above puts the new one
   # on PATH itself (tarball prepends /usr/local/bin; brew/apk/pkg use standard
@@ -188,7 +188,7 @@ ensure_node() {
   # freshly installed node (e.g. Homebrew's /opt/homebrew/bin) with a stale one.
   hash -r 2>/dev/null || true
   if ! node_ok; then
-    fail "automatic Node.js installation did not complete. Install Node.js 20+ from https://nodejs.org, open a new terminal, then rerun this installer."
+    fail "automatic Node.js installation did not complete. Install the current Node.js LTS from https://nodejs.org, open a new terminal, then rerun this installer."
   fi
   log "Using Node.js $(node --version)"
 }
