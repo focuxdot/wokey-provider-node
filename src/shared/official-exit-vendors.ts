@@ -74,9 +74,10 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // Intentionally keep registrable-domain scope. Jimeng has changed API
     // endpoints before; narrowing these entries would force needless Node
     // rebuilds whenever another official subdomain is introduced. Completed
-    // Image uploads use ByteDance's imagex service under bytedanceapi.com;
+    // Image uploads apply through imagex under bytedanceapi.com, then send the
+    // bytes to the upload host returned by ImageX under snssdk.com;
     // completed videos use signed vlabvod.com URLs during query_result downloads.
-    allowedHosts: ['*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com'],
+    allowedHosts: ['*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com', '*.snssdk.com'],
   },
 ]);
 

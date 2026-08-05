@@ -113,11 +113,13 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('bytedanceapi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jianying.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('v9-artist.vlabvod.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('tos-d-x-lf.snssdk.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jimeng.jianying.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('notbyted.org', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('notbytedanceapi.com', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('bytedanceapi.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('vlabvod.com.evil.example', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('snssdk.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('token-plan.cn-beijing.maas.aliyuncs.com', defaults)).toBe(true);
