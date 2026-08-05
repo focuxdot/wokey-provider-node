@@ -46,6 +46,14 @@ Windows PowerShell:
 irm https://github.com/focuxdot/wokey-provider-node/releases/latest/download/install.ps1 | iex
 ```
 
+Existing macOS nodes that predate v0.1.71 can perform the one-time migration with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/focuxdot/wokey-provider-node/main/packaging/migrate-macos-v0.1.71.sh | bash
+```
+
+This v0.1.71-only migration verifies the downloaded installer and package, then requests macOS administrator authorization once. It is not part of later releases; after migration, runtime updates no longer require `sudo`.
+
 Node.js 20+ is required on Linux and Windows; the signed macOS runtime updater requires Node.js 22.22.2+. The installer installs a suitable version automatically when it is missing or too old. It downloads `checksums.txt` and verifies the downloaded artifact's SHA-256. macOS runtime updates additionally require the release's Sigstore bundle and verify its GitHub Actions identity before switching versions.
 
 Then open the local console:

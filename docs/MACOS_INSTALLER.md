@@ -43,7 +43,19 @@ curl http://127.0.0.1:16888/api/status
 
 ## Update
 
-Run the update as the same macOS user that runs Provider Node:
+For an existing node that still uses the old system-level runtime, run the
+one-time migration entrypoint as the same macOS user that runs Provider Node:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/focuxdot/wokey-provider-node/main/packaging/migrate-macos-v0.1.71.sh | bash
+```
+
+This entrypoint is pinned to the v0.1.71 migration release. It downloads that
+release's `install.sh` and `checksums.txt` and verifies the installer's SHA-256
+before executing it. macOS asks for administrator authorization once during
+this migration; later releases do not include or need this migration script.
+
+After migration, normal manual updates use:
 
 ```bash
 wokey-node version
