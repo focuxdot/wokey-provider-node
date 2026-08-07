@@ -186,6 +186,20 @@ describe('console routes', () => {
     expect(script).toContain('if (auto && isInvalidBindingCodeError(error)) clearLaunchBindingParams();');
   });
 
+  it('uploads only generic runtime identity as part of the binding request', () => {
+    const server = readFileSync(new URL('../src/provider-node/server.ts', import.meta.url), 'utf8');
+    const bridge = readFileSync(new URL('../src/provider-node/bridge.ts', import.meta.url), 'utf8');
+    const protocol = readFileSync(new URL('../src/shared/protocol.ts', import.meta.url), 'utf8');
+    const hello = protocol.slice(
+      protocol.indexOf('export interface ProviderHello'),
+      protocol.indexOf('export interface ProviderNodeRuntimeIdentity'),
+    );
+
+    expect(server).toContain('runtimeIdentity: currentProviderNodeRuntimeIdentity()');
+    expect(bridge).not.toContain('runtimeIdentity');
+    expect(hello).not.toContain('runtimeIdentity');
+  });
+
   it('maps structured error codes to actionable bilingual console messages', () => {
     const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
 

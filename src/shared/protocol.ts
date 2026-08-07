@@ -101,6 +101,12 @@ export interface ProviderHello {
   acceptingSessions?: boolean;
 }
 
+export interface ProviderNodeRuntimeIdentity {
+  osType: string;
+  osVersion: string;
+  osArch: string;
+}
+
 export interface ProviderHeartbeat {
   type: 'provider.heartbeat';
   nodeId: string;

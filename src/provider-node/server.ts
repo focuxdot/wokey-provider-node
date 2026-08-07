@@ -23,6 +23,7 @@ import {
   type ProviderUpstreamMode,
 } from './config.js';
 import { ProviderBridge } from './bridge.js';
+import { currentProviderNodeRuntimeIdentity } from './runtime-identity.js';
 import { BoundedDevicePoller, type DevicePollFailure, type DevicePollSnapshot } from './bounded-device-poller.js';
 import { AsyncMutex, SingleFlight } from './single-flight.js';
 import { detectDreaminaCli, JimengAuthorizationHandler, type DreaminaCliDescriptor } from './jimeng-auth.js';
@@ -562,6 +563,7 @@ app.post('/api/platform/bind', async (request, reply) => {
     bindingCode: body.bindingCode.trim(),
     nodeId: config.nodeId,
     nodeVersion: config.nodeVersion,
+    runtimeIdentity: currentProviderNodeRuntimeIdentity(),
   });
 
   let data: BindRedemptionData | undefined;
