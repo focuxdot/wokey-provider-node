@@ -66,20 +66,18 @@ first installation, open a new terminal so the updated user `Path` is loaded.
 
 ## Uninstall
 
-Remove the Scheduled Task first:
+Remove the Scheduled Task and runtime while keeping local data:
 
 ```powershell
-wokey-node uninstall-service
+wokey-node uninstall
 ```
 
-This command keeps both the runtime and user data. Remove the runtime files:
+Remove the runtime and local node data, including the node binding, credentials,
+and local settings:
 
 ```powershell
-Remove-Item "$env:LOCALAPPDATA\WokeyProviderNode" -Recurse -Force
+wokey-node uninstall --purge
 ```
 
-To purge the node binding, credentials, and other local data too:
-
-```powershell
-Remove-Item "$env:APPDATA\Wokey Provider Node" -Recurse -Force
-```
+The uninstaller also removes the Provider Node wrapper directory from the user
+`Path`. Runtime cleanup finishes immediately after the wrapper process exits.

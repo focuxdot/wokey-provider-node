@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -20,6 +20,30 @@ afterEach(() => {
 });
 
 describe('macOS runtime updater verification', () => {
+  it('runs the CLI entrypoint when invoked through the current runtime symlink', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wokey-runtime-updater-entrypoint-'));
+    directories.push(dir);
+    const linkedDirectory = join(dir, 'runtime', 'current', 'dist', 'provider-node');
+    mkdirSync(linkedDirectory, { recursive: true });
+    const linkedEntrypoint = join(linkedDirectory, 'macos-runtime-updater.ts');
+    symlinkSync(join(process.cwd(), 'src', 'provider-node', 'macos-runtime-updater.ts'), linkedEntrypoint);
+
+    const result = spawnSync(join(process.cwd(), 'node_modules', '.bin', 'tsx'), [linkedEntrypoint], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: dir,
+        PROVIDER_CONFIG_PATH: join(dir, 'provider-node.json'),
+        WOKEY_PROVIDER_NODE_VERSION: '9.9.9',
+        WOKEY_PROVIDER_NODE_TEST_RELEASE_BASE_URL: 'https://invalid.example',
+        WOKEY_PROVIDER_NODE_ALLOW_TEST_RELEASE_BASE_URL: '0',
+      },
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Provider Node update failed: custom release base URL is not allowed');
+  });
+
   it('stages and atomically activates a verified user-scoped runtime', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wokey-runtime-updater-'));
     directories.push(dir);

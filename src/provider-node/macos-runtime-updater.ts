@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -227,7 +228,16 @@ async function main(): Promise<void> {
   process.stdout.write(`Installed Wokey Provider Node ${result.targetVersion} (previous ${result.previousVersion}).\n`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+function isMainModule(moduleUrl: string, entryPath: string | undefined): boolean {
+  if (!entryPath) return false;
+  try {
+    return realpathSync(fileURLToPath(moduleUrl)) === realpathSync(entryPath);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
   main().catch((error: unknown) => {
     process.stderr.write(`Provider Node update failed: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);

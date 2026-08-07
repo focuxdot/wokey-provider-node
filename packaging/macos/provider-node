@@ -295,6 +295,7 @@ update_node() {
   ensure_node
   provider_env
   APP_DIR="$(resolve_app_dir)"
+  APP_DIR="$(cd "${APP_DIR}" && pwd -P)"
   updater="${APP_DIR}/dist/provider-node/macos-runtime-updater.js"
   if [ ! -f "${updater}" ]; then
     echo "This installation cannot perform user-scoped updates. Install the latest macOS migration package once." >&2
@@ -405,7 +406,8 @@ case "${1:-menu}" in
     restart_service
     ;;
   update)
-    update_node
+    shift
+    update_node "$@"
     ;;
   uninstall)
     shift

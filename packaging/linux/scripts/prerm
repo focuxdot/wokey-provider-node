@@ -4,9 +4,9 @@ set -eu
 cat <<'EOF'
 Removing Wokey Provider Node package.
 
-Per-user systemd services and user data are not removed automatically.
-Before removing the package, each Provider Node user can run:
-  wokey-node uninstall-service
+When the package is removed through `wokey-node uninstall`, the per-user
+service is stopped first. Direct package-manager removal cannot discover every
+user service. User data is never removed by the package manager.
 EOF
 
 exit 0

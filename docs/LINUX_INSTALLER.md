@@ -74,28 +74,22 @@ If the command is not on `PATH`, use:
 
 ## Uninstall
 
-First remove the per-user background service while keeping local data:
+Remove the background service and runtime while keeping local data:
 
 ```bash
-wokey-node uninstall-service
+wokey-node uninstall
 ```
 
-For a `.deb` installation, remove the runtime package:
+The command automatically detects whether Provider Node was installed from the
+`.deb` package or tarball and removes the matching runtime files.
+
+Remove the runtime and local node data, including the node binding, credentials,
+and local settings:
 
 ```bash
-sudo apt remove wokey-provider-node
+wokey-node uninstall --purge
 ```
 
-For a tarball installation, remove these runtime paths after stopping the
-service:
-
-```bash
-sudo rm -f /usr/local/bin/wokey-node
-sudo rm -rf /opt/wokey-provider-node
-sudo rm -rf /usr/share/doc/wokey-provider-node
-sudo rm -rf /usr/share/wokey-provider-node
-```
-
-Both paths intentionally keep local node data in
-`${XDG_CONFIG_HOME:-~/.config}/wokey-provider-node`. Delete that directory only
-when you also want to remove the node binding, credentials, and local settings.
+The default command intentionally keeps local node data in
+`${XDG_CONFIG_HOME:-~/.config}/wokey-provider-node`. Package removal may request
+administrator authorization through `sudo`.

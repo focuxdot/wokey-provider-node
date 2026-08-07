@@ -14,8 +14,9 @@ function fixture(): { dir: string; home: string; installDir: string } {
   const seed = join(installDir, 'seed', 'runtime');
   mkdirSync(join(seed, 'dist', 'provider-node'), { recursive: true });
   mkdirSync(join(installDir, 'bin'), { recursive: true });
-  writeFileSync(join(seed, 'package.json'), JSON.stringify({ version: '0.1.71' }));
+  writeFileSync(join(seed, 'package.json'), JSON.stringify({ version: '0.1.71', type: 'module' }));
   writeFileSync(join(seed, 'dist', 'provider-node', 'server.js'), '');
+  writeFileSync(join(seed, 'dist', 'provider-node', 'macos-runtime-updater.js'), 'process.stdout.write(import.meta.url + "\\n");\n');
   writeFileSync(join(installDir, 'seed', 'VERSION'), '0.1.71\n');
   return { dir, home, installDir };
 }
@@ -25,6 +26,24 @@ afterEach(() => {
 });
 
 describe.skipIf(process.platform !== 'darwin')('macOS stable wrapper', () => {
+  it('runs automatic updates from a canonical runtime path without restarting the service', () => {
+    const { home, installDir } = fixture();
+    const output = execFileSync('/bin/sh', ['packaging/macos/provider-node', 'update', '--automatic'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: home,
+        PROVIDER_NODE_INSTALL_DIR: installDir,
+        PROVIDER_NODE_NODE: process.execPath,
+      },
+    }).trim();
+
+    expect(output).toContain('/runtime/versions/0.1.71/dist/provider-node/macos-runtime-updater.js');
+    expect(output).not.toContain('/runtime/current/');
+    expect(output).not.toContain('Wokey Provider Node started.');
+  });
+
   it('lazily initializes a user runtime from the root-owned seed', () => {
     const { home, installDir } = fixture();
     const output = execFileSync('/bin/sh', ['packaging/macos/provider-node', 'version'], {

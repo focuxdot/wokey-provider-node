@@ -127,15 +127,13 @@ wokey-node update
 wokey-node status
 ```
 
-Updates preserve the node binding and local data. Uninstall commands are
-platform-specific:
+Updates preserve the node binding and local data. Native platforms share the
+same uninstall commands:
 
 - macOS: `wokey-node uninstall`; add `--purge` to remove local data.
-- Linux: run `wokey-node uninstall-service`, then remove the `.deb` package or
-  tarball runtime. Local data remains under `~/.config/wokey-provider-node`.
-- Windows: run `wokey-node uninstall-service`, then remove the runtime under
-  `%LOCALAPPDATA%\WokeyProviderNode`. Local data remains under
-  `%APPDATA%\Wokey Provider Node`.
+- Linux: `wokey-node uninstall`; add `--purge` to remove local data. The command
+  automatically handles `.deb` and tarball installations.
+- Windows: `wokey-node uninstall`; add `--purge` to remove local data.
 - Docker: `docker compose down` keeps the data volume; `docker compose down -v`
   removes it.
 

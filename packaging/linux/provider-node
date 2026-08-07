@@ -206,7 +206,7 @@ docker_management_hint() {
       echo "Docker mode: Provider Node is managed by the container runtime."
       echo "Use: docker compose up -d"
       ;;
-    uninstall-service)
+    uninstall-service|uninstall)
       echo "Docker mode: remove the container with Docker Compose."
       echo "Use: docker compose down"
       echo "User data is kept in the Docker volume unless that volume is removed."
@@ -340,6 +340,104 @@ uninstall_service() {
   echo "User data was kept at: ${DATA_DIR}"
 }
 
+remove_user_service_for_uninstall() {
+  if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user disable --now "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    rm -f "${UNIT_PATH}"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+  else
+    rm -f "${UNIT_PATH}"
+  fi
+}
+
+is_deb_install() {
+  command -v dpkg-query >/dev/null 2>&1 \
+    && dpkg-query -W -f='${Status}' wokey-provider-node 2>/dev/null \
+      | grep -q '^install ok installed$'
+}
+
+run_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo "sudo is required to remove the Wokey Provider Node runtime." >&2
+    exit 69
+  fi
+}
+
+remove_local_data() {
+  case "${DATA_DIR}" in
+    ""|/|"${HOME}"|"${XDG_CONFIG_HOME:-${HOME}/.config}")
+      echo "Refusing to purge unsafe data path: ${DATA_DIR}" >&2
+      exit 64
+      ;;
+  esac
+  case "${DATA_DIR}" in
+    */wokey-provider-node)
+      ;;
+    *)
+      if [ ! -f "${DATA_DIR}/provider-node.json" ]; then
+        echo "Refusing to purge unrecognized data path without provider-node.json: ${DATA_DIR}" >&2
+        exit 64
+      fi
+      ;;
+  esac
+  rm -rf "${DATA_DIR}"
+}
+
+remove_deb_runtime() {
+  if command -v apt-get >/dev/null 2>&1; then
+    run_as_root apt-get remove -y wokey-provider-node
+  elif command -v dpkg >/dev/null 2>&1; then
+    run_as_root dpkg --remove wokey-provider-node
+  else
+    echo "Neither apt-get nor dpkg is available to remove the installed package." >&2
+    exit 69
+  fi
+}
+
+uninstall_node() {
+  purge_data="0"
+  if [ "${1:-}" = "--purge" ]; then
+    purge_data="1"
+  elif [ -n "${1:-}" ]; then
+    echo "Usage: wokey-node uninstall [--purge]" >&2
+    exit 64
+  fi
+
+  if is_docker; then
+    docker_management_hint uninstall
+    if [ "${purge_data}" = "1" ]; then
+      echo "To remove the Docker data volume too, use: docker compose down -v"
+    fi
+    return 0
+  fi
+
+  remove_user_service_for_uninstall
+
+  if is_deb_install; then
+    remove_deb_runtime
+  else
+    run_as_root rm -f /usr/local/bin/wokey-node
+    run_as_root rm -rf /opt/wokey-provider-node
+    run_as_root rm -rf /usr/share/doc/wokey-provider-node
+    run_as_root rm -rf /usr/share/wokey-provider-node
+  fi
+
+  if [ "${purge_data}" = "1" ]; then
+    remove_local_data
+  fi
+
+  echo "Wokey Provider Node has been removed."
+  if [ "${purge_data}" = "1" ]; then
+    echo "User data was removed from: ${DATA_DIR}"
+  else
+    echo "User data was kept at: ${DATA_DIR}"
+  fi
+}
+
 service_status() {
   provider_env
   if is_docker; then
@@ -418,6 +516,10 @@ case "${1:-menu}" in
   uninstall-service)
     uninstall_service
     ;;
+  uninstall)
+    shift
+    uninstall_node "$@"
+    ;;
   start|restart)
     restart_service
     ;;
@@ -454,7 +556,7 @@ case "${1:-menu}" in
     doctor
     ;;
   *)
-    echo "Usage: provider-node [menu|serve|open|install-service|uninstall-service|start|restart|update|stop|status|logs|add|bind|list|import|login|paste|version|doctor]" >&2
+    echo "Usage: provider-node [menu|serve|open|install-service|uninstall-service|uninstall|start|restart|update|stop|status|logs|add|bind|list|import|login|paste|version|doctor]" >&2
     exit 64
     ;;
 esac

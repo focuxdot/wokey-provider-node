@@ -221,15 +221,13 @@ Uninstall support differs by platform:
 
 | Platform | Remove runtime or service | Remove local data too |
 | --- | --- | --- |
-| macOS | `wokey-node uninstall` | `wokey-node uninstall --purge` |
-| Linux `.deb` | `wokey-node uninstall-service`, then `sudo apt remove wokey-provider-node` | Also remove `~/.config/wokey-provider-node` |
-| Linux tarball | `wokey-node uninstall-service`, then remove the installed runtime paths listed in [Linux Installer](docs/LINUX_INSTALLER.md) | Also remove `~/.config/wokey-provider-node` |
-| Windows | `wokey-node uninstall-service`, then remove `%LOCALAPPDATA%\WokeyProviderNode` | Also remove `%APPDATA%\Wokey Provider Node` |
+| macOS / Linux / Windows | `wokey-node uninstall` | `wokey-node uninstall --purge` |
 | Docker | `docker compose down` | `docker compose down -v` |
 
 `uninstall-service` only removes the background service or Scheduled Task; it
-does not remove the runtime or user data. See the platform installer documents
-for full commands and paths.
+does not remove the runtime or user data. Native platforms share the same
+`uninstall` interface; Linux automatically handles both `.deb` and tarball
+installations. See the platform installer documents for full behavior.
 
 ## Verifying A Release
 

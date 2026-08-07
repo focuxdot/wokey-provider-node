@@ -222,11 +222,83 @@ function Update-Node {
 }
 
 function Uninstall-Service {
+  Remove-Service
+  Write-Host "User data was kept at: $DataDir"
+}
+
+function Remove-Service {
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   Stop-Node
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
   Write-Host "Wokey Provider Node scheduled task removed."
-  Write-Host "User data was kept at: $DataDir"
+}
+
+function Remove-UserPath($PathToRemove) {
+  $current = [Environment]::GetEnvironmentVariable("Path", "User")
+  if (-not $current) { return }
+  $kept = @($current -split ";" | Where-Object {
+    $_ -and $_.TrimEnd("\") -ine $PathToRemove.TrimEnd("\")
+  })
+  [Environment]::SetEnvironmentVariable("Path", ($kept -join ";"), "User")
+}
+
+function Assert-SafeRemovalPath($Path, $ProtectedRoot, $ExpectedPath, $MarkerPath) {
+  if (-not $Path) { throw "Refusing to remove an empty path." }
+  $resolved = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+  $protected = [IO.Path]::GetFullPath($ProtectedRoot).TrimEnd("\")
+  $expected = [IO.Path]::GetFullPath($ExpectedPath).TrimEnd("\")
+  $driveRoot = [IO.Path]::GetPathRoot($resolved).TrimEnd("\")
+  if ($resolved -ieq $protected -or $resolved -ieq $driveRoot) {
+    throw "Refusing to remove unsafe path: $resolved"
+  }
+  if ($resolved -ine $expected -and -not (Test-Path (Join-Path $resolved $MarkerPath))) {
+    throw "Refusing to remove unrecognized path without ${MarkerPath}: $resolved"
+  }
+}
+
+function Start-UninstallCleanup([bool]$PurgeData) {
+  Assert-SafeRemovalPath $AppRoot $env:LOCALAPPDATA $DefaultAppRoot "bin\wokey-node.ps1"
+  $paths = @($AppRoot)
+  if ($PurgeData) {
+    Assert-SafeRemovalPath $DataDir $env:APPDATA $DefaultDataDir "provider-node.json"
+    $paths += $DataDir
+  }
+
+  $pathsJson = $paths | ConvertTo-Json -Compress
+  $pathsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pathsJson))
+  $parentPid = $PID
+  $cleanupScript = @"
+`$ErrorActionPreference = "SilentlyContinue"
+Wait-Process -Id $parentPid
+Start-Sleep -Milliseconds 750
+`$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("$pathsBase64"))
+`$paths = ConvertFrom-Json `$json
+foreach (`$path in @(`$paths)) { Remove-Item -LiteralPath `$path -Recurse -Force }
+"@
+  $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cleanupScript))
+  Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", $encodedCommand
+  ) | Out-Null
+}
+
+function Uninstall-Node {
+  if ($Rest.Count -gt 1 -or ($Rest.Count -eq 1 -and $Rest[0] -ne "--purge")) {
+    throw "Usage: wokey-node uninstall [--purge]"
+  }
+  $purgeData = $Rest.Count -eq 1
+
+  Remove-Service
+  Remove-UserPath $BinDir
+  Start-UninstallCleanup $purgeData
+
+  Write-Host "Wokey Provider Node has been removed."
+  if ($purgeData) {
+    Write-Host "User data was removed from: $DataDir"
+  } else {
+    Write-Host "User data was kept at: $DataDir"
+  }
 }
 
 function Show-Status {
@@ -309,6 +381,7 @@ switch ($Command) {
   "start-daemon" { Start-Daemon }
   "install-service" { Install-Service }
   "uninstall-service" { Uninstall-Service }
+  "uninstall" { Uninstall-Node }
   "start" { Restart-Service }
   "restart" { Restart-Service }
   "update" { Update-Node }
