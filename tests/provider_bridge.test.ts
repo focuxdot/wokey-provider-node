@@ -40,6 +40,9 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
       for (const fn of this.handlers[event] || []) fn(...args);
     }
     close() {}
+    terminate() {
+      this.readyState = 3;
+    }
     ping() {
       this.pingCount += 1;
     }
@@ -53,33 +56,25 @@ vi.mock('ws', () => ({ default: FakeWebSocket }));
 
 describe('ProviderBridge reconnect policy', () => {
   it('returns only a locally valid negotiated bulk queue budget', () => {
-    const ready = (connectionQueueBudgetBytes: number) => ({
-      type: 'platform.ready',
-      nodeId: 'node_123',
-      transport: {
-        officialExitDataProtocol: 'binary_v1',
-        bulkTransfer: {
-          initialWindowBytes: 1024 * 1024,
-          connectionQueueBudgetBytes,
+    const ready = (connectionQueueBudgetBytes: number) =>
+      ({
+        type: 'platform.ready',
+        nodeId: 'node_123',
+        transport: {
+          officialExitDataProtocol: 'binary_v1',
+          bulkTransfer: {
+            initialWindowBytes: 1024 * 1024,
+            connectionQueueBudgetBytes,
+          },
         },
-      },
-    }) as const;
+      }) as const;
 
-    expect(selectedOfficialExitBulkTransfer(
-      ready(16 * 1024 * 1024),
-      'binary_v1',
-    )).toEqual({
+    expect(selectedOfficialExitBulkTransfer(ready(16 * 1024 * 1024), 'binary_v1')).toEqual({
       bulkInitialWindowBytes: 1024 * 1024,
       connectionQueueBudgetBytes: 16 * 1024 * 1024,
     });
-    expect(selectedOfficialExitBulkTransfer(
-      ready(16 * 1024 * 1024 + 1),
-      'binary_v1',
-    )).toBeUndefined();
-    expect(selectedOfficialExitBulkTransfer(
-      ready(1024),
-      'binary_v1',
-    )).toBeUndefined();
+    expect(selectedOfficialExitBulkTransfer(ready(16 * 1024 * 1024 + 1), 'binary_v1')).toBeUndefined();
+    expect(selectedOfficialExitBulkTransfer(ready(1024), 'binary_v1')).toBeUndefined();
   });
 
   it('suppresses reconnects for platform-managed close reasons', () => {
@@ -115,6 +110,29 @@ describe('ProviderBridge reconnect policy', () => {
     });
     expect(connection.options.perMessageDeflate).toBe(false);
     expect(connection.options.maxPayload).toBe(1024 * 1024);
+  });
+
+  it('adds scoped credential-channel headers without changing the URL', () => {
+    const connection = buildProviderBridgeWebSocketConnection(
+      {
+        platformWsUrl: 'wss://node.wokey.ai:8443/internal/provider/connect',
+        nodeId: 'node_123',
+        providerNodeSecret: 'secret_123',
+      },
+      false,
+      {
+        credentialBindingId: 'credential_123',
+        connectionToken: 'epoch_token',
+      },
+    );
+
+    expect(connection.url).toBe('wss://node.wokey.ai:8443/internal/provider/connect');
+    expect(connection.options.headers).toMatchObject({
+      'x-provider-node-id': 'node_123',
+      'x-provider-node-secret': 'secret_123',
+      'x-provider-data-channel': 'credential_123',
+      'x-provider-connection-token': 'epoch_token',
+    });
   });
 
   it('does not add node identity to existing connection query parameters', () => {
@@ -243,10 +261,16 @@ describe('ProviderBridge endpoint failover', () => {
 
       // Any inbound Platform frame proves the connection is active and pushes
       // the fallback deadline out, even when no business heartbeat is enabled.
-      socket.emit('message', Buffer.from(JSON.stringify({
-        type: 'platform.ready',
-        nodeId: 'node_123',
-      })), false);
+      socket.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId: 'node_123',
+          }),
+        ),
+        false,
+      );
       await vi.advanceTimersByTimeAsync(30_000);
       expect(socket.pingCount).toBe(1);
 
@@ -265,10 +289,11 @@ describe('ProviderBridge endpoint failover', () => {
       socket.readyState = FakeWebSocket.OPEN;
       socket.emit('open');
 
-      const heartbeats = () => socket.sent
-        .filter((message): message is string => typeof message === 'string')
-        .map((message) => JSON.parse(message) as { type?: string })
-        .filter((message) => message.type === 'provider.heartbeat').length;
+      const heartbeats = () =>
+        socket.sent
+          .filter((message): message is string => typeof message === 'string')
+          .map((message) => JSON.parse(message) as { type?: string })
+          .filter((message) => message.type === 'provider.heartbeat').length;
 
       // One immediate state report on connect.
       expect(heartbeats()).toBe(1);
@@ -329,16 +354,20 @@ describe('ProviderBridge endpoint failover', () => {
       bridge.start();
       fakeSockets[0].readyState = FakeWebSocket.OPEN;
       fakeSockets[0].emit('open');
-      const scheduler = (bridge as unknown as {
-        controlScheduler: { close(): void };
-      }).controlScheduler;
+      const scheduler = (
+        bridge as unknown as {
+          controlScheduler: { close(): void };
+        }
+      ).controlScheduler;
       scheduler.close();
 
-      await expect(bridge.sendCredentialMirrorUpdate({
-        credentialBindingId: 'credential_123',
-        vendor: 'openai',
-        accessToken: 'access_token_123',
-      })).rejects.toThrow('provider_websocket_disconnected');
+      await expect(
+        bridge.sendCredentialMirrorUpdate({
+          credentialBindingId: 'credential_123',
+          vendor: 'openai',
+          accessToken: 'access_token_123',
+        }),
+      ).rejects.toThrow('provider_websocket_disconnected');
     } finally {
       bridge.stop();
     }
@@ -363,47 +392,295 @@ describe('ProviderBridge endpoint failover', () => {
           },
         },
       });
-      const maxConnectionQueueBytes = Number((
-        hello?.transportCapabilities as {
-          officialExitBulkTransfer?: { maxConnectionQueueBytes?: number };
-        }
-      )?.officialExitBulkTransfer?.maxConnectionQueueBytes);
+      const maxConnectionQueueBytes = Number(
+        (
+          hello?.transportCapabilities as {
+            officialExitBulkTransfer?: { maxConnectionQueueBytes?: number };
+          }
+        )?.officialExitBulkTransfer?.maxConnectionQueueBytes,
+      );
 
-      control.emit('message', Buffer.from(JSON.stringify({
-        type: 'platform.ready',
-        nodeId: 'node_123',
-        transport: {
-          officialExitDataProtocol: 'binary_v1',
-          flowControl: 'credit_v1',
-          initialWindowBytes: 256 * 1024,
-          maxBinaryFrameBytes: 64 * 1024,
-          bulkTransfer: {
-            initialWindowBytes: 1024 * 1024,
-            connectionQueueBudgetBytes: maxConnectionQueueBytes,
-          },
-        },
-      })), false);
+      control.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId: 'node_123',
+            transport: {
+              officialExitDataProtocol: 'binary_v1',
+              flowControl: 'credit_v1',
+              initialWindowBytes: 256 * 1024,
+              maxBinaryFrameBytes: 64 * 1024,
+              bulkTransfer: {
+                initialWindowBytes: 1024 * 1024,
+                connectionQueueBudgetBytes: maxConnectionQueueBytes,
+              },
+            },
+          }),
+        ),
+        false,
+      );
       await Promise.resolve();
 
       expect(fakeSockets).toHaveLength(1);
       expect(control.options?.headers).not.toHaveProperty('x-provider-data-channel');
 
+      control.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId: 'node_123',
+            transport: {
+              officialExitDataProtocol: 'binary_v1',
+              bulkTransfer: {
+                initialWindowBytes: 1024 * 1024,
+                connectionQueueBudgetBytes: maxConnectionQueueBytes + 1,
+              },
+            },
+          }),
+        ),
+        false,
+      );
+      await Promise.resolve();
+      expect(
+        (
+          bridge as unknown as {
+            controlScheduler: { maxQueuedBytes: number };
+          }
+        ).controlScheduler.maxQueuedBytes,
+      ).toBe(maxConnectionQueueBytes);
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('opens one independently reconnecting data channel per planned credential', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const hello = control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello');
+      expect(hello).toMatchObject({
+        transportCapabilities: {
+          credentialDataChannels: {
+            protocolVersions: [1],
+            maxChannels: 16,
+            maxConcurrentHandshakes: 4,
+          },
+        },
+      });
+
+      control.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId: 'node_123',
+            credentialDataChannels: {
+              protocolVersion: 1,
+              epochId: 'epoch_1',
+              revision: 1,
+              connectionToken: 'epoch_token',
+              credentialBindingIds: ['credential_a', 'credential_b', 'credential_c'],
+            },
+          }),
+        ),
+        false,
+      );
+      await Promise.resolve();
+
+      expect(fakeSockets).toHaveLength(4);
+      expect(fakeSockets.slice(1).map((socket) => socket.options?.headers?.['x-provider-data-channel'])).toEqual([
+        'credential_a',
+        'credential_b',
+        'credential_c',
+      ]);
+      expect(
+        fakeSockets
+          .slice(1)
+          .every((socket) => socket.options?.headers?.['x-provider-connection-token'] === 'epoch_token'),
+      ).toBe(true);
+      expect(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>))
+        .toContainEqual(expect.objectContaining({
+          type: 'provider.credential_data_channels_applied',
+          epochId: 'epoch_1',
+          revision: 1,
+        }));
+      const channelQueueBudgets = [...(
+        bridge as unknown as {
+          credentialDataChannels: {
+            channels: Map<string, { scheduler: { maxQueuedBytes: number } }>;
+          };
+        }
+      ).credentialDataChannels.channels.values()]
+        .map((channel) => channel.scheduler.maxQueuedBytes);
+      expect(channelQueueBudgets).toEqual([
+        Math.floor((16 * 1024 * 1024) / 3),
+        Math.floor((16 * 1024 * 1024) / 3),
+        Math.floor((16 * 1024 * 1024) / 3),
+      ]);
+
+      fakeSockets[2].emit('close', 1006, Buffer.alloc(0));
+      expect(fakeSockets).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(fakeSockets).toHaveLength(5);
+      expect(fakeSockets[4].options?.headers?.['x-provider-data-channel']).toBe('credential_b');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('caps concurrent channel handshakes and advances when one credential becomes ready', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello')?.nodeId);
+      control.emit(
+        'message',
+        Buffer.from(JSON.stringify({
+          type: 'platform.ready',
+          nodeId,
+          credentialDataChannels: {
+            protocolVersion: 1,
+            epochId: 'epoch_capped',
+            revision: 1,
+            connectionToken: 'epoch_token_capped',
+            credentialBindingIds: [
+              'credential_a',
+              'credential_b',
+              'credential_c',
+              'credential_d',
+              'credential_e',
+            ],
+          },
+        })),
+        false,
+      );
+      await Promise.resolve();
+
+      expect(fakeSockets).toHaveLength(5);
+      const firstDataChannel = fakeSockets[1];
+      const credentialChannelState = () => (bridge as unknown as {
+        credentialDataChannels: {
+          channels: Map<string, { state: string }>;
+        };
+      }).credentialDataChannels.channels.get('credential_a')?.state;
+      firstDataChannel.readyState = FakeWebSocket.OPEN;
+      firstDataChannel.emit('open');
+      expect(credentialChannelState()).toBe('awaiting_ready');
+      firstDataChannel.emit(
+        'message',
+        Buffer.from(JSON.stringify({
+          type: 'platform.credential_data_channel_ready',
+          protocolVersion: 1,
+          nodeId,
+          credentialBindingId: 'credential_a',
+          epochId: 'epoch_capped',
+          revision: 1,
+        })),
+        false,
+      );
+      await Promise.resolve();
+      expect(credentialChannelState()).toBe('ready');
+
+      expect(firstDataChannel.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>))
+        .toContainEqual(expect.objectContaining({
+          type: 'provider.credential_data_channel_ready',
+          credentialBindingId: 'credential_a',
+        }));
+      expect(fakeSockets).toHaveLength(6);
+      expect(fakeSockets[5].options?.headers?.['x-provider-data-channel']).toBe('credential_e');
+    }
+    finally {
+      bridge.stop();
+    }
+  });
+
+  it('keeps an unchanged credential handshake valid across a newer plan revision', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello')?.nodeId);
+      const initialPlan = {
+        protocolVersion: 1,
+        epochId: 'epoch_revision_race',
+        revision: 1,
+        connectionToken: 'epoch_token_revision_race',
+        credentialBindingIds: ['credential_a', 'credential_b', 'credential_c'],
+      };
       control.emit('message', Buffer.from(JSON.stringify({
         type: 'platform.ready',
-        nodeId: 'node_123',
-        transport: {
-          officialExitDataProtocol: 'binary_v1',
-          bulkTransfer: {
-            initialWindowBytes: 1024 * 1024,
-            connectionQueueBudgetBytes: maxConnectionQueueBytes + 1,
-          },
+        nodeId,
+        credentialDataChannels: initialPlan,
+      })), false);
+      await Promise.resolve();
+
+      const firstDataChannel = fakeSockets[1];
+      firstDataChannel.readyState = FakeWebSocket.OPEN;
+      firstDataChannel.emit('open');
+      control.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.credential_data_channels_updated',
+        nodeId,
+        plan: {
+          ...initialPlan,
+          revision: 2,
+          credentialBindingIds: [
+            'credential_a',
+            'credential_b',
+            'credential_c',
+            'credential_d',
+          ],
         },
       })), false);
       await Promise.resolve();
+
+      firstDataChannel.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.credential_data_channel_ready',
+        protocolVersion: 1,
+        nodeId,
+        credentialBindingId: 'credential_a',
+        epochId: initialPlan.epochId,
+        revision: initialPlan.revision,
+      })), false);
+      await Promise.resolve();
+
       expect((bridge as unknown as {
-        controlScheduler: { maxQueuedBytes: number };
-      }).controlScheduler.maxQueuedBytes).toBe(maxConnectionQueueBytes);
-    } finally {
+        credentialDataChannels: {
+          channels: Map<string, { state: string }>;
+        };
+      }).credentialDataChannels.channels.get('credential_a')?.state).toBe('ready');
+      expect(firstDataChannel.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>))
+        .toContainEqual(expect.objectContaining({
+          type: 'provider.credential_data_channel_ready',
+          credentialBindingId: 'credential_a',
+          revision: 1,
+        }));
+    }
+    finally {
       bridge.stop();
     }
   });

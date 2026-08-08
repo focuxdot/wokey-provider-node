@@ -36,6 +36,11 @@ export interface ProviderTransportCapabilities {
   officialExitBulkTransfer?: OfficialExitBulkTransferCapabilities;
   flowControl?: Array<'credit_v1'>;
   maxBinaryFrameBytes?: number;
+  credentialDataChannels?: {
+    protocolVersions: Array<1>;
+    maxChannels: number;
+    maxConcurrentHandshakes: number;
+  };
 }
 
 export interface ProviderOfficialExitCapability {
@@ -185,6 +190,51 @@ export interface PlatformProviderReady {
       connectionQueueBudgetBytes: number;
     };
   };
+  credentialDataChannels?: PlatformCredentialDataChannelPlan;
+}
+
+export interface PlatformCredentialDataChannelPlan {
+  protocolVersion: 1;
+  epochId: string;
+  revision: number;
+  connectionToken: string;
+  credentialBindingIds: string[];
+}
+
+export interface PlatformCredentialDataChannelReady {
+  type: 'platform.credential_data_channel_ready';
+  protocolVersion: 1;
+  nodeId: string;
+  credentialBindingId: string;
+  epochId: string;
+  revision: number;
+}
+
+export interface PlatformCredentialDataChannelsUpdated {
+  type: 'platform.credential_data_channels_updated';
+  nodeId: string;
+  plan: PlatformCredentialDataChannelPlan;
+}
+
+export interface ProviderCredentialDataChannelReady {
+  type: 'provider.credential_data_channel_ready';
+  nodeId: string;
+  credentialBindingId: string;
+  epochId: string;
+  revision: number;
+}
+
+export interface ProviderCredentialDataChannelsApplied {
+  type: 'provider.credential_data_channels_applied';
+  nodeId: string;
+  epochId: string;
+  revision: number;
+}
+
+export interface ProviderCredentialDataChannelsResyncRequested {
+  type: 'provider.credential_data_channels_resync_requested';
+  nodeId: string;
+  epochId?: string;
 }
 
 export interface PlatformDrainAck {
@@ -420,6 +470,7 @@ export interface OfficialExitOpenRequest {
   routeMode: 'official_exit';
   providerId: string;
   nodeId: string;
+  credentialBindingId: string;
   targetHost: string;
   targetPort: number;
   deadlineMs: number;

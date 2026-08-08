@@ -122,13 +122,13 @@ export class WebSocketSendScheduler {
     bulk: new SessionRoundRobinQueue(),
   };
   private readonly inFlight = new Set<ScheduledFrame>();
-  private readonly lowWaterBytes: number;
-  private readonly controlReserveBytes: number;
-  private readonly interactiveReserveBytes: number;
+  private lowWaterBytes: number;
+  private controlReserveBytes: number;
+  private interactiveReserveBytes: number;
   private readonly fallbackPollInitialMs: number;
   private readonly fallbackPollMaxMs: number;
   private readonly maxFramesPerPump: number;
-  private readonly highWaterBytes: number;
+  private highWaterBytes: number;
   private readonly sendTimeoutMs: number;
   private readonly supportsSendCallback: boolean;
   private maxQueuedBytes: number;
@@ -219,7 +219,47 @@ export class WebSocketSendScheduler {
   }
 
   setMaxQueuedBytes(value: number): void {
-    if (Number.isFinite(value) && value > 0) this.maxQueuedBytes = Math.floor(value);
+    this.setQueueLimits({ maxQueuedBytes: value });
+  }
+
+  setHighWaterBytes(value: number): void {
+    this.setQueueLimits({ highWaterBytes: value });
+  }
+
+  setQueueLimits(options: {
+    maxQueuedBytes?: number;
+    highWaterBytes?: number;
+    lowWaterBytes?: number;
+    controlReserveBytes?: number;
+    interactiveReserveBytes?: number;
+  }): void {
+    const maxChanged = Number.isFinite(options.maxQueuedBytes) && Number(options.maxQueuedBytes) > 0;
+    if (maxChanged) this.maxQueuedBytes = Math.floor(Number(options.maxQueuedBytes));
+    if (Number.isFinite(options.highWaterBytes) && Number(options.highWaterBytes) >= 0) {
+      this.highWaterBytes = Math.min(this.maxQueuedBytes, Math.floor(Number(options.highWaterBytes)));
+    }
+    const defaultLowWaterBytes = Math.floor(this.highWaterBytes / 2);
+    this.lowWaterBytes = Math.min(
+      this.highWaterBytes,
+      Number.isFinite(options.lowWaterBytes) && Number(options.lowWaterBytes) >= 0
+        ? Math.floor(Number(options.lowWaterBytes))
+        : defaultLowWaterBytes,
+    );
+    if (maxChanged || options.controlReserveBytes !== undefined) {
+      const requested = options.controlReserveBytes ?? Math.min(256 * 1024, this.maxQueuedBytes);
+      this.controlReserveBytes = Math.min(
+        this.maxQueuedBytes,
+        Math.max(0, Math.floor(Number(requested) || 0)),
+      );
+    }
+    if (maxChanged || options.interactiveReserveBytes !== undefined) {
+      const requested = options.interactiveReserveBytes
+        ?? Math.min(1024 * 1024, Math.floor(this.maxQueuedBytes / 4));
+      this.interactiveReserveBytes = Math.min(
+        this.maxQueuedBytes,
+        Math.max(0, Math.floor(Number(requested) || 0)),
+      );
+    }
   }
 
   close(error = schedulerError('provider_websocket_disconnected')): void {

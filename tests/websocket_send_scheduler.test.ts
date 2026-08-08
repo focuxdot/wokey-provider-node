@@ -4,6 +4,47 @@ import { WebSocketSendScheduler } from '../src/shared/websocket-send-scheduler.j
 afterEach(() => vi.useRealTimers());
 
 describe('WebSocketSendScheduler', () => {
+  it('recomputes lane reserves atomically when a channel budget shrinks', () => {
+    const socket = {
+      readyState: 1,
+      bufferedAmount: 0,
+      send() {},
+    };
+    const scheduler = new WebSocketSendScheduler(socket, {
+      highWaterBytes: 4 * 1024 * 1024,
+      maxQueuedBytes: 16 * 1024 * 1024,
+      sendTimeoutMs: 1_000,
+    });
+
+    scheduler.setQueueLimits({
+      maxQueuedBytes: 1024 * 1024,
+      highWaterBytes: 512 * 1024,
+    });
+    expect(scheduler.enqueue(Buffer.alloc(700 * 1024), { lane: 'bulk' }).accepted).toBe(true);
+    scheduler.close();
+  });
+
+  it('can lower the pressure threshold for a shared node budget', () => {
+    const sent: string[] = [];
+    const socket = {
+      readyState: 1,
+      bufferedAmount: 100,
+      send(data: string | Buffer) {
+        sent.push(data.toString());
+      },
+    };
+    const scheduler = new WebSocketSendScheduler(socket, {
+      highWaterBytes: 128,
+      maxQueuedBytes: 1024,
+      sendTimeoutMs: 1_000,
+    });
+
+    scheduler.setHighWaterBytes(64);
+    expect(scheduler.enqueue('queued', { lane: 'interactive' }).backpressured).toBe(true);
+    expect(sent).toEqual([]);
+    scheduler.close();
+  });
+
   it('uses one connection watcher and prioritizes control/window over interactive/bulk', async () => {
     vi.useFakeTimers();
     const sent: string[] = [];
