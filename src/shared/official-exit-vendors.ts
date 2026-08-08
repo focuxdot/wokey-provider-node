@@ -77,8 +77,9 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // Image uploads apply through imagex under bytedanceapi.com, then send the
     // bytes to upload hosts returned by ImageX under snssdk.com or
     // bytedancevod.com;
-    // completed videos use signed vlabvod.com URLs during query_result downloads.
-    allowedHosts: ['*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com', '*.snssdk.com', '*.bytedancevod.com'],
+    // completed videos use signed vlabvod.com URLs during query_result downloads;
+    // Image 4.0 results use signed byteimg.com URLs.
+    allowedHosts: ['*.byteimg.com', '*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com', '*.snssdk.com', '*.bytedancevod.com'],
   },
 ]);
 

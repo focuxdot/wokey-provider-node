@@ -4,6 +4,12 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.75]
+
+### Fixed
+- Allow Jimeng / Dreamina Image 4.0 results to download from signed
+  `*.byteimg.com` URLs through the official exit.
+
 ## [0.1.68]
 
 ### Added
