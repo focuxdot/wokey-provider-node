@@ -4,6 +4,16 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.76]
+
+### Fixed
+- Persist the validated Node.js interpreter before the macOS package starts
+  its LaunchAgent, so installations using nvm, fnm, Volta, or Conda do not
+  fail the first health check.
+- Discover supported version-managed Node.js runtimes during direct `.pkg`
+  installation using bounded paths, console-user execution, and probe
+  timeouts; also repair the user data directory and node hint permissions.
+
 ## [0.1.75]
 
 ### Fixed

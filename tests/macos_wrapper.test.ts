@@ -1,5 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -16,7 +27,10 @@ function fixture(): { dir: string; home: string; installDir: string } {
   mkdirSync(join(installDir, 'bin'), { recursive: true });
   writeFileSync(join(seed, 'package.json'), JSON.stringify({ version: '0.1.71', type: 'module' }));
   writeFileSync(join(seed, 'dist', 'provider-node', 'server.js'), '');
-  writeFileSync(join(seed, 'dist', 'provider-node', 'macos-runtime-updater.js'), 'process.stdout.write(import.meta.url + "\\n");\n');
+  writeFileSync(
+    join(seed, 'dist', 'provider-node', 'macos-runtime-updater.js'),
+    'process.stdout.write(import.meta.url + "\\n");\n',
+  );
   writeFileSync(join(installDir, 'seed', 'VERSION'), '0.1.71\n');
   return { dir, home, installDir };
 }
@@ -108,4 +122,52 @@ describe.skipIf(process.platform !== 'darwin')('macOS stable wrapper', () => {
     expect(readlinkSync(join(runtimeRoot, 'current'))).toBe(join('versions', '0.1.57'));
     expect(existsSync(join(runtimeRoot, 'versions', '0.1.57', 'dist', 'provider-node', 'server.js'))).toBe(true);
   });
+
+  it('discovers a bounded nvm Node during direct package installation', () => {
+    const { dir, home, installDir } = fixture();
+    const nodePath = join(home, '.nvm', 'versions', 'node', 'v22.22.2', 'bin', 'node');
+    const plist = join(dir, 'ai.wokey.provider-node.plist');
+    const stalledNode = join(dir, 'stalled-node');
+    const dataDir = join(home, 'Library', 'Application Support', 'Wokey Provider Node');
+    mkdirSync(join(nodePath, '..'), { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    symlinkSync(process.execPath, nodePath);
+    writeFileSync(stalledNode, '#!/bin/sh\nwhile :; do :; done\n');
+    chmodSync(stalledNode, 0o755);
+    writeFileSync(join(dataDir, 'node-path'), `${stalledNode}\n`);
+    writeFileSync(join(installDir, 'bin', 'provider-node'), '#!/bin/sh\n');
+    chmodSync(join(installDir, 'bin', 'provider-node'), 0o755);
+    writeFileSync(plist, '');
+
+    execFileSync('/bin/sh', ['packaging/macos/scripts/postinstall'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PROVIDER_NODE_INSTALL_DIR: installDir,
+        PROVIDER_NODE_PLIST: plist,
+        PROVIDER_NODE_CONSOLE_USER: process.env.USER ?? '',
+        PROVIDER_NODE_NODE_PROBE_TIMEOUT: '1',
+        PROVIDER_NODE_USER_HOME: home,
+        PROVIDER_NODE_SKIP_SERVICE_CONTROL: '1',
+        PROVIDER_NODE_SKIP_STANDARD_NODE_PATHS: '1',
+      },
+    });
+
+    const hintPath = join(dataDir, 'node-path');
+    expect(readFileSync(hintPath, 'utf8')).toBe(`${nodePath}\n`);
+    expect(statSync(dataDir).mode & 0o777).toBe(0o700);
+    expect(statSync(hintPath).mode & 0o777).toBe(0o600);
+
+    const doctor = execFileSync('/bin/sh', ['packaging/macos/provider-node', 'doctor'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+        PROVIDER_NODE_INSTALL_DIR: installDir,
+      },
+    });
+    expect(doctor).toContain(`node=${nodePath}`);
+  }, 15_000);
 });

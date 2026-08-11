@@ -2,13 +2,14 @@
 set -eu
 
 LABEL="ai.wokey.provider-node"
-PLIST="/Library/LaunchAgents/${LABEL}.plist"
-INSTALL_DIR="/usr/local/wokey-provider-node"
+PLIST="${PROVIDER_NODE_PLIST:-/Library/LaunchAgents/${LABEL}.plist}"
+INSTALL_DIR="${PROVIDER_NODE_INSTALL_DIR:-/usr/local/wokey-provider-node}"
 BIN="${INSTALL_DIR}/bin/provider-node"
 CONSOLE_URL="http://127.0.0.1:16888/"
-CONSOLE_USER="$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)"
+CONSOLE_USER="${PROVIDER_NODE_CONSOLE_USER:-$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)}"
 SEED_DIR="${INSTALL_DIR}/seed/runtime"
 VERSION="$(/bin/cat "${INSTALL_DIR}/seed/VERSION" 2>/dev/null || true)"
+NODE_PROBE_TIMEOUT="${PROVIDER_NODE_NODE_PROBE_TIMEOUT:-3}"
 
 case "${VERSION}" in
   ''|*[!0-9A-Za-z.-]*)
@@ -40,12 +41,82 @@ open_console_for_user() {
   /bin/launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -u "${CONSOLE_USER}" /usr/bin/open "${CONSOLE_URL}" >/dev/null 2>&1 || true
 }
 
+node_is_supported_for_user() {
+  candidate="$1"
+  [ -f "${candidate}" ] && [ -x "${candidate}" ] || return 1
+  [ -x /usr/bin/perl ] || return 1
+  node_version_check='const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)'
+  if [ "$(/usr/bin/id -u)" = "${CONSOLE_UID}" ]; then
+    /usr/bin/perl -e 'my $seconds = shift @ARGV; alarm $seconds; exec @ARGV; exit 126' \
+      "${NODE_PROBE_TIMEOUT}" "${candidate}" -e "${node_version_check}" >/dev/null 2>&1
+  else
+    /bin/launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -u "${CONSOLE_USER}" \
+      /usr/bin/perl -e 'my $seconds = shift @ARGV; alarm $seconds; exec @ARGV; exit 126' \
+      "${NODE_PROBE_TIMEOUT}" "${candidate}" -e "${node_version_check}" >/dev/null 2>&1
+  fi
+}
+
+try_node_candidate() {
+  candidate="$1"
+  NODE_CANDIDATES_CHECKED=$((NODE_CANDIDATES_CHECKED + 1))
+  [ "${NODE_CANDIDATES_CHECKED}" -le 32 ] || return 1
+  if node_is_supported_for_user "${candidate}"; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
+find_user_node() {
+  NODE_CANDIDATES_CHECKED=0
+  existing_hint="$(/bin/cat "${DATA_DIR}/node-path" 2>/dev/null || true)"
+  try_node_candidate "${existing_hint}" && return 0
+
+  for candidate in \
+    "${USER_HOME}/.volta/bin/node" \
+    "${USER_HOME}/.local/share/fnm/aliases/default/bin/node" \
+    "${USER_HOME}/Library/Application Support/fnm/aliases/default/bin/node" \
+    "${USER_HOME}/miniconda3/bin/node" \
+    "${USER_HOME}/anaconda3/bin/node" \
+    "${USER_HOME}/miniforge3/bin/node" \
+    "${USER_HOME}/mambaforge/bin/node"
+  do
+    try_node_candidate "${candidate}" && return 0
+  done
+
+  if [ "${PROVIDER_NODE_SKIP_STANDARD_NODE_PATHS:-0}" != "1" ]; then
+    for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node /opt/anaconda3/bin/node /opt/miniconda3/bin/node; do
+      try_node_candidate "${candidate}" && return 0
+    done
+  fi
+
+  for candidate in \
+    "${USER_HOME}/.nvm/versions/node/"*/bin/node \
+    "${USER_HOME}/.local/share/fnm/node-versions/"*/installation/bin/node \
+    "${USER_HOME}/Library/Application Support/fnm/node-versions/"*/installation/bin/node \
+    "${USER_HOME}/.volta/tools/image/node/"*/bin/node
+  do
+    try_node_candidate "${candidate}" && return 0
+  done
+  return 1
+}
+
+persist_user_node_hint() {
+  node_bin="$(find_user_node || true)"
+  [ -n "${node_bin}" ] || return 0
+  temporary_hint="$(/usr/bin/mktemp "${DATA_DIR}/.node-path.XXXXXX")"
+  (umask 077; printf '%s\n' "${node_bin}" > "${temporary_hint}")
+  /usr/sbin/chown "${CONSOLE_USER}:staff" "${temporary_hint}" >/dev/null 2>&1 || true
+  /bin/chmod 600 "${temporary_hint}" || true
+  /bin/mv -f "${temporary_hint}" "${DATA_DIR}/node-path"
+}
+
 /bin/chmod 755 "${BIN}" || true
 /bin/chmod 644 "${PLIST}" || true
 
 if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
   CONSOLE_UID="$(/usr/bin/id -u "${CONSOLE_USER}" 2>/dev/null || true)"
-  USER_HOME="$(/usr/bin/dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}' || true)"
+  USER_HOME="${PROVIDER_NODE_USER_HOME:-$(/usr/bin/dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | /usr/bin/awk '{print $2}' || true)}"
 
   if [ -n "${USER_HOME}" ]; then
     DATA_DIR="${USER_HOME}/Library/Application Support/Wokey Provider Node"
@@ -54,7 +125,12 @@ if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
     TARGET_DIR="${VERSIONS_DIR}/${VERSION}"
     CURRENT_LINK="${RUNTIME_ROOT}/current"
     PREVIOUS_TARGET="$(/bin/readlink "${CURRENT_LINK}" 2>/dev/null || true)"
-    /bin/mkdir -p "${VERSIONS_DIR}"
+    /bin/mkdir -p "${DATA_DIR}" "${VERSIONS_DIR}"
+    /usr/sbin/chown "${CONSOLE_USER}:staff" "${DATA_DIR}" >/dev/null 2>&1 || true
+    /bin/chmod 700 "${DATA_DIR}" || true
+    if [ -n "${CONSOLE_UID}" ]; then
+      persist_user_node_hint
+    fi
     if [ ! -f "${TARGET_DIR}/package.json" ]; then
       STAGING_DIR="${VERSIONS_DIR}/.${VERSION}.installing.$$"
       /bin/rm -rf "${STAGING_DIR}"
@@ -69,7 +145,7 @@ if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
     /bin/chmod 700 "${RUNTIME_ROOT}" "${VERSIONS_DIR}" || true
   fi
 
-  if [ -n "${CONSOLE_UID}" ]; then
+  if [ -n "${CONSOLE_UID}" ] && [ "${PROVIDER_NODE_SKIP_SERVICE_CONTROL:-0}" != "1" ]; then
     /bin/launchctl bootout "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
     /bin/launchctl bootstrap "gui/${CONSOLE_UID}" "${PLIST}" >/dev/null 2>&1 || true
     /bin/launchctl enable "gui/${CONSOLE_UID}/${LABEL}" >/dev/null 2>&1 || true
