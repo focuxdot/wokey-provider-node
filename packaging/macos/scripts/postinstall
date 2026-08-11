@@ -9,6 +9,7 @@ CONSOLE_URL="http://127.0.0.1:16888/"
 CONSOLE_USER="${PROVIDER_NODE_CONSOLE_USER:-$(/usr/bin/stat -f '%Su' /dev/console 2>/dev/null || true)}"
 SEED_DIR="${INSTALL_DIR}/seed/runtime"
 VERSION="$(/bin/cat "${INSTALL_DIR}/seed/VERSION" 2>/dev/null || true)"
+NODE_PROBE_TIMEOUT="${PROVIDER_NODE_NODE_PROBE_TIMEOUT:-3}"
 
 case "${VERSION}" in
   ''|*[!0-9A-Za-z.-]*)
@@ -43,52 +44,59 @@ open_console_for_user() {
 node_is_supported_for_user() {
   candidate="$1"
   [ -f "${candidate}" ] && [ -x "${candidate}" ] || return 1
+  [ -x /usr/bin/perl ] || return 1
+  node_version_check='const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)'
   if [ "$(/usr/bin/id -u)" = "${CONSOLE_UID}" ]; then
-    "${candidate}" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)' >/dev/null 2>&1
+    /usr/bin/perl -e 'my $seconds = shift @ARGV; alarm $seconds; exec @ARGV; exit 126' \
+      "${NODE_PROBE_TIMEOUT}" "${candidate}" -e "${node_version_check}" >/dev/null 2>&1
   else
     /bin/launchctl asuser "${CONSOLE_UID}" /usr/bin/sudo -u "${CONSOLE_USER}" \
-      "${candidate}" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a>22 || (a===22 && (b>22 || (b===22 && c>=2))) ? 0 : 1)' >/dev/null 2>&1
+      /usr/bin/perl -e 'my $seconds = shift @ARGV; alarm $seconds; exec @ARGV; exit 126' \
+      "${NODE_PROBE_TIMEOUT}" "${candidate}" -e "${node_version_check}" >/dev/null 2>&1
   fi
 }
 
+try_node_candidate() {
+  candidate="$1"
+  NODE_CANDIDATES_CHECKED=$((NODE_CANDIDATES_CHECKED + 1))
+  [ "${NODE_CANDIDATES_CHECKED}" -le 32 ] || return 1
+  if node_is_supported_for_user "${candidate}"; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
 find_user_node() {
+  NODE_CANDIDATES_CHECKED=0
+  existing_hint="$(/bin/cat "${DATA_DIR}/node-path" 2>/dev/null || true)"
+  try_node_candidate "${existing_hint}" && return 0
+
   for candidate in \
-    "${DATA_DIR}/node-path" \
-    "/opt/homebrew/bin/node" \
-    "/usr/local/bin/node" \
-    "/usr/bin/node" \
     "${USER_HOME}/.volta/bin/node" \
     "${USER_HOME}/.local/share/fnm/aliases/default/bin/node" \
-    "${USER_HOME}/Library/Application Support/fnm/aliases/default/bin/node"
+    "${USER_HOME}/Library/Application Support/fnm/aliases/default/bin/node" \
+    "${USER_HOME}/miniconda3/bin/node" \
+    "${USER_HOME}/anaconda3/bin/node" \
+    "${USER_HOME}/miniforge3/bin/node" \
+    "${USER_HOME}/mambaforge/bin/node"
   do
-    if [ "${candidate}" = "${DATA_DIR}/node-path" ]; then
-      candidate="$(/bin/cat "${candidate}" 2>/dev/null || true)"
-    fi
-    if node_is_supported_for_user "${candidate}"; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
+    try_node_candidate "${candidate}" && return 0
   done
 
-  for versions_dir in \
-    "${USER_HOME}/.nvm/versions/node" \
-    "${USER_HOME}/.local/share/fnm/node-versions" \
-    "${USER_HOME}/Library/Application Support/fnm/node-versions" \
-    "${USER_HOME}/.volta/tools/image/node"
-  do
-    [ -d "${versions_dir}" ] || continue
-    candidates="$(/usr/bin/find "${versions_dir}" \( -type f -o -type l \) -path '*/bin/node' -perm -111 -print 2>/dev/null || true)"
-    previous_ifs="${IFS}"
-    IFS='
-'
-    for candidate in ${candidates}; do
-      if node_is_supported_for_user "${candidate}"; then
-        IFS="${previous_ifs}"
-        printf '%s\n' "${candidate}"
-        return 0
-      fi
+  if [ "${PROVIDER_NODE_SKIP_STANDARD_NODE_PATHS:-0}" != "1" ]; then
+    for candidate in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node /opt/anaconda3/bin/node /opt/miniconda3/bin/node; do
+      try_node_candidate "${candidate}" && return 0
     done
-    IFS="${previous_ifs}"
+  fi
+
+  for candidate in \
+    "${USER_HOME}/.nvm/versions/node/"*/bin/node \
+    "${USER_HOME}/.local/share/fnm/node-versions/"*/installation/bin/node \
+    "${USER_HOME}/Library/Application Support/fnm/node-versions/"*/installation/bin/node \
+    "${USER_HOME}/.volta/tools/image/node/"*/bin/node
+  do
+    try_node_candidate "${candidate}" && return 0
   done
   return 1
 }
@@ -120,7 +128,9 @@ if [ -n "${CONSOLE_USER}" ] && [ "${CONSOLE_USER}" != "root" ]; then
     /bin/mkdir -p "${DATA_DIR}" "${VERSIONS_DIR}"
     /usr/sbin/chown "${CONSOLE_USER}:staff" "${DATA_DIR}" >/dev/null 2>&1 || true
     /bin/chmod 700 "${DATA_DIR}" || true
-    persist_user_node_hint
+    if [ -n "${CONSOLE_UID}" ]; then
+      persist_user_node_hint
+    fi
     if [ ! -f "${TARGET_DIR}/package.json" ]; then
       STAGING_DIR="${VERSIONS_DIR}/.${VERSION}.installing.$$"
       /bin/rm -rf "${STAGING_DIR}"

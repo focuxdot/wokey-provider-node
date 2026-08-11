@@ -7,6 +7,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -122,12 +123,18 @@ describe.skipIf(process.platform !== 'darwin')('macOS stable wrapper', () => {
     expect(existsSync(join(runtimeRoot, 'versions', '0.1.57', 'dist', 'provider-node', 'server.js'))).toBe(true);
   });
 
-  it('persists an nvm-only Node before the first package health check', () => {
+  it('discovers a bounded nvm Node during direct package installation', () => {
     const { dir, home, installDir } = fixture();
-    const node = join(home, '.nvm', 'versions', 'node', 'v22.22.3', 'bin', 'node');
+    const nodePath = join(home, '.nvm', 'versions', 'node', 'v22.22.2', 'bin', 'node');
     const plist = join(dir, 'ai.wokey.provider-node.plist');
-    mkdirSync(join(node, '..'), { recursive: true });
-    symlinkSync(process.execPath, node);
+    const stalledNode = join(dir, 'stalled-node');
+    const dataDir = join(home, 'Library', 'Application Support', 'Wokey Provider Node');
+    mkdirSync(join(nodePath, '..'), { recursive: true });
+    mkdirSync(dataDir, { recursive: true });
+    symlinkSync(process.execPath, nodePath);
+    writeFileSync(stalledNode, '#!/bin/sh\nwhile :; do :; done\n');
+    chmodSync(stalledNode, 0o755);
+    writeFileSync(join(dataDir, 'node-path'), `${stalledNode}\n`);
     writeFileSync(join(installDir, 'bin', 'provider-node'), '#!/bin/sh\n');
     chmodSync(join(installDir, 'bin', 'provider-node'), 0o755);
     writeFileSync(plist, '');
@@ -139,24 +146,28 @@ describe.skipIf(process.platform !== 'darwin')('macOS stable wrapper', () => {
         PROVIDER_NODE_INSTALL_DIR: installDir,
         PROVIDER_NODE_PLIST: plist,
         PROVIDER_NODE_CONSOLE_USER: process.env.USER ?? '',
+        PROVIDER_NODE_NODE_PROBE_TIMEOUT: '1',
         PROVIDER_NODE_USER_HOME: home,
         PROVIDER_NODE_SKIP_SERVICE_CONTROL: '1',
+        PROVIDER_NODE_SKIP_STANDARD_NODE_PATHS: '1',
       },
     });
 
-    const dataDir = join(home, 'Library', 'Application Support', 'Wokey Provider Node');
-    expect(readFileSync(join(dataDir, 'node-path'), 'utf8')).toBe(`${node}\n`);
-    expect(readlinkSync(join(dataDir, 'runtime', 'current'))).toBe(join('versions', '0.1.71'));
-  });
+    const hintPath = join(dataDir, 'node-path');
+    expect(readFileSync(hintPath, 'utf8')).toBe(`${nodePath}\n`);
+    expect(statSync(dataDir).mode & 0o777).toBe(0o700);
+    expect(statSync(hintPath).mode & 0o777).toBe(0o600);
 
-  it('records the interactive Node before invoking the macOS package installer', () => {
-    const installer = readFileSync('packaging/install.sh', 'utf8');
-    const installMacos = installer.slice(
-      installer.indexOf('install_macos() {'),
-      installer.indexOf('install_linux_deb() {'),
-    );
-
-    expect(installMacos.indexOf('persist_macos_node_hint')).toBeGreaterThan(-1);
-    expect(installMacos.indexOf('persist_macos_node_hint')).toBeLessThan(installMacos.indexOf('sudo installer -pkg'));
-  });
+    const doctor = execFileSync('/bin/sh', ['packaging/macos/provider-node', 'doctor'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+        PROVIDER_NODE_INSTALL_DIR: installDir,
+      },
+    });
+    expect(doctor).toContain(`node=${nodePath}`);
+  }, 15_000);
 });

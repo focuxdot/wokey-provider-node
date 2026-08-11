@@ -32,10 +32,11 @@ The installer downloads `checksums.txt`, verifies the package SHA-256, then runs
 
 Provider Node runs on Node.js 22.22.2+. If a suitable Node.js is not already present, the installer installs it automatically — via Homebrew when available, otherwise the official universal Node.js `.pkg` from nodejs.org (Intel and Apple Silicon). To set it up yourself instead, install the current Node.js LTS from [nodejs.org](https://nodejs.org) (or `brew install node`) before running the installer.
 
-When Node.js comes from nvm, fnm, or Volta, the installer records the validated
-interpreter path before starting the LaunchAgent. Direct `.pkg` installation
-also discovers supported runtimes in the standard directories used by those
-version managers.
+When Node.js comes from nvm, fnm, Volta, or Conda, the shell installer records
+the validated interpreter before starting the LaunchAgent. A direct `.pkg`
+installation also checks a bounded set of standard locations used by those
+version managers. Candidate interpreters run as the console user with a short
+timeout; the package does not recursively scan the user's home directory.
 
 ## Troubleshooting
 

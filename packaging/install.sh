@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.75}"
+VERSION="${WOKEY_PROVIDER_NODE_VERSION:-0.1.76}"
 PACKAGE_REVISION="${WOKEY_PROVIDER_NODE_PACKAGE_REVISION:-${VERSION}}"
 DEFAULT_BASE_URL="https://github.com/focuxdot/wokey-provider-node/releases/download/v${VERSION}"
 BASE_URL="${WOKEY_PROVIDER_NODE_BASE_URL:-${DEFAULT_BASE_URL}}"
@@ -193,21 +193,27 @@ ensure_node() {
   log "Using Node.js $(node --version)"
 }
 
+# The package postinstall starts the LaunchAgent before this installer can run
+# `wokey-node restart`. launchd does not inherit the interactive shell PATH, so
+# persist the already-validated Node interpreter first. This is required when
+# Node comes from nvm, fnm, Volta, Conda, or another non-standard location.
 persist_macos_node_hint() {
-  local node_bin data_dir temporary_hint
-  node_bin="$(command -v node)"
-  [ -n "${node_bin}" ] && [ -x "${node_bin}" ] \
-    || fail "could not resolve the Node.js executable used by the installer"
+  local node_bin data_dir hint_file temporary_hint
+  node_bin="$(node -p 'process.execPath' 2>/dev/null || true)"
+  case "${node_bin}" in
+    /*) ;;
+    *) fail "could not resolve the absolute path of the active Node.js interpreter" ;;
+  esac
+  [ -x "${node_bin}" ] || fail "active Node.js interpreter is not executable: ${node_bin}"
 
   data_dir="${HOME}/Library/Application Support/Wokey Provider Node"
+  hint_file="${data_dir}/node-path"
+  temporary_hint="${data_dir}/.node-path.install.$$"
   mkdir -p "${data_dir}"
-  if [ ! -w "${data_dir}" ]; then
-    sudo chown "$(id -u):$(id -g)" "${data_dir}"
-  fi
-  chmod 700 "${data_dir}" 2>/dev/null || true
-  temporary_hint="$(mktemp "${data_dir}/.node-path.XXXXXX")"
-  (umask 077; printf '%s\n' "${node_bin}" > "${temporary_hint}")
-  mv -f "${temporary_hint}" "${data_dir}/node-path"
+  printf '%s\n' "${node_bin}" > "${temporary_hint}"
+  chmod 600 "${temporary_hint}"
+  mv -f "${temporary_hint}" "${hint_file}"
+  log "Saved Node.js path for the macOS background service: ${node_bin}"
 }
 
 sha256_file() {
@@ -313,9 +319,6 @@ install_macos() {
   download "${BASE_URL}/WokeyProviderNode-${VERSION}.pkg?v=${PACKAGE_REVISION}" "$pkg"
   verify_artifact "$pkg"
 
-  # launchd does not load shell version managers such as nvm, fnm, or Volta.
-  # Persist the exact interpreter already validated above before the package's
-  # postinstall starts the LaunchAgent and waits for its health check.
   persist_macos_node_hint
   log "Installing Wokey Provider Node ${VERSION} for macOS"
   sudo installer -pkg "$pkg" -target /
