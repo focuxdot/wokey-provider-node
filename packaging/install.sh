@@ -193,6 +193,23 @@ ensure_node() {
   log "Using Node.js $(node --version)"
 }
 
+persist_macos_node_hint() {
+  local node_bin data_dir temporary_hint
+  node_bin="$(command -v node)"
+  [ -n "${node_bin}" ] && [ -x "${node_bin}" ] \
+    || fail "could not resolve the Node.js executable used by the installer"
+
+  data_dir="${HOME}/Library/Application Support/Wokey Provider Node"
+  mkdir -p "${data_dir}"
+  if [ ! -w "${data_dir}" ]; then
+    sudo chown "$(id -u):$(id -g)" "${data_dir}"
+  fi
+  chmod 700 "${data_dir}" 2>/dev/null || true
+  temporary_hint="$(mktemp "${data_dir}/.node-path.XXXXXX")"
+  (umask 077; printf '%s\n' "${node_bin}" > "${temporary_hint}")
+  mv -f "${temporary_hint}" "${data_dir}/node-path"
+}
+
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'
@@ -296,6 +313,10 @@ install_macos() {
   download "${BASE_URL}/WokeyProviderNode-${VERSION}.pkg?v=${PACKAGE_REVISION}" "$pkg"
   verify_artifact "$pkg"
 
+  # launchd does not load shell version managers such as nvm, fnm, or Volta.
+  # Persist the exact interpreter already validated above before the package's
+  # postinstall starts the LaunchAgent and waits for its health check.
+  persist_macos_node_hint
   log "Installing Wokey Provider Node ${VERSION} for macOS"
   sudo installer -pkg "$pkg" -target /
 
