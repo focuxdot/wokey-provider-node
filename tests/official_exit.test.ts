@@ -14,6 +14,7 @@ import {
   classifySocketError,
   isOfficialExitHostAllowed,
   officialExitConnectTimeoutMs,
+  officialExitSocketIdleTimeoutMs,
   parseOfficialExitAllowlist,
 } from '../src/provider-node/official-exit.js';
 import type { ProviderNodeConfig } from '../src/provider-node/config.js';
@@ -47,6 +48,16 @@ describe('official-exit connect deadline', () => {
 
   it('uses a proportional margin for short test and development deadlines', () => {
     expect(officialExitConnectTimeoutMs(5_000)).toBe(4_500);
+  });
+
+  it('keeps connect and post-connect idle budgets independent', () => {
+    expect(officialExitConnectTimeoutMs(300_000)).toBe(290_000);
+    expect(officialExitSocketIdleTimeoutMs(300_000, 1_800_000)).toBe(1_800_000);
+  });
+
+  it('falls back to the legacy deadline for older Platform messages', () => {
+    expect(officialExitSocketIdleTimeoutMs(300_000, undefined)).toBe(300_000);
+    expect(officialExitSocketIdleTimeoutMs(300_000, Number.NaN)).toBe(300_000);
   });
 });
 

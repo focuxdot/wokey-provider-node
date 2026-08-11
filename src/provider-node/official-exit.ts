@@ -294,9 +294,10 @@ export class ProviderOfficialExitTunnelManager {
           return;
         }
         settled = true;
-        // The shorter deadline only governs TCP connect/open_response. Once the
-        // tunnel is open, preserve the existing socket inactivity timeout.
-        socket.setTimeout(Math.max(1_000, request.deadlineMs));
+        // Connect/open_response remains bounded by deadlineMs. Once the tunnel is
+        // open, use the independent response-idle budget when a newer Platform
+        // supplies it; older Platforms retain the legacy deadlineMs behavior.
+        socket.setTimeout(officialExitSocketIdleTimeoutMs(request.deadlineMs, request.socketIdleTimeoutMs));
         const addressFamily = socket.remoteFamily === 'IPv4' ? 'ipv4' : socket.remoteFamily === 'IPv6' ? 'ipv6' : undefined;
         const connectMs = Date.now() - connectStartedAt;
         session.connected = true;
@@ -755,6 +756,19 @@ export function officialExitConnectTimeoutMs(deadlineMs: number): number {
     Math.max(1, Math.floor(relativeBudgetMs * 0.1)),
   );
   return Math.max(1, relativeBudgetMs - marginMs);
+}
+
+export function officialExitSocketIdleTimeoutMs(
+  deadlineMs: number,
+  socketIdleTimeoutMs: number | undefined,
+): number {
+  const fallbackMs = Number.isFinite(deadlineMs) && deadlineMs > 0
+    ? Math.floor(deadlineMs)
+    : 1_000;
+  const requestedMs = Number.isFinite(socketIdleTimeoutMs) && socketIdleTimeoutMs !== undefined && socketIdleTimeoutMs > 0
+    ? Math.floor(socketIdleTimeoutMs)
+    : fallbackMs;
+  return Math.max(1_000, requestedMs);
 }
 
 export function classifyConnectError(error: Error): string {

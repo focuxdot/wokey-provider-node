@@ -4,6 +4,13 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.77]
+
+### Fixed
+- Keep first-byte and non-streaming requests on the existing five-minute
+  deadline while allowing an active streaming response to remain idle for up
+  to 30 minutes between response bytes.
+
 ## [0.1.76]
 
 ### Fixed

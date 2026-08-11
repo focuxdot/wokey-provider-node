@@ -474,6 +474,8 @@ export interface OfficialExitOpenRequest {
   targetHost: string;
   targetPort: number;
   deadlineMs: number;
+  /** Post-connect upstream socket inactivity timeout; omitted by older Platforms. */
+  socketIdleTimeoutMs?: number;
   maxBytesIn?: number;
   maxBytesOut?: number;
   dataProtocol?: OfficialExitDataProtocol;
