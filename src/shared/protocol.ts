@@ -38,7 +38,8 @@ export interface ProviderTransportCapabilities {
   maxBinaryFrameBytes?: number;
   credentialDataChannels?: {
     protocolVersions: Array<1>;
-    maxChannels: number;
+    /** @deprecated Legacy nodes used this as a second total-count ceiling. */
+    maxChannels?: number;
     maxConcurrentHandshakes: number;
   };
 }
@@ -126,6 +127,26 @@ export interface ProviderHeartbeat {
   acceptingSessions?: boolean;
 }
 
+export type ProviderUpgradePhase =
+  | 'received'
+  | 'skipped'
+  | 'failed'
+  | 'rolled_back'
+  | 'verified';
+
+export interface ProviderUpgradeStatus {
+  type: 'provider.upgrade_status';
+  nodeId: string;
+  rolloutId?: string;
+  currentVersion: string;
+  targetVersion: string;
+  phase: ProviderUpgradePhase;
+  reason?: string;
+  retryable?: boolean;
+  retryAfter?: string;
+  observedAt: string;
+}
+
 export interface ProviderDrainNotice {
   type: 'provider.drain';
   requestId: string;
@@ -171,6 +192,7 @@ export interface PlatformCredentialRefreshHint {
 
 export interface PlatformUpgradeAvailable {
   type: 'platform.upgrade_available';
+  rolloutId?: string;
   version: string;
   hashes: Record<string, string>;
   urgent: boolean;
@@ -537,6 +559,7 @@ export interface OfficialExitError {
 export type ProviderToPlatformMessage =
   | ProviderHello
   | ProviderHeartbeat
+  | ProviderUpgradeStatus
   | ProviderDrainNotice
   | ProviderCredentialMirrorUpdate
   | ProviderJimengAuthStarted

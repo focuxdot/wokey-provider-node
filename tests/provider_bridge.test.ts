@@ -348,6 +348,37 @@ describe('ProviderBridge endpoint failover', () => {
     }
   });
 
+  it('sends upgrade status with the rollout identity over the control socket', async () => {
+    const bridge = await makeBridge(false);
+    try {
+      bridge.start();
+      const socket = fakeSockets[0];
+      socket.readyState = FakeWebSocket.OPEN;
+      socket.emit('open');
+
+      await bridge.reportUpgradeStatus({
+        type: 'provider.upgrade_status',
+        nodeId: 'node_123',
+        rolloutId: 'rollout_123',
+        currentVersion: '0.1.75',
+        targetVersion: '0.1.76',
+        phase: 'received',
+        observedAt: '2026-08-09T01:02:03.000Z',
+      });
+
+      const messages = socket.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>);
+      expect(messages).toContainEqual(expect.objectContaining({
+        type: 'provider.upgrade_status',
+        rolloutId: 'rollout_123',
+        phase: 'received',
+      }));
+    } finally {
+      bridge.stop();
+    }
+  });
+
   it('rejects a credential mirror update immediately when scheduler admission fails', async () => {
     const bridge = await makeBridge(false);
     try {
@@ -470,11 +501,13 @@ describe('ProviderBridge endpoint failover', () => {
         transportCapabilities: {
           credentialDataChannels: {
             protocolVersions: [1],
-            maxChannels: 16,
             maxConcurrentHandshakes: 4,
           },
         },
       });
+      expect((hello?.transportCapabilities as {
+        credentialDataChannels?: Record<string, unknown>;
+      })?.credentialDataChannels).not.toHaveProperty('maxChannels');
 
       control.emit(
         'message',
@@ -606,6 +639,73 @@ describe('ProviderBridge endpoint failover', () => {
         }));
       expect(fakeSockets).toHaveLength(6);
       expect(fakeSockets[5].options?.headers?.['x-provider-data-channel']).toBe('credential_e');
+    }
+    finally {
+      bridge.stop();
+    }
+  });
+
+  it('accepts Platform channel policies without applying a local total-count cap', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello')?.nodeId);
+      const credentialBindingIds = Array.from(
+        { length: 32 },
+        (_, index) => `credential_${String(index + 1).padStart(2, '0')}`,
+      );
+
+      control.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.ready',
+        nodeId,
+        credentialDataChannels: {
+          protocolVersion: 1,
+          epochId: 'epoch_32',
+          revision: 1,
+          connectionToken: 'epoch_token_32',
+          credentialBindingIds,
+        },
+      })), false);
+      await Promise.resolve();
+
+      // The four-at-a-time handshake guard remains independent of Platform policy.
+      expect(fakeSockets).toHaveLength(5);
+      expect(fakeSockets.slice(1).map((socket) => socket.options?.headers?.['x-provider-data-channel']))
+        .toEqual(credentialBindingIds.slice(0, 4));
+
+      control.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.credential_data_channels_updated',
+        nodeId,
+        plan: {
+          protocolVersion: 1,
+          epochId: 'epoch_32',
+          revision: 2,
+          connectionToken: 'epoch_token_32',
+          credentialBindingIds: Array.from({ length: 65 }, (_, index) => `credential_over_${index}`),
+        },
+      })), false);
+      await Promise.resolve();
+
+      expect(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>))
+        .toContainEqual(expect.objectContaining({
+          type: 'provider.credential_data_channels_applied',
+          epochId: 'epoch_32',
+          revision: 2,
+        }));
+      expect(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>))
+        .not.toContainEqual(expect.objectContaining({
+          type: 'provider.credential_data_channels_resync_requested',
+        }));
     }
     finally {
       bridge.stop();

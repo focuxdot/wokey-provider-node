@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export interface UpgradeState {
+  rolloutId?: string;
   previousVersion: string;
   targetVersion: string;
   upgradedAt: string;

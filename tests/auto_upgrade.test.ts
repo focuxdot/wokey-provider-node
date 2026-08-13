@@ -122,11 +122,13 @@ describe('AutoUpgradeController', () => {
     const { dir, configPath } = tempConfigPath();
     const log = logger();
     const stopBridge = vi.fn();
+    const reportStatus = vi.fn();
     try {
       const controller = new AutoUpgradeController({
         configPath,
         getInFlight: () => 0,
         stopBridge,
+        reportStatus,
         log,
       });
 
@@ -145,6 +147,10 @@ describe('AutoUpgradeController', () => {
         'auto-upgrade: cannot run update command non-interactively, skipping',
       );
       expect(existsSync(statePath(configPath))).toBe(false);
+      expect(reportStatus.mock.calls.map(([status]) => status)).toEqual([
+        { targetVersion: '0.1.38', phase: 'received' },
+        { targetVersion: '0.1.38', phase: 'skipped', reason: 'sudo_noninteractive_unavailable' },
+      ]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -160,17 +166,20 @@ describe('AutoUpgradeController', () => {
       acknowledgeDrain = resolve;
     }));
     const stopBridge = vi.fn();
+    const reportStatus = vi.fn();
     try {
       const controller = new AutoUpgradeController({
         configPath,
         getInFlight: () => 0,
         beginDrain,
         stopBridge,
+        reportStatus,
         log,
       });
 
       const upgrade = controller.handleUpgradeAvailable({
         type: 'platform.upgrade_available',
+        rolloutId: 'rollout_1',
         version: '0.1.38',
         hashes: { 'linux-x64': 'hash' },
         urgent: false,
@@ -182,6 +191,9 @@ describe('AutoUpgradeController', () => {
 
       expect(stopBridge).toHaveBeenCalledTimes(1);
       expect(beginDrain.mock.invocationCallOrder[0]).toBeLessThan(stopBridge.mock.invocationCallOrder[0] ?? 0);
+      expect(reportStatus.mock.calls.map(([status]) => status)).toEqual([
+        { rolloutId: 'rollout_1', targetVersion: '0.1.38', phase: 'received' },
+      ]);
       expect(mocks.spawn).toHaveBeenCalledWith(
         '/usr/local/bin/wokey-node',
         ['update'],
@@ -191,6 +203,7 @@ describe('AutoUpgradeController', () => {
         }),
       );
       expect(exitSpy).not.toHaveBeenCalled();
+      expect(readState(configPath)).toMatchObject({ rolloutId: 'rollout_1', status: 'pending' });
 
       child.emit('exit', 1, null);
 
@@ -406,6 +419,7 @@ describe('auto-upgrade startup state', () => {
     mocks.version = '0.1.38';
     const { dir, configPath } = tempConfigPath();
     const log = logger();
+    const onStateChange = vi.fn();
     try {
       writeState(configPath, {
         previousVersion: '0.1.37',
@@ -415,10 +429,14 @@ describe('auto-upgrade startup state', () => {
         status: 'pending',
       });
 
-      scheduleUpgradeVerification(configPath, log);
+      scheduleUpgradeVerification(configPath, log, onStateChange);
       await vi.advanceTimersByTimeAsync(60_000);
 
       expect(readState(configPath)).toMatchObject({ status: 'verified' });
+      expect(onStateChange).toHaveBeenCalledWith(expect.objectContaining({
+        targetVersion: '0.1.38',
+        status: 'verified',
+      }));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -7,8 +7,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { getEnv, getEnvNumber } from '../shared/env.js';
-import type { PlatformCredentialRefreshHint, PlatformUpgradeAvailable } from '../shared/protocol.js';
-import { AutoUpgradeController, checkCrashLoopOnStartup, scheduleUpgradeVerification } from './auto-upgrade.js';
+import type { PlatformCredentialRefreshHint, PlatformUpgradeAvailable, ProviderUpgradeStatus } from '../shared/protocol.js';
+import {
+  AutoUpgradeController,
+  checkCrashLoopOnStartup,
+  scheduleUpgradeVerification,
+  upgradeStatusFromState,
+  type ProviderUpgradeStatusUpdate,
+} from './auto-upgrade.js';
+import { readUpgradeState, type UpgradeState } from './upgrade-state.js';
 import {
   defaultConfig,
   applyRuntimeBuildInfo,
@@ -354,8 +361,49 @@ const autoUpgrade = new AutoUpgradeController({
   getInFlight: () => bridge.inFlightCount(),
   beginDrain: () => bridge.beginDrain(),
   stopBridge: () => bridge.stop(),
+  reportStatus: (status) => reportProviderUpgradeStatus(status),
   log: app.log,
 });
+
+let lastReportedPersistedUpgradeStatus = '';
+
+function providerUpgradeStatusMessage(update: ProviderUpgradeStatusUpdate): ProviderUpgradeStatus {
+  return {
+    type: 'provider.upgrade_status',
+    nodeId: config.nodeId,
+    ...(update.rolloutId ? { rolloutId: update.rolloutId } : {}),
+    currentVersion: config.nodeVersion,
+    targetVersion: update.targetVersion,
+    phase: update.phase,
+    ...(update.reason ? { reason: update.reason } : {}),
+    ...(typeof update.retryable === 'boolean' ? { retryable: update.retryable } : {}),
+    ...(update.retryAfter ? { retryAfter: update.retryAfter } : {}),
+    observedAt: new Date().toISOString(),
+  };
+}
+
+function reportProviderUpgradeStatus(update: ProviderUpgradeStatusUpdate): Promise<void> {
+  return bridge.reportUpgradeStatus(providerUpgradeStatusMessage(update));
+}
+
+function reportProviderUpgradeStatusInBackground(update: ProviderUpgradeStatusUpdate): void {
+  void reportProviderUpgradeStatus(update).catch((error) => {
+    app.log.warn({ err: error, ...update }, 'auto-upgrade: failed to report upgrade status');
+  });
+}
+
+function reportPersistedUpgradeState(state: UpgradeState | undefined = readUpgradeState(CONFIG_PATH)): void {
+  if (!state) return;
+  const update = upgradeStatusFromState(state);
+  if (!update) return;
+  const fingerprint = JSON.stringify(update);
+  if (fingerprint === lastReportedPersistedUpgradeStatus) return;
+  void reportProviderUpgradeStatus(update).then(() => {
+    lastReportedPersistedUpgradeStatus = fingerprint;
+  }).catch((error) => {
+    app.log.warn({ err: error, targetVersion: state.targetVersion, status: state.status }, 'auto-upgrade: failed to replay persisted upgrade status');
+  });
+}
 
 const jimengCredentialLease = new AsyncMutex();
 const dreaminaCliInstaller = new DreaminaCliInstaller({ configuredPath: getEnv('DREAMINA_CLI_PATH', '') });
@@ -422,17 +470,30 @@ async function installDreaminaCliAndActivate(): Promise<{ cliVersion: string }> 
 }
 
 const bridge = new ProviderBridge(() => config, {
-  onPlatformReady: () => scheduleCodexAuthJsonMirrorCheck(1_000),
+  onPlatformReady: () => {
+    scheduleCodexAuthJsonMirrorCheck(1_000);
+    reportPersistedUpgradeState();
+  },
   jimengAuthorization,
   jimengVideo,
   jimengCliInstall: dreaminaCliInstaller.status().supported ? { install: installDreaminaCliAndActivate } : undefined,
   onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,
-  onPlatformUpgradeAvailable: (msg: PlatformUpgradeAvailable) => {
+  onPlatformUpgradeAvailable: async (msg: PlatformUpgradeAvailable) => {
     if (config.autoUpdate === false) {
       app.log.info({}, 'auto-upgrade: disabled by config, ignoring upgrade_available');
+      const statusBase = {
+        ...(msg.rolloutId ? { rolloutId: msg.rolloutId } : {}),
+        targetVersion: msg.version,
+      };
+      reportProviderUpgradeStatusInBackground({ ...statusBase, phase: 'received' });
+      reportProviderUpgradeStatusInBackground({
+        ...statusBase,
+        phase: 'skipped',
+        reason: 'auto_update_disabled',
+      });
       return;
     }
-    void autoUpgrade.handleUpgradeAvailable(msg);
+    await autoUpgrade.handleUpgradeAvailable(msg);
   },
   onEndpointPreferenceChange: (preferFallback: boolean) => {
     if (config.preferFallbackEndpoint === preferFallback) return;
@@ -1968,7 +2029,7 @@ function start(): void {
   app
     .listen({ host: CONSOLE_HOST, port: CONSOLE_PORT })
     .then(() => {
-      scheduleUpgradeVerification(CONFIG_PATH, app.log);
+      scheduleUpgradeVerification(CONFIG_PATH, app.log, reportPersistedUpgradeState);
     })
     .catch((error) => {
       app.log.error(error);

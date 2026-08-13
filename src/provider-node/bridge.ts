@@ -37,6 +37,7 @@ import type {
   ProviderDrainNotice,
   ProviderHeartbeat,
   ProviderHello,
+  ProviderUpgradeStatus,
 } from '../shared/protocol.js';
 import { JIMENG_CLI_INSTALL_PROTOCOL_VERSION } from '../shared/protocol.js';
 import { sha256Json } from '../shared/crypto.js';
@@ -88,10 +89,6 @@ const PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES = positiveEnvNumber(
   'PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES',
   OFFICIAL_EXIT_DEFAULT_CONNECTION_QUEUE_BUDGET_BYTES,
 );
-const PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CHANNELS = Math.max(3, Math.min(
-  64,
-  Math.floor(positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CHANNELS', 16)),
-));
 const PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CONCURRENT_HANDSHAKES = Math.max(1, Math.min(
   8,
   Math.floor(positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CONCURRENT_HANDSHAKES', 4)),
@@ -114,7 +111,7 @@ export interface BridgeState {
 export interface ProviderBridgeOptions {
   onPlatformReady?: () => void;
   onPlatformCredentialRefreshHint?: (message: PlatformCredentialRefreshHint) => void;
-  onPlatformUpgradeAvailable?: (message: PlatformUpgradeAvailable) => void;
+  onPlatformUpgradeAvailable?: (message: PlatformUpgradeAvailable) => void | Promise<void>;
   jimengAuthorization?: JimengAuthorizationHandler;
   jimengVideo?: JimengVideoHandler;
   jimengCliInstall?: {
@@ -224,7 +221,6 @@ class ProviderCredentialDataChannelPool {
       || plan.revision < 1
       || !plan.connectionToken
       || normalizedIds.length !== plan.credentialBindingIds.length
-      || normalizedIds.length > PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CHANNELS
     ) {
       this.requestPlanResync(plan.epochId);
       return false;
@@ -936,7 +932,6 @@ export class ProviderBridge {
           ? {
               credentialDataChannels: {
                 protocolVersions: [1] as [1],
-                maxChannels: PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CHANNELS,
                 maxConcurrentHandshakes: PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CONCURRENT_HANDSHAKES,
               },
             }
@@ -1170,7 +1165,7 @@ export class ProviderBridge {
       return;
     }
     if (message.type === 'platform.upgrade_available') {
-      this.options.onPlatformUpgradeAvailable?.(message as PlatformUpgradeAvailable);
+      await this.options.onPlatformUpgradeAvailable?.(message as PlatformUpgradeAvailable);
       return;
     }
     if (isOfficialExitPlatformMessage(message)) {
@@ -1214,6 +1209,15 @@ export class ProviderBridge {
       revision: plan.revision,
     };
     this.send(applied);
+  }
+
+  reportUpgradeStatus(status: ProviderUpgradeStatus): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.send(status, {
+        lane: 'control',
+        onComplete: (error) => error ? reject(error) : resolve(),
+      });
+    });
   }
 
   private send(

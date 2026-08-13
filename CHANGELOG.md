@@ -4,6 +4,18 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.78]
+
+### Added
+- Report Provider Node auto-upgrade receipt, skip, failure, rollback, and
+  verification status to the Platform with the rollout identity and durable
+  post-restart replay.
+
+### Changed
+- Let the Platform own the total credential data-channel plan while the node
+  retains a bounded concurrent-handshake limit to establish large plans in
+  controlled batches.
+
 ## [0.1.77]
 
 ### Fixed
