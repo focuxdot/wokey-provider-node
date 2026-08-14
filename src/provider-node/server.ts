@@ -521,7 +521,10 @@ function publicJimengStatus() {
 }
 
 app.get('/api/status', async () => ({
-  bridge: bridge.state,
+  bridge: {
+    ...bridge.state,
+    credentialDataChannels: bridge.credentialDataChannelState(),
+  },
   config: redactConfig(config),
   binding: {
     isBound: isNodeBound(config),

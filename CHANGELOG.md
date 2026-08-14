@@ -4,6 +4,20 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.79]
+
+### Fixed
+- Reconcile credential-scoped data channels that stop receiving Platform
+  activity without delivering a WebSocket close event, then reconnect them
+  through the existing bounded handshake queue.
+- Drive independent ping/pong liveness probes so channel recovery does not
+  depend on the Platform heartbeat interval, while enforcing at least three
+  probe periods before declaring a timeout.
+
+### Added
+- Expose credential-channel readiness, reconnect backlog, and liveness timeout
+  counters in the local status response for rollout verification.
+
 ## [0.1.78]
 
 ### Added

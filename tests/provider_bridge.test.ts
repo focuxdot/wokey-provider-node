@@ -15,6 +15,7 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
     options?: { headers?: Record<string, string> };
     readyState: number;
     pingCount: number;
+    terminateCount: number;
     sent: Array<string | Buffer>;
     emit: (event: string, ...args: unknown[]) => void;
   }> = [];
@@ -22,6 +23,7 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
     static OPEN = 1;
     readyState = 0;
     pingCount = 0;
+    terminateCount = 0;
     url: string;
     options?: { headers?: Record<string, string> };
     sent: Array<string | Buffer> = [];
@@ -41,6 +43,7 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
     }
     close() {}
     terminate() {
+      this.terminateCount += 1;
       this.readyState = 3;
     }
     ping() {
@@ -566,6 +569,233 @@ describe('ProviderBridge endpoint failover', () => {
       await vi.advanceTimersByTimeAsync(40_000);
       expect(fakeSockets).toHaveLength(5);
       expect(fakeSockets[4].options?.headers?.['x-provider-data-channel']).toBe('credential_b');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('replaces a ready credential channel that stops receiving Platform activity without a close event', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(
+        control.sent
+          .filter((message): message is string => typeof message === 'string')
+          .map((message) => JSON.parse(message) as Record<string, unknown>)
+          .find((message) => message.type === 'provider.hello')?.nodeId,
+      );
+      const credentialBindingIds = ['credential_a', 'credential_b', 'credential_c'];
+      control.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId,
+            credentialDataChannels: {
+              protocolVersion: 1,
+              epochId: 'epoch_liveness',
+              revision: 1,
+              connectionToken: 'epoch_token_liveness',
+              credentialBindingIds,
+            },
+          }),
+        ),
+        false,
+      );
+      await Promise.resolve();
+
+      for (const [index, credentialBindingId] of credentialBindingIds.entries()) {
+        const socket = fakeSockets[index + 1];
+        socket.readyState = FakeWebSocket.OPEN;
+        socket.emit('open');
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'platform.credential_data_channel_ready',
+              protocolVersion: 1,
+              nodeId,
+              credentialBindingId,
+              epochId: 'epoch_liveness',
+              revision: 1,
+            }),
+          ),
+          false,
+        );
+      }
+      await Promise.resolve();
+      expect(bridge.credentialDataChannelState()).toMatchObject({ desired: 3, ready: 3 });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      fakeSockets[2].emit('ping');
+      fakeSockets[3].emit('ping');
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(fakeSockets[1].terminateCount).toBe(1);
+      expect(fakeSockets[2].terminateCount).toBe(0);
+      expect(fakeSockets[3].terminateCount).toBe(0);
+      expect(bridge.credentialDataChannelState()).toMatchObject({
+        desired: 3,
+        ready: 2,
+        reconnecting: 1,
+        livenessTimeouts: 1,
+      });
+
+      await vi.advanceTimersByTimeAsync(40_000);
+      expect(fakeSockets.at(-1)?.options?.headers?.['x-provider-data-channel']).toBe('credential_a');
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('keeps a healthy credential channel alive with node-driven ping probes', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(
+        control.sent
+          .filter((message): message is string => typeof message === 'string')
+          .map((message) => JSON.parse(message) as Record<string, unknown>)
+          .find((message) => message.type === 'provider.hello')?.nodeId,
+      );
+      control.emit(
+        'message',
+        Buffer.from(JSON.stringify({
+          type: 'platform.ready',
+          nodeId,
+          credentialDataChannels: {
+            protocolVersion: 1,
+            epochId: 'epoch_node_ping',
+            revision: 1,
+            connectionToken: 'epoch_token_node_ping',
+            credentialBindingIds: ['credential_a'],
+          },
+        })),
+        false,
+      );
+      await Promise.resolve();
+
+      const channel = fakeSockets[1];
+      channel.readyState = FakeWebSocket.OPEN;
+      channel.emit('open');
+      channel.emit(
+        'message',
+        Buffer.from(JSON.stringify({
+          type: 'platform.credential_data_channel_ready',
+          protocolVersion: 1,
+          nodeId,
+          credentialBindingId: 'credential_a',
+          epochId: 'epoch_node_ping',
+          revision: 1,
+        })),
+        false,
+      );
+
+      for (let probe = 0; probe < 3; probe += 1) {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(channel.pingCount).toBe(probe + 1);
+        channel.emit('pong');
+      }
+
+      expect(channel.terminateCount).toBe(0);
+      expect(bridge.credentialDataChannelState()).toMatchObject({ desired: 1, ready: 1, livenessTimeouts: 0 });
+    } finally {
+      bridge.stop();
+    }
+  });
+
+  it('recovers four stale channels without leaking or starving the four handshake slots', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(
+        control.sent
+          .filter((message): message is string => typeof message === 'string')
+          .map((message) => JSON.parse(message) as Record<string, unknown>)
+          .find((message) => message.type === 'provider.hello')?.nodeId,
+      );
+      const credentialBindingIds = Array.from({ length: 8 }, (_, index) => `credential_${index}`);
+      control.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId,
+            credentialDataChannels: {
+              protocolVersion: 1,
+              epochId: 'epoch_four_stale',
+              revision: 1,
+              connectionToken: 'epoch_token_four_stale',
+              credentialBindingIds,
+            },
+          }),
+        ),
+        false,
+      );
+      await Promise.resolve();
+
+      for (const credentialBindingId of credentialBindingIds) {
+        const socket = fakeSockets.find(
+          (candidate) => candidate.options?.headers?.['x-provider-data-channel'] === credentialBindingId,
+        );
+        expect(socket).toBeDefined();
+        if (!socket) throw new Error(`missing fake socket for ${credentialBindingId}`);
+        socket.readyState = FakeWebSocket.OPEN;
+        socket.emit('open');
+        socket.emit(
+          'message',
+          Buffer.from(
+            JSON.stringify({
+              type: 'platform.credential_data_channel_ready',
+              protocolVersion: 1,
+              nodeId,
+              credentialBindingId,
+              epochId: 'epoch_four_stale',
+              revision: 1,
+            }),
+          ),
+          false,
+        );
+        await Promise.resolve();
+      }
+      expect(bridge.credentialDataChannelState()).toMatchObject({ desired: 8, ready: 8 });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      for (const credentialBindingId of credentialBindingIds.slice(4)) {
+        const socket = fakeSockets.find(
+          (candidate) => candidate.options?.headers?.['x-provider-data-channel'] === credentialBindingId,
+        );
+        expect(socket).toBeDefined();
+        if (!socket) throw new Error(`missing fake socket for ${credentialBindingId}`);
+        socket.emit('ping');
+      }
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fakeSockets.slice(1, 5).every((socket) => socket.terminateCount === 1)).toBe(true);
+      expect(bridge.credentialDataChannelState()).toMatchObject({
+        desired: 8,
+        ready: 4,
+        reconnecting: 4,
+        livenessTimeouts: 4,
+      });
+
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(bridge.credentialDataChannelState()).toMatchObject({
+        desired: 8,
+        ready: 4,
+        connecting: 4,
+        reconnecting: 0,
+        pending: 0,
+      });
+      expect(fakeSockets).toHaveLength(13);
     } finally {
       bridge.stop();
     }

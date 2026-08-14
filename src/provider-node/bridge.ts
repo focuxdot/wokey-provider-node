@@ -97,6 +97,26 @@ const PROVIDER_CREDENTIAL_DATA_CHANNEL_READY_TIMEOUT_MS = positiveEnvNumber(
   'PROVIDER_CREDENTIAL_DATA_CHANNEL_READY_TIMEOUT_MS',
   10_000,
 );
+const PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_CHECK_INTERVAL_MS = positiveEnvNumber(
+  'PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_CHECK_INTERVAL_MS',
+  30_000,
+);
+const PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS = Math.max(
+  positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS', 90_000),
+  PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_CHECK_INTERVAL_MS * 3,
+);
+
+export interface ProviderCredentialDataChannelPoolState {
+  enabled: boolean;
+  desired: number;
+  connecting: number;
+  awaitingReady: number;
+  ready: number;
+  reconnecting: number;
+  pending: number;
+  livenessTimeouts: number;
+  lastLivenessTimeoutAt?: string;
+}
 
 export interface BridgeState {
   connected: boolean;
@@ -184,8 +204,10 @@ type ProviderCredentialDataChannel = {
   epochId: string;
   state: 'connecting' | 'awaiting_ready' | 'ready' | 'closed';
   readyTimer?: NodeJS.Timeout;
+  lastPlatformActivityAt: number;
   handshakeSlotHeld: boolean;
   finalized: boolean;
+  finalize: (reason?: string) => void;
 };
 
 class ProviderCredentialDataChannelPool {
@@ -194,6 +216,9 @@ class ProviderCredentialDataChannelPool {
   private readonly reconnectTimers = new Map<string, NodeJS.Timeout>();
   private readonly reconnectAttempts = new Map<string, number>();
   private readonly pendingConnections = new Set<string>();
+  private livenessTimer?: NodeJS.Timeout;
+  private livenessTimeouts = 0;
+  private lastLivenessTimeoutAt?: string;
   private activeHandshakes = 0;
   private acceptingSessions = true;
   private dataProtocol: OfficialExitDataProtocol = 'json_base64_v1';
@@ -282,6 +307,7 @@ class ProviderCredentialDataChannelPool {
         this.pendingConnections.add(credentialBindingId);
       }
     }
+    this.ensureLivenessTimer();
     this.pumpConnections();
     return true;
   }
@@ -297,12 +323,36 @@ class ProviderCredentialDataChannelPool {
     return count;
   }
 
+  stateSnapshot(): ProviderCredentialDataChannelPoolState {
+    let connecting = 0;
+    let awaitingReady = 0;
+    let ready = 0;
+    for (const channel of this.channels.values()) {
+      if (channel.state === 'connecting') connecting += 1;
+      else if (channel.state === 'awaiting_ready') awaitingReady += 1;
+      else if (channel.state === 'ready') ready += 1;
+    }
+    return {
+      enabled: Boolean(this.plan),
+      desired: this.plan?.credentialBindingIds.length ?? 0,
+      connecting,
+      awaitingReady,
+      ready,
+      reconnecting: this.reconnectTimers.size,
+      pending: this.pendingConnections.size,
+      livenessTimeouts: this.livenessTimeouts,
+      lastLivenessTimeoutAt: this.lastLivenessTimeoutAt,
+    };
+  }
+
   stop(reasonCode: string): void {
     this.plan = undefined;
     this.stopChannels(reasonCode);
   }
 
   private stopChannels(reasonCode: string): void {
+    if (this.livenessTimer) clearInterval(this.livenessTimer);
+    this.livenessTimer = undefined;
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
     this.reconnectTimers.clear();
     this.reconnectAttempts.clear();
@@ -384,8 +434,10 @@ class ProviderCredentialDataChannelPool {
       tunnels,
       epochId: plan.epochId,
       state: 'connecting',
+      lastPlatformActivityAt: Date.now(),
       handshakeSlotHeld: true,
       finalized: false,
+      finalize: () => {},
     };
     this.channels.set(credentialBindingId, channel);
     this.activeHandshakes += 1;
@@ -407,9 +459,11 @@ class ProviderCredentialDataChannelPool {
         this.scheduleReconnect(credentialBindingId, plan.epochId);
       }
     };
+    channel.finalize = finalize;
     socket.on('open', () => {
       if (this.channels.get(credentialBindingId) !== channel || channel.finalized) return;
       channel.state = 'awaiting_ready';
+      channel.lastPlatformActivityAt = Date.now();
       channel.readyTimer = setTimeout(() => {
         if (channel.state === 'ready' || channel.finalized) return;
         try {
@@ -424,6 +478,7 @@ class ProviderCredentialDataChannelPool {
     });
     socket.on('message', (raw, isBinary) => {
       if (this.channels.get(credentialBindingId) !== channel || channel.finalized) return;
+      channel.lastPlatformActivityAt = Date.now();
       if (isBinary) {
         if (channel.state !== 'ready') {
           socket.close(1008, 'credential_data_channel_not_ready');
@@ -441,6 +496,14 @@ class ProviderCredentialDataChannelPool {
       void this.handleMessage(channel, encoded.toString('utf8'), encoded.byteLength).catch(() =>
         socket.close(1008, 'credential_data_channel_message_invalid'),
       );
+    });
+    socket.on('ping', () => {
+      if (this.channels.get(credentialBindingId) !== channel || channel.finalized) return;
+      channel.lastPlatformActivityAt = Date.now();
+    });
+    socket.on('pong', () => {
+      if (this.channels.get(credentialBindingId) !== channel || channel.finalized) return;
+      channel.lastPlatformActivityAt = Date.now();
     });
     socket.on('close', (_code, reason) => finalize(normalizeProviderBridgeCloseReason(reason)));
     socket.on('error', () => {
@@ -568,6 +631,57 @@ class ProviderCredentialDataChannelPool {
     }, delay);
     timer.unref?.();
     this.reconnectTimers.set(credentialBindingId, timer);
+  }
+
+  private ensureLivenessTimer(): void {
+    if (this.livenessTimer) return;
+    this.livenessTimer = setInterval(
+      () => this.reconcileChannelLiveness(),
+      PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_CHECK_INTERVAL_MS,
+    );
+    this.livenessTimer.unref?.();
+  }
+
+  private reconcileChannelLiveness(): void {
+    const plan = this.plan;
+    if (!plan) return;
+    const desired = new Set(plan.credentialBindingIds);
+    for (const credentialBindingId of desired) {
+      if (
+        !this.channels.has(credentialBindingId)
+        && !this.reconnectTimers.has(credentialBindingId)
+        && !this.pendingConnections.has(credentialBindingId)
+      ) {
+        this.pendingConnections.add(credentialBindingId);
+      }
+    }
+    const now = Date.now();
+    for (const channel of [...this.channels.values()]) {
+      if (channel.finalized || !desired.has(channel.credentialBindingId)) continue;
+      if (now - channel.lastPlatformActivityAt < PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS) {
+        if (channel.socket.readyState === WebSocket.OPEN) {
+          try {
+            // Drive an independent liveness probe so this watchdog does not
+            // depend on Platform's separately configured ping cadence.
+            channel.socket.ping();
+          }
+          catch {
+            // The timeout path below owns cleanup if no activity follows.
+          }
+        }
+        continue;
+      }
+      try {
+        channel.socket.terminate();
+      }
+      catch {
+        // finalize below owns local cleanup and reconnect scheduling
+      }
+      this.livenessTimeouts += 1;
+      this.lastLivenessTimeoutAt = new Date(now).toISOString();
+      channel.finalize('credential_data_channel_liveness_timeout');
+    }
+    this.pumpConnections();
   }
 
   private releaseHandshakeSlot(channel: ProviderCredentialDataChannel): void {
@@ -754,6 +868,10 @@ export class ProviderBridge {
 
   inFlightCount(): number {
     return this.officialExitTunnels.activeSessionCount() + this.credentialDataChannels.activeSessionCount();
+  }
+
+  credentialDataChannelState(): ProviderCredentialDataChannelPoolState {
+    return this.credentialDataChannels.stateSnapshot();
   }
 
   sendCredentialMirrorUpdate(input: CredentialMirrorUpdateInput): Promise<void> {
