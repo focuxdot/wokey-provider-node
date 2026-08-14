@@ -4,6 +4,17 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.80]
+
+### Added
+- Report bounded credential-channel health metrics to the Platform without
+  exposing credential identifiers.
+
+### Changed
+- Omit credential-channel metrics from normal heartbeats, report them while
+  degraded or reconnecting, when liveness timeout counts change, and once on
+  recovery so the Platform does not retain stale abnormal state.
+
 ## [0.1.79]
 
 ### Fixed

@@ -3,6 +3,7 @@ import {
   buildProviderBridgeWebSocketConnection,
   normalizeProviderBridgeCloseReason,
   selectedOfficialExitBulkTransfer,
+  shouldReportProviderCredentialDataChannelMetrics,
   shouldSuppressProviderBridgeReconnect,
 } from '../src/provider-node/bridge.js';
 
@@ -58,6 +59,19 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
 vi.mock('ws', () => ({ default: FakeWebSocket }));
 
 describe('ProviderBridge reconnect policy', () => {
+  it('reports credential-channel metrics only for abnormal state, counter changes, and recovery', () => {
+    const normal = { desired: 3, ready: 3, reconnecting: 0, livenessTimeouts: 0 };
+    const reconnecting = { desired: 3, ready: 2, reconnecting: 1, livenessTimeouts: 0 };
+    const recovered = { desired: 3, ready: 3, reconnecting: 0, livenessTimeouts: 0 };
+    const livenessChanged = { desired: 3, ready: 3, reconnecting: 0, livenessTimeouts: 1 };
+
+    expect(shouldReportProviderCredentialDataChannelMetrics(normal, undefined)).toBe(false);
+    expect(shouldReportProviderCredentialDataChannelMetrics(reconnecting, undefined)).toBe(true);
+    expect(shouldReportProviderCredentialDataChannelMetrics(recovered, reconnecting)).toBe(true);
+    expect(shouldReportProviderCredentialDataChannelMetrics(recovered, normal)).toBe(false);
+    expect(shouldReportProviderCredentialDataChannelMetrics(livenessChanged, normal)).toBe(true);
+  });
+
   it('returns only a locally valid negotiated bulk queue budget', () => {
     const ready = (connectionQueueBudgetBytes: number) =>
       ({
@@ -292,14 +306,16 @@ describe('ProviderBridge endpoint failover', () => {
       socket.readyState = FakeWebSocket.OPEN;
       socket.emit('open');
 
-      const heartbeats = () =>
+      const heartbeatMessages = () =>
         socket.sent
           .filter((message): message is string => typeof message === 'string')
-          .map((message) => JSON.parse(message) as { type?: string })
-          .filter((message) => message.type === 'provider.heartbeat').length;
+          .map((message) => JSON.parse(message) as Record<string, unknown>)
+          .filter((message) => message.type === 'provider.heartbeat');
+      const heartbeats = () => heartbeatMessages().length;
 
       // One immediate state report on connect.
       expect(heartbeats()).toBe(1);
+      expect(heartbeatMessages()[0]).not.toHaveProperty('credentialDataChannels');
 
       // Not the chatty 10s cadence official-exit nodes deliberately avoid…
       await vi.advanceTimersByTimeAsync(60_000);
@@ -638,6 +654,17 @@ describe('ProviderBridge endpoint failover', () => {
       expect(fakeSockets[2].terminateCount).toBe(0);
       expect(fakeSockets[3].terminateCount).toBe(0);
       expect(bridge.credentialDataChannelState()).toMatchObject({
+        desired: 3,
+        ready: 2,
+        reconnecting: 1,
+        livenessTimeouts: 1,
+      });
+      (bridge as unknown as { sendHeartbeat: () => void }).sendHeartbeat();
+      const heartbeat = control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .findLast((message) => message.type === 'provider.heartbeat');
+      expect(heartbeat?.credentialDataChannels).toEqual({
         desired: 3,
         ready: 2,
         reconnecting: 1,

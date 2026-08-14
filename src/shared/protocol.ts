@@ -113,6 +113,13 @@ export interface ProviderNodeRuntimeIdentity {
   osArch: string;
 }
 
+export interface ProviderCredentialDataChannelMetrics {
+  desired: number;
+  ready: number;
+  reconnecting: number;
+  livenessTimeouts: number;
+}
+
 export interface ProviderHeartbeat {
   type: 'provider.heartbeat';
   nodeId: string;
@@ -125,6 +132,7 @@ export interface ProviderHeartbeat {
   capabilities?: ProviderNodeCapability[];
   officialExit?: OfficialExitHealth;
   acceptingSessions?: boolean;
+  credentialDataChannels?: ProviderCredentialDataChannelMetrics;
 }
 
 export type ProviderUpgradePhase =
