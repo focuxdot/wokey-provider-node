@@ -31,7 +31,6 @@ import type {
   PlatformProviderReady,
   PlatformUpgradeAvailable,
   ProviderCredentialMirrorUpdate,
-  ProviderCredentialDataChannelMetrics,
   ProviderCredentialDataChannelReady,
   ProviderCredentialDataChannelsApplied,
   ProviderCredentialDataChannelsResyncRequested,
@@ -162,19 +161,6 @@ export function normalizeProviderBridgeCloseReason(reason: Buffer | string | und
 
 export function shouldSuppressProviderBridgeReconnect(reason: string): boolean {
   return NON_RETRYABLE_CLOSE_REASONS.has(reason);
-}
-
-export function shouldReportProviderCredentialDataChannelMetrics(
-  current: ProviderCredentialDataChannelMetrics,
-  previous: ProviderCredentialDataChannelMetrics | undefined,
-): boolean {
-  const currentAbnormal = current.ready < current.desired || current.reconnecting > 0;
-  const previousAbnormal = Boolean(
-    previous && (previous.ready < previous.desired || previous.reconnecting > 0),
-  );
-  return currentAbnormal
-    || previousAbnormal
-    || current.livenessTimeouts !== (previous?.livenessTimeouts ?? 0);
 }
 
 export function buildProviderBridgeWebSocketConnection(
@@ -752,7 +738,6 @@ export class ProviderBridge {
   // the fallback. Nodes on networks that block the primary IP settle on fallback.
   private useFallback = false;
   private lastSentCapabilitiesHash: string | null = null;
-  private lastReportedCredentialDataChannelMetrics?: ProviderCredentialDataChannelMetrics;
   private stopped = false;
   private acceptingSessions = true;
   private pendingDrainAck?: {
@@ -1096,7 +1081,6 @@ export class ProviderBridge {
   private sendHeartbeat(forceCapabilities = false) {
     const config = this.getConfig();
     const risk = this.risk.snapshot();
-    const credentialDataChannels = this.credentialDataChannels.stateSnapshot();
     this.state.risk = risk;
     const capabilities = this.capabilitiesWithLocalCapacity(config);
     const capabilitiesHash = sha256Json(capabilities);
@@ -1112,19 +1096,6 @@ export class ProviderBridge {
       officialExit: this.officialExitHealth(config),
       acceptingSessions: this.acceptingSessions,
     };
-    const channelMetrics = {
-      desired: credentialDataChannels.desired,
-      ready: credentialDataChannels.ready,
-      reconnecting: credentialDataChannels.reconnecting,
-      livenessTimeouts: credentialDataChannels.livenessTimeouts,
-    };
-    if (shouldReportProviderCredentialDataChannelMetrics(
-      channelMetrics,
-      this.lastReportedCredentialDataChannelMetrics,
-    )) {
-      heartbeat.credentialDataChannels = channelMetrics;
-      this.lastReportedCredentialDataChannelMetrics = channelMetrics;
-    }
     if (forceCapabilities || capabilitiesHash !== this.lastSentCapabilitiesHash) {
       heartbeat.capabilities = capabilities;
       this.lastSentCapabilitiesHash = capabilitiesHash;

@@ -4,6 +4,13 @@ All notable changes to Wokey Provider Node are documented here. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.81]
+
+### Changed
+- Keep credential-channel reconnect and liveness diagnostics in the local
+  status surface instead of duplicating Platform-owned channel health in
+  heartbeat messages.
+
 ## [0.1.80]
 
 ### Added

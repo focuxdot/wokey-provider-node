@@ -3,7 +3,6 @@ import {
   buildProviderBridgeWebSocketConnection,
   normalizeProviderBridgeCloseReason,
   selectedOfficialExitBulkTransfer,
-  shouldReportProviderCredentialDataChannelMetrics,
   shouldSuppressProviderBridgeReconnect,
 } from '../src/provider-node/bridge.js';
 
@@ -59,19 +58,6 @@ const { FakeWebSocket, fakeSockets } = vi.hoisted(() => {
 vi.mock('ws', () => ({ default: FakeWebSocket }));
 
 describe('ProviderBridge reconnect policy', () => {
-  it('reports credential-channel metrics only for abnormal state, counter changes, and recovery', () => {
-    const normal = { desired: 3, ready: 3, reconnecting: 0, livenessTimeouts: 0 };
-    const reconnecting = { desired: 3, ready: 2, reconnecting: 1, livenessTimeouts: 0 };
-    const recovered = { desired: 3, ready: 3, reconnecting: 0, livenessTimeouts: 0 };
-    const livenessChanged = { desired: 3, ready: 3, reconnecting: 0, livenessTimeouts: 1 };
-
-    expect(shouldReportProviderCredentialDataChannelMetrics(normal, undefined)).toBe(false);
-    expect(shouldReportProviderCredentialDataChannelMetrics(reconnecting, undefined)).toBe(true);
-    expect(shouldReportProviderCredentialDataChannelMetrics(recovered, reconnecting)).toBe(true);
-    expect(shouldReportProviderCredentialDataChannelMetrics(recovered, normal)).toBe(false);
-    expect(shouldReportProviderCredentialDataChannelMetrics(livenessChanged, normal)).toBe(true);
-  });
-
   it('returns only a locally valid negotiated bulk queue budget', () => {
     const ready = (connectionQueueBudgetBytes: number) =>
       ({
@@ -664,12 +650,7 @@ describe('ProviderBridge endpoint failover', () => {
         .filter((message): message is string => typeof message === 'string')
         .map((message) => JSON.parse(message) as Record<string, unknown>)
         .findLast((message) => message.type === 'provider.heartbeat');
-      expect(heartbeat?.credentialDataChannels).toEqual({
-        desired: 3,
-        ready: 2,
-        reconnecting: 1,
-        livenessTimeouts: 1,
-      });
+      expect(heartbeat).not.toHaveProperty('credentialDataChannels');
 
       await vi.advanceTimersByTimeAsync(40_000);
       expect(fakeSockets.at(-1)?.options?.headers?.['x-provider-data-channel']).toBe('credential_a');
