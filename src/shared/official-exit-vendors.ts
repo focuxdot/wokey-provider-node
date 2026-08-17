@@ -9,7 +9,8 @@ export type OfficialExitVendorId =
   | 'deepseek'
   | 'google'
   | 'xai'
-  | 'jimeng';
+  | 'jimeng'
+  | 'cursor';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -80,6 +81,13 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // completed videos use signed vlabvod.com URLs during query_result downloads;
     // Image 4.0 results use signed byteimg.com URLs.
     allowedHosts: ['*.byteimg.com', '*.byted.org', '*.bytedanceapi.com', '*.jianying.com', '*.vlabvod.com', '*.snssdk.com', '*.bytedancevod.com'],
+  },
+  {
+    id: 'cursor',
+    displayName: 'Cursor Desktop',
+    // Keep the default narrow: these are the two production hosts used by the
+    // current Desktop relay for dashboard RPCs and Agent streaming.
+    allowedHosts: ['api2.cursor.sh', 'agentn.api5.cursor.sh'],
   },
 ]);
 

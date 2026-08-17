@@ -88,6 +88,7 @@ describe('official-exit vendor defaults', () => {
       'google',
       'xai',
       'jimeng',
+      'cursor',
     ]);
   });
 
@@ -136,6 +137,10 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('bytedancevod.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('byteimg.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.kimi.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('api2.cursor.sh', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('agentn.api5.cursor.sh', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('cursor.sh.evil.example', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('future.cursor.sh', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('token-plan.cn-beijing.maas.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('aliyuncs.com', defaults)).toBe(true);

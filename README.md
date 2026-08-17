@@ -163,6 +163,7 @@ This is the single most important safety property, so it is enforced in source, 
 | Google Gemini | `generativelanguage.googleapis.com` |
 | xAI / Grok | `*.x.ai`, `*.grok.com` |
 | Jimeng / Dreamina | `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com` |
+| Cursor Desktop | `api2.cursor.sh`, `agentn.api5.cursor.sh` |
 
 You can narrow or extend the local egress host list with `PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS`. This setting is read only from the local environment, so Platform cannot widen it remotely. Wildcard `*` is not supported; use explicit hosts or domain patterns such as `.example.com` / `*.example.com`.
 
