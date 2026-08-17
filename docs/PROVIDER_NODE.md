@@ -72,8 +72,16 @@ Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_
 - Codex device code / OAuth flow
 - xAI/Grok device code / OAuth flow
 - Jimeng/Dreamina CLI device authorization
+- Cursor Agent CLI browser authorization (enabled by default; optionally pin
+  the executable with `CURSOR_AGENT_PATH`)
 
 Browser cookie/session import is intentionally unsupported. Provider Node does not scan browser cookie databases and does not read browser safe-storage secrets.
+
+Cursor authorization runs `cursor-agent login` with browser auto-open disabled
+inside a permission-restricted temporary HOME/XDG tree. The node sends only the
+official `cursor.com` authorization URL and, after `cursor-agent models`
+validation succeeds, a versioned credential bundle over its authenticated
+control socket. The temporary tree is removed before completion is reported.
 
 The local console makes Grok authorization one browser action: it opens a local
 placeholder tab from the click, requests the xAI device code, navigates that tab

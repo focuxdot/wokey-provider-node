@@ -34,6 +34,7 @@ import { currentProviderNodeRuntimeIdentity } from './runtime-identity.js';
 import { BoundedDevicePoller, type DevicePollFailure, type DevicePollSnapshot } from './bounded-device-poller.js';
 import { AsyncMutex, SingleFlight } from './single-flight.js';
 import { detectDreaminaCli, JimengAuthorizationHandler, type DreaminaCliDescriptor } from './jimeng-auth.js';
+import { CursorAuthorizationHandler, detectCursorAgent } from './cursor-auth.js';
 import { DreaminaCliInstallError, DreaminaCliInstaller } from './jimeng-cli-installer.js';
 import { JimengVideoHandler } from './jimeng-video.js';
 import { applyClaudeCodeMetadataToOAuth, importClaudeCodeOAuth } from './claude-code-auth.js';
@@ -440,6 +441,10 @@ function createJimengRuntime(cli: DreaminaCliDescriptor | undefined): {
 }
 
 let { authorization: jimengAuthorization, video: jimengVideo } = createJimengRuntime(dreaminaCli);
+const cursorAuthorization = new CursorAuthorizationHandler({
+  resolveCli: () => detectCursorAgent(getEnv('CURSOR_AGENT_PATH', '')),
+  getIdentity: () => ({ nodeId: config.nodeId, providerId: config.providerId }),
+});
 
 function jimengVideoTransferOrigins(platformWsUrl: string, configured: string): string[] {
   const explicit = configured
@@ -475,6 +480,7 @@ const bridge = new ProviderBridge(() => config, {
     reportPersistedUpgradeState();
   },
   jimengAuthorization,
+  cursorAuthorization,
   jimengVideo,
   jimengCliInstall: dreaminaCliInstaller.status().supported ? { install: installDreaminaCliAndActivate } : undefined,
   onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,

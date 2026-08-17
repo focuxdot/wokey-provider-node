@@ -71,8 +71,14 @@ export const JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION = 2;
 export type JimengVideoControlProtocolVersion = typeof JIMENG_VIDEO_CONTROL_PROTOCOL_VERSION;
 export const JIMENG_USAGE_CONTROL_PROTOCOL_VERSION = 1;
 export type JimengUsageControlProtocolVersion = typeof JIMENG_USAGE_CONTROL_PROTOCOL_VERSION;
+export const CURSOR_AUTH_CONTROL_PROTOCOL_VERSION = 1;
+export type CursorAuthControlProtocolVersion = typeof CURSOR_AUTH_CONTROL_PROTOCOL_VERSION;
 
 export interface ProviderNodeControlCapabilities {
+  cursorAuth?: {
+    protocolVersions: CursorAuthControlProtocolVersion[];
+    cliVersion: string;
+  };
   jimengCliInstall?: {
     protocolVersions: JimengCliInstallProtocolVersion[];
   };
@@ -91,6 +97,63 @@ export interface ProviderNodeControlCapabilities {
     protocolVersions: JimengUsageControlProtocolVersion[];
     cliVersion: string;
   };
+}
+
+export interface PlatformCursorAuthStart {
+  type: 'platform.cursor_auth_start';
+  protocolVersion: CursorAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  providerId: string;
+  nodeId: string;
+  deadlineMs: number;
+}
+
+export interface PlatformCursorAuthCancel {
+  type: 'platform.cursor_auth_cancel';
+  protocolVersion: CursorAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+}
+
+export interface ProviderCursorAuthStarted {
+  type: 'provider.cursor_auth_started';
+  protocolVersion: CursorAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+  authorizationUrl: string;
+  expiresAt: string;
+}
+
+export interface ProviderCursorAuthCompleted {
+  type: 'provider.cursor_auth_completed';
+  protocolVersion: CursorAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+  encodedCredentialBundle: string;
+}
+
+export type CursorAuthFailureStage =
+  | 'launch'
+  | 'browser_authorization'
+  | 'credential_validation'
+  | 'credential_capture'
+  | 'cleanup';
+
+export interface ProviderCursorAuthFailed {
+  type: 'provider.cursor_auth_failed';
+  protocolVersion: CursorAuthControlProtocolVersion;
+  requestId: string;
+  flowId: string;
+  nodeId: string;
+  stage: CursorAuthFailureStage;
+  errorCode: string;
+  retryable: boolean;
+  exitCode?: number;
+  diagnostic?: string;
 }
 
 export interface ProviderHello {
@@ -565,6 +628,9 @@ export type ProviderToPlatformMessage =
   | ProviderJimengAuthStarted
   | ProviderJimengAuthCompleted
   | ProviderJimengAuthFailed
+  | ProviderCursorAuthStarted
+  | ProviderCursorAuthCompleted
+  | ProviderCursorAuthFailed
   | ProviderJimengCliInstallCompleted
   | ProviderJimengCliInstallFailed
   | ProviderJimengUsageCompleted
@@ -581,6 +647,8 @@ export type PlatformToProviderMessage =
   | PlatformUpgradeAvailable
   | PlatformJimengAuthStart
   | PlatformJimengAuthCancel
+  | PlatformCursorAuthStart
+  | PlatformCursorAuthCancel
   | PlatformJimengCliInstall
   | PlatformJimengUsageRefresh
   | PlatformJimengUsageCancel
