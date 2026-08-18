@@ -77,7 +77,8 @@ export type CursorAuthControlProtocolVersion = typeof CURSOR_AUTH_CONTROL_PROTOC
 export interface ProviderNodeControlCapabilities {
   cursorAuth?: {
     protocolVersions: CursorAuthControlProtocolVersion[];
-    cliVersion: string;
+    implementation: 'native_oauth';
+    implementationVersion: string;
   };
   jimengCliInstall?: {
     protocolVersions: JimengCliInstallProtocolVersion[];

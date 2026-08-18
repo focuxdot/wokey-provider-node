@@ -47,8 +47,6 @@ if grep_scan -EnR --binary-files=without-match \
   --exclude='audit-oss-boundary.sh' \
   --exclude='jimeng-credential-store.ts' \
   --exclude='jimeng_auth.test.ts' \
-  --exclude='cursor-auth.ts' \
-  --exclude='cursor_auth.test.ts' \
   'exchangeAnthropicSessionKey|detectClaudeBrowserSession|readClaudeBrowserSession|Network/Cookies|Chrome Safe Storage|sessionKey=|browser-session/import|from-session|scopeBrowserSession|browserUserAgent|Keychain|find-generic-password|Claude Code-credentials|/usr/bin/security' \
   src tests packaging scripts web; then
   fail "browser cookie/session import code must not be present"
@@ -66,20 +64,6 @@ fi
 if ! grep_scan -Fq "const KEYRING_SERVICE = 'dreamina';" src/provider-node/jimeng-credential-store.ts \
   || ! grep_scan -Fq "const KEYRING_ACCOUNT = 'byted_cli_user_token';" src/provider-node/jimeng-credential-store.ts; then
   fail "Jimeng keychain support must use the fixed dreamina credential target"
-fi
-
-# Cursor Agent CLI keeps its access and refresh tokens in two fixed generic
-# password items on macOS. This exception is limited to CLI token capture and
-# rollback; browser Cookie databases and Cursor Safe Storage remain forbidden.
-if grep_scan -En \
-  'exchangeAnthropicSessionKey|detectClaudeBrowserSession|readClaudeBrowserSession|Network/Cookies|Chrome Safe Storage|Cursor Safe Storage|sessionKey=|browser-session/import|from-session|scopeBrowserSession|browserUserAgent|Claude Code-credentials' \
-  src/provider-node/cursor-auth.ts tests/cursor_auth.test.ts; then
-  fail "Cursor keychain support must not import browser or Safe Storage secrets"
-fi
-if ! grep_scan -Fq "const CURSOR_KEYCHAIN_ACCOUNT = 'cursor-user';" src/provider-node/cursor-auth.ts \
-  || ! grep_scan -Fq "const CURSOR_ACCESS_TOKEN_SERVICE = 'cursor-access-token';" src/provider-node/cursor-auth.ts \
-  || ! grep_scan -Fq "const CURSOR_REFRESH_TOKEN_SERVICE = 'cursor-refresh-token';" src/provider-node/cursor-auth.ts; then
-  fail "Cursor keychain support must use the fixed Cursor Agent CLI credential targets"
 fi
 
 if grep_scan -EnR --binary-files=without-match \

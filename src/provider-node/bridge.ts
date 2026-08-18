@@ -1208,7 +1208,7 @@ export class ProviderBridge {
           flowId: start.flowId,
           nodeId: this.getConfig().nodeId,
           stage: 'launch',
-          errorCode: 'cursor_cli_unavailable',
+          errorCode: 'cursor_auth_not_supported',
           retryable: false,
         });
         return;

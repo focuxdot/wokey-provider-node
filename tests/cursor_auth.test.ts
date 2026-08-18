@@ -1,10 +1,8 @@
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { describe, expect, it } from 'vitest';
 import {
+  createCursorOAuthLogin,
   CursorAuthorizationHandler,
-  detectCursorAgent,
   type CursorAuthEvent,
 } from '../src/provider-node/cursor-auth.js';
 import {
@@ -12,11 +10,8 @@ import {
   type PlatformCursorAuthStart,
 } from '../src/shared/protocol.js';
 
-const tempDirs: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
+const NOW_MS = 1_800_000_000_000;
+const TEST_UUID = '123e4567-e89b-42d3-a456-426614174000';
 
 function startMessage(): PlatformCursorAuthStart {
   return {
@@ -30,164 +25,179 @@ function startMessage(): PlatformCursorAuthStart {
   };
 }
 
-describe.skipIf(process.platform === 'win32')('CursorAuthorizationHandler', () => {
-  it('advertises Cursor auth by default and resolves the CLI only when authorization starts', async () => {
-    let resolutions = 0;
-    const handler = new CursorAuthorizationHandler({
-      resolveCli: () => {
-        resolutions += 1;
-        return undefined;
-      },
-      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+function accessToken(claims: Record<string, unknown> = {}) {
+  return [
+    Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url'),
+    Buffer.from(JSON.stringify({
+      sub: 'cursor-account-1',
+      exp: Math.floor(NOW_MS / 1_000) + 3_600,
+      ...claims,
+    })).toString('base64url'),
+    'signature',
+  ].join('.');
+}
+
+function successfulResponse(claims?: Record<string, unknown>) {
+  return new Response(JSON.stringify({
+    accessToken: accessToken(claims),
+    refreshToken: 'cursor-refresh-token',
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
+describe('CursorAuthorizationHandler native OAuth', () => {
+  it('reproduces Cursor verifier/challenge generation without Cursor Agent', () => {
+    const entropy = Buffer.alloc(32, 7);
+    const login = createCursorOAuthLogin({
+      randomBytes: () => entropy,
+      randomUuid: () => TEST_UUID,
     });
-    expect(handler.capability()).toEqual({ protocolVersions: [1], cliVersion: 'lazy' });
-    expect(resolutions).toBe(0);
-    const event = await new Promise<CursorAuthEvent>((resolve) => handler.start(startMessage(), resolve));
-    expect(resolutions).toBe(1);
-    expect(event).toMatchObject({
-      type: 'provider.cursor_auth_failed',
-      errorCode: 'cursor_cli_unavailable',
-      retryable: false,
+    const expectedVerifier = entropy.toString('base64url');
+    const expectedChallenge = createHash('sha256').update(expectedVerifier).digest('base64url');
+    const url = new URL(login.authorizationUrl);
+
+    expect(login).toMatchObject({
+      uuid: TEST_UUID,
+      verifier: expectedVerifier,
+      challenge: expectedChallenge,
+    });
+    expect(url.origin).toBe('https://cursor.com');
+    expect(url.pathname).toBe('/loginDeepControl');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      challenge: expectedChallenge,
+      uuid: TEST_UUID,
+      mode: 'login',
+      redirectTarget: 'cli',
     });
   });
 
-  it('detects Cursor Agent and completes browser authorization from an isolated HOME', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'wokey-cursor-auth-test-'));
-    tempDirs.push(parent);
-    const executable = join(parent, 'cursor-agent');
-    await writeFile(executable, [
-      '#!/bin/sh',
-      'if [ "$1" = "--version" ]; then printf "2026.08.11-test\\n"; exit 0; fi',
-      'if [ -n "$CURSOR_API_KEY$CURSOR_API_ENDPOINT" ]; then exit 9; fi',
-      'if [ "$1" = "login" ]; then',
-      '  mkdir -p "$XDG_CONFIG_HOME/cursor"',
-      '  printf "Open a browser and navigate to this link: https://cursor.com/loginDeepControl?challenge=test\\n"',
-      '  printf \'{"authInfo":{"authId":"123|cursor-secret","userId":123,"email":"provider@example.com"}}\' > "$XDG_CONFIG_HOME/cursor/cli-config.json"',
-      '  exit 0',
-      'fi',
-      'if [ "$1" = "models" ]; then printf "cursor-grok-4.6-high-fast\\n"; exit 0; fi',
-      'exit 1',
-    ].join('\n'));
-    await chmod(executable, 0o755);
-
-    expect(detectCursorAgent(executable)).toEqual({ path: executable, version: '2026.08.11-test' });
+  it('advertises native OAuth and completes after pending poll responses', async () => {
+    const requests: URL[] = [];
+    const requestInits: RequestInit[] = [];
+    let polls = 0;
     const handler = new CursorAuthorizationHandler({
-      cli: { path: executable, version: '2026.08.11-test' },
       getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
-      tempParentDir: parent,
-      platform: 'linux',
+      now: () => NOW_MS,
+      randomBytes: () => Buffer.alloc(32, 9),
+      randomUuid: () => TEST_UUID,
+      sleep: async () => {},
+      fetch: async (input, init) => {
+        requests.push(new URL(input));
+        requestInits.push(init ?? {});
+        polls += 1;
+        return polls === 1 ? new Response('', { status: 404 }) : successfulResponse();
+      },
     });
+    expect(handler.capability()).toEqual({
+      protocolVersions: [1],
+      implementation: 'native_oauth',
+      implementationVersion: 'native-oauth-v1',
+    });
+
     const events: CursorAuthEvent[] = [];
     handler.start(startMessage(), (event) => events.push(event));
     await expect.poll(() => events.length, { timeout: 5_000 }).toBe(2);
-
     expect(events[0]).toMatchObject({
       type: 'provider.cursor_auth_started',
-      authorizationUrl: 'https://cursor.com/loginDeepControl?challenge=test',
+      authorizationUrl: expect.stringMatching(/^https:\/\/cursor\.com\/loginDeepControl\?/),
     });
-    expect(events[1]).toMatchObject({ type: 'provider.cursor_auth_completed' });
+    expect(events[0]).not.toHaveProperty('verifier');
+    expect(requests).toHaveLength(2);
+    expect(requests.every((url) => url.origin === 'https://api2.cursor.sh')).toBe(true);
+    expect(requests.every((url) => url.pathname === '/auth/poll')).toBe(true);
+    expect(requests[0].searchParams.get('uuid')).toBe(TEST_UUID);
+    expect(requests[0].searchParams.get('verifier')).toBeTruthy();
+    expect(requestInits.every((init) => init.redirect === 'error')).toBe(true);
+
     const completed = events[1];
     if (completed.type !== 'provider.cursor_auth_completed') throw new Error('unexpected_event');
     expect(JSON.parse(completed.encodedCredentialBundle)).toEqual({
       version: 1,
-      accessToken: '123|cursor-secret',
-      accountId: '123',
-      accountEmail: 'provider@example.com',
-      authorizedClientVersion: '2026.08.11-test',
+      accessToken: accessToken(),
+      refreshToken: 'cursor-refresh-token',
+      expiresAt: NOW_MS + 3_600_000,
+      accountId: 'cursor-account-1',
+      authorizedClientVersion: 'native-oauth-v1',
     });
-    await expect.poll(async () => (await readdir(parent)).sort()).toEqual(['cursor-agent']);
   });
 
-  it('rejects non-Cursor authorization URLs and removes temporary state', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'wokey-cursor-auth-url-test-'));
-    tempDirs.push(parent);
-    const executable = join(parent, 'cursor-agent');
-    await writeFile(executable, [
-      '#!/bin/sh',
-      'printf "https://example.com/login?token=secret\\n"',
-      'exit 0',
-    ].join('\n'));
-    await chmod(executable, 0o755);
+  it('cancels a pending native OAuth poll without local process cleanup', async () => {
     const handler = new CursorAuthorizationHandler({
-      cli: { path: executable, version: 'test' },
       getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
-      tempParentDir: parent,
-      platform: 'linux',
+      now: () => NOW_MS,
+      randomUuid: () => TEST_UUID,
+      fetch: async () => new Response('', { status: 404 }),
+      sleep: (_delayMs, signal) => new Promise((_resolve, reject) => {
+        if (signal.aborted) return reject(new Error('aborted'));
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
     });
-    const event = await new Promise<CursorAuthEvent>((resolve) => handler.start(startMessage(), (value) => {
-      if (value.type === 'provider.cursor_auth_failed') resolve(value);
-    }));
-    expect(event).toMatchObject({
+    const events: CursorAuthEvent[] = [];
+    handler.start(startMessage(), (event) => events.push(event));
+    await expect.poll(() => events.length).toBe(1);
+    expect(handler.cancel({
+      type: 'platform.cursor_auth_cancel',
+      protocolVersion: 1,
+      requestId: 'cancel-1',
+      flowId: 'flow-1',
+      nodeId: 'node-1',
+    })).toBe(true);
+    await expect.poll(() => events.length).toBe(2);
+    expect(events[1]).toMatchObject({
       type: 'provider.cursor_auth_failed',
-      stage: 'browser_authorization',
-      errorCode: 'cursor_authorization_url_invalid',
+      errorCode: 'cursor_auth_cancelled',
+      retryable: false,
     });
-    expect(event).not.toHaveProperty('encodedCredentialBundle');
-    await expect.poll(async () => (await readdir(parent)).sort()).toEqual(['cursor-agent']);
   });
 
-  it('uses the native macOS login keychain through an isolated HOME and restores previous Cursor tokens', async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'wokey-cursor-macos-auth-test-'));
-    tempDirs.push(parent);
-    const nativeHomeDir = join(parent, 'native-home');
-    await mkdir(join(nativeHomeDir, 'Library', 'Keychains'), { recursive: true });
-    await writeFile(join(nativeHomeDir, 'Library', 'Keychains', 'login.keychain-db'), 'test-keychain');
-    const executable = join(parent, 'cursor-agent');
-    await writeFile(executable, [
-      '#!/bin/sh',
-      'if [ "$1" = "login" ]; then',
-      '  mkdir -p "$XDG_CONFIG_HOME/cursor"',
-      '  printf "https://cursor.com/loginDeepControl?challenge=test\\n"',
-      '  printf \'{"authInfo":{"userId":456,"email":"mac@example.com"}}\' > "$XDG_CONFIG_HOME/cursor/cli-config.json"',
-      '  exit 0',
-      'fi',
-      'if [ "$1" = "models" ]; then printf "cursor-grok-4.6-high-fast\\n"; exit 0; fi',
-      'exit 1',
-    ].join('\n'));
-    await chmod(executable, 0o755);
-
-    const calls: Array<{ args: string[]; input?: string }> = [];
-    let readCount = 0;
+  it('fails closed after bounded network failures', async () => {
+    let attempts = 0;
     const handler = new CursorAuthorizationHandler({
-      cli: { path: executable, version: '2026.08.11-test' },
       getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
-      tempParentDir: parent,
-      platform: 'darwin',
-      nativeHomeDir,
-      runNativeCommand: async (_executable, args, options) => {
-        calls.push({ args, input: options.input?.toString('utf8') });
-        if (args[0] === 'find-generic-password') {
-          const isAccess = args.includes('cursor-access-token');
-          const initial = readCount < 2;
-          readCount += 1;
-          return {
-            code: 0,
-            stdout: Buffer.from(initial
-              ? isAccess ? 'old-access' : 'old-refresh'
-              : isAccess ? 'new-access' : 'new-refresh'),
-            stderr: Buffer.alloc(0),
-          };
-        }
-        return { code: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+      now: () => NOW_MS,
+      randomUuid: () => TEST_UUID,
+      sleep: async () => {},
+      fetch: async () => {
+        attempts += 1;
+        throw new Error('network details must not escape');
       },
     });
     const events: CursorAuthEvent[] = [];
     handler.start(startMessage(), (event) => events.push(event));
-    await expect.poll(() => events.length, { timeout: 5_000 }).toBe(2);
-    const completed = events[1];
-    if (completed.type !== 'provider.cursor_auth_completed') throw new Error('unexpected_event');
-    expect(JSON.parse(completed.encodedCredentialBundle)).toMatchObject({
-      accessToken: 'new-access',
-      refreshToken: 'new-refresh',
-      accountId: '456',
-      accountEmail: 'mac@example.com',
+    await expect.poll(() => events.length).toBe(2);
+    expect(attempts).toBe(3);
+    expect(events[1]).toMatchObject({
+      type: 'provider.cursor_auth_failed',
+      errorCode: 'cursor_auth_poll_network_failed',
+      retryable: true,
     });
-    const restores = calls.filter((call) => call.args[0] === '-i');
-    expect(restores).toHaveLength(2);
-    expect(restores.map((call) => call.input)).toEqual(expect.arrayContaining([
-      expect.stringContaining('old-access'),
-      expect.stringContaining('old-refresh'),
-    ]));
-    expect(restores.every((call) => !call.input?.includes('new-'))).toBe(true);
+    expect(events[1]).not.toHaveProperty('diagnostic');
+  });
+
+  it('rejects sign-in policy failures and invalid account identity', async () => {
+    const policyHandler = new CursorAuthorizationHandler({
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      now: () => NOW_MS,
+      randomUuid: () => TEST_UUID,
+      fetch: async () => new Response(JSON.stringify({ error: 'sign_in_policy_violation' }), { status: 403 }),
+    });
+    const policyEvents: CursorAuthEvent[] = [];
+    policyHandler.start(startMessage(), (event) => policyEvents.push(event));
+    await expect.poll(() => policyEvents.length).toBe(2);
+    expect(policyEvents[1]).toMatchObject({ errorCode: 'cursor_auth_sign_in_policy_violation' });
+
+    const identityHandler = new CursorAuthorizationHandler({
+      getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      now: () => NOW_MS,
+      randomUuid: () => TEST_UUID,
+      fetch: async () => successfulResponse({ sub: undefined }),
+    });
+    const identityEvents: CursorAuthEvent[] = [];
+    identityHandler.start(startMessage(), (event) => identityEvents.push(event));
+    await expect.poll(() => identityEvents.length).toBe(2);
+    expect(identityEvents[1]).toMatchObject({
+      type: 'provider.cursor_auth_failed',
+      stage: 'credential_validation',
+      errorCode: 'cursor_credential_account_id_missing',
+    });
   });
 });
