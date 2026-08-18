@@ -1,4 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type {
   CursorAuthControlProtocolVersion,
   CursorAuthFailureStage,
@@ -44,6 +47,12 @@ interface CursorOAuthTokens {
   refreshToken: string;
 }
 
+export interface CursorDesktopIdentity {
+  machineId: string;
+  macMachineId?: string;
+  version: string;
+}
+
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 type SleepLike = (delayMs: number, signal: AbortSignal) => Promise<void>;
 
@@ -54,6 +63,7 @@ export interface CursorAuthorizationHandlerOptions {
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
   randomUuid?: () => string;
+  getDesktopIdentity?: () => Promise<CursorDesktopIdentity>;
 }
 
 export class CursorAuthorizationHandler {
@@ -159,7 +169,8 @@ export class CursorAuthorizationHandler {
       });
       assertFlowActive(flow);
       stage = 'credential_validation';
-      const encodedCredentialBundle = encodeNativeCredentialBundle(tokens, this.now());
+      const desktopIdentity = await (this.options.getDesktopIdentity ?? loadCursorDesktopIdentity)();
+      const encodedCredentialBundle = encodeNativeCredentialBundle(tokens, desktopIdentity, this.now());
       emit({
         type: 'provider.cursor_auth_completed',
         protocolVersion: CURSOR_AUTH_CONTROL_PROTOCOL_VERSION,
@@ -284,7 +295,11 @@ async function cursorTokensFromResponse(response: Response): Promise<CursorOAuth
   };
 }
 
-function encodeNativeCredentialBundle(tokens: CursorOAuthTokens, nowMs: number): string {
+function encodeNativeCredentialBundle(
+  tokens: CursorOAuthTokens,
+  desktopIdentity: CursorDesktopIdentity,
+  nowMs: number,
+): string {
   const claims = jwtClaims(tokens.accessToken);
   const accountId = requiredString(claims.sub, 'cursor_credential_account_id_missing', 512);
   const expiresAt = typeof claims.exp === 'number' && Number.isFinite(claims.exp)
@@ -299,8 +314,58 @@ function encodeNativeCredentialBundle(tokens: CursorOAuthTokens, nowMs: number):
     refreshToken: tokens.refreshToken,
     expiresAt,
     accountId,
-    authorizedClientVersion: CURSOR_AUTH_IMPLEMENTATION_VERSION,
+    authorizedClientVersion: requiredString(
+      desktopIdentity.version,
+      'cursor_credential_client_version_missing',
+      64,
+    ),
+    machineId: requiredString(desktopIdentity.machineId, 'cursor_credential_machine_id_missing', 512),
+    ...(desktopIdentity.macMachineId
+      ? { macMachineId: requiredString(desktopIdentity.macMachineId, 'cursor_credential_mac_machine_id_invalid', 512) }
+      : {}),
   });
+}
+
+export async function loadCursorDesktopIdentity(): Promise<CursorDesktopIdentity> {
+  const storagePath = cursorStoragePath();
+  const packagePath = cursorPackagePath();
+  let storage: Record<string, unknown>;
+  let packageJson: Record<string, unknown>;
+  try {
+    storage = JSON.parse(await readFile(storagePath, 'utf8')) as Record<string, unknown>;
+    packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    throw new CursorNativeAuthError('cursor_desktop_identity_unavailable', false);
+  }
+  return {
+    machineId: requiredString(storage['telemetry.machineId'], 'cursor_credential_machine_id_missing', 512),
+    macMachineId: typeof storage['telemetry.macMachineId'] === 'string' && storage['telemetry.macMachineId'].trim()
+      ? requiredString(storage['telemetry.macMachineId'], 'cursor_credential_mac_machine_id_invalid', 512)
+      : undefined,
+    version: requiredString(packageJson.version, 'cursor_credential_client_version_missing', 64),
+  };
+}
+
+function cursorStoragePath(): string {
+  if (process.env.WOKEY_CURSOR_STORAGE_PATH) return process.env.WOKEY_CURSOR_STORAGE_PATH;
+  if (process.platform === 'darwin') {
+    return join(homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'storage.json');
+  }
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    return join(process.env.APPDATA, 'Cursor', 'User', 'globalStorage', 'storage.json');
+  }
+  return join(homedir(), '.config', 'Cursor', 'User', 'globalStorage', 'storage.json');
+}
+
+function cursorPackagePath(): string {
+  if (process.env.WOKEY_CURSOR_PACKAGE_PATH) return process.env.WOKEY_CURSOR_PACKAGE_PATH;
+  if (process.platform === 'darwin') {
+    return '/Applications/Cursor.app/Contents/Resources/app/package.json';
+  }
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
+    return join(process.env.LOCALAPPDATA, 'Programs', 'cursor', 'resources', 'app', 'package.json');
+  }
+  return '/usr/share/cursor/resources/app/package.json';
 }
 
 function jwtClaims(token: string): Record<string, unknown> {

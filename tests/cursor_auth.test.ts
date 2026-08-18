@@ -80,6 +80,11 @@ describe('CursorAuthorizationHandler native OAuth', () => {
       randomBytes: () => Buffer.alloc(32, 9),
       randomUuid: () => TEST_UUID,
       sleep: async () => {},
+      getDesktopIdentity: async () => ({
+        machineId: 'provider-machine-id',
+        macMachineId: 'provider-mac-machine-id',
+        version: '3.16.17',
+      }),
       fetch: async (input, init) => {
         requests.push(new URL(input));
         requestInits.push(init ?? {});
@@ -116,7 +121,9 @@ describe('CursorAuthorizationHandler native OAuth', () => {
       refreshToken: 'cursor-refresh-token',
       expiresAt: NOW_MS + 3_600_000,
       accountId: 'cursor-account-1',
-      authorizedClientVersion: 'native-oauth-v1',
+      authorizedClientVersion: '3.16.17',
+      machineId: 'provider-machine-id',
+      macMachineId: 'provider-mac-machine-id',
     });
   });
 
