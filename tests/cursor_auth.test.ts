@@ -194,6 +194,11 @@ describe('CursorAuthorizationHandler native OAuth', () => {
 
     const identityHandler = new CursorAuthorizationHandler({
       getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
+      getDesktopIdentity: async () => ({
+        machineId: 'provider-machine-id',
+        macMachineId: 'provider-mac-machine-id',
+        version: '3.16.17',
+      }),
       now: () => NOW_MS,
       randomUuid: () => TEST_UUID,
       fetch: async () => successfulResponse({ sub: undefined }),
