@@ -1,7 +1,4 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import type {
   CursorAuthControlProtocolVersion,
   CursorAuthFailureStage,
@@ -17,6 +14,7 @@ const CURSOR_WEBSITE_ORIGIN = 'https://cursor.com';
 const CURSOR_API_ORIGIN = 'https://api2.cursor.sh';
 const CURSOR_AUTH_POLL_PATH = '/auth/poll';
 const CURSOR_AUTH_IMPLEMENTATION_VERSION = 'native-oauth-v1';
+const CURSOR_AUTHORIZED_CLIENT_VERSION = '3.16.17';
 const MAX_TOKEN_BYTES = 16 * 1024;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const MAX_DIAGNOSTIC_CHARS = 2_000;
@@ -63,7 +61,7 @@ export interface CursorAuthorizationHandlerOptions {
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
   randomUuid?: () => string;
-  getDesktopIdentity?: () => Promise<CursorDesktopIdentity>;
+  getDeviceIdentity?: () => CursorDesktopIdentity;
 }
 
 export class CursorAuthorizationHandler {
@@ -169,8 +167,9 @@ export class CursorAuthorizationHandler {
       });
       assertFlowActive(flow);
       stage = 'credential_validation';
-      const desktopIdentity = await (this.options.getDesktopIdentity ?? loadCursorDesktopIdentity)();
-      const encodedCredentialBundle = encodeNativeCredentialBundle(tokens, desktopIdentity, this.now());
+      const deviceIdentity = this.options.getDeviceIdentity?.()
+        ?? createCursorDeviceIdentity(this.options.randomBytes ?? randomBytes);
+      const encodedCredentialBundle = encodeNativeCredentialBundle(tokens, deviceIdentity, this.now());
       emit({
         type: 'provider.cursor_auth_completed',
         protocolVersion: CURSOR_AUTH_CONTROL_PROTOCOL_VERSION,
@@ -326,46 +325,14 @@ function encodeNativeCredentialBundle(
   });
 }
 
-export async function loadCursorDesktopIdentity(): Promise<CursorDesktopIdentity> {
-  const storagePath = cursorStoragePath();
-  const packagePath = cursorPackagePath();
-  let storage: Record<string, unknown>;
-  let packageJson: Record<string, unknown>;
-  try {
-    storage = JSON.parse(await readFile(storagePath, 'utf8')) as Record<string, unknown>;
-    packageJson = JSON.parse(await readFile(packagePath, 'utf8')) as Record<string, unknown>;
-  } catch {
-    throw new CursorNativeAuthError('cursor_desktop_identity_unavailable', false);
-  }
+export function createCursorDeviceIdentity(
+  entropy: (size: number) => Buffer = randomBytes,
+): CursorDesktopIdentity {
   return {
-    machineId: requiredString(storage['telemetry.machineId'], 'cursor_credential_machine_id_missing', 512),
-    macMachineId: typeof storage['telemetry.macMachineId'] === 'string' && storage['telemetry.macMachineId'].trim()
-      ? requiredString(storage['telemetry.macMachineId'], 'cursor_credential_mac_machine_id_invalid', 512)
-      : undefined,
-    version: requiredString(packageJson.version, 'cursor_credential_client_version_missing', 64),
+    machineId: entropy(32).toString('hex'),
+    macMachineId: entropy(32).toString('hex'),
+    version: CURSOR_AUTHORIZED_CLIENT_VERSION,
   };
-}
-
-function cursorStoragePath(): string {
-  if (process.env.WOKEY_CURSOR_STORAGE_PATH) return process.env.WOKEY_CURSOR_STORAGE_PATH;
-  if (process.platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'storage.json');
-  }
-  if (process.platform === 'win32' && process.env.APPDATA) {
-    return join(process.env.APPDATA, 'Cursor', 'User', 'globalStorage', 'storage.json');
-  }
-  return join(homedir(), '.config', 'Cursor', 'User', 'globalStorage', 'storage.json');
-}
-
-function cursorPackagePath(): string {
-  if (process.env.WOKEY_CURSOR_PACKAGE_PATH) return process.env.WOKEY_CURSOR_PACKAGE_PATH;
-  if (process.platform === 'darwin') {
-    return '/Applications/Cursor.app/Contents/Resources/app/package.json';
-  }
-  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, 'Programs', 'cursor', 'resources', 'app', 'package.json');
-  }
-  return '/usr/share/cursor/resources/app/package.json';
 }
 
 function jwtClaims(token: string): Record<string, unknown> {

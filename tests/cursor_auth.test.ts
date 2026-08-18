@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   createCursorOAuthLogin,
+  createCursorDeviceIdentity,
   CursorAuthorizationHandler,
   type CursorAuthEvent,
 } from '../src/provider-node/cursor-auth.js';
@@ -70,6 +71,16 @@ describe('CursorAuthorizationHandler native OAuth', () => {
     });
   });
 
+  it('creates a persistent-format provider device identity without Cursor Desktop', () => {
+    let fill = 1;
+    const identity = createCursorDeviceIdentity((size) => Buffer.alloc(size, fill++));
+    expect(identity).toEqual({
+      machineId: '01'.repeat(32),
+      macMachineId: '02'.repeat(32),
+      version: '3.16.17',
+    });
+  });
+
   it('advertises native OAuth and completes after pending poll responses', async () => {
     const requests: URL[] = [];
     const requestInits: RequestInit[] = [];
@@ -80,7 +91,7 @@ describe('CursorAuthorizationHandler native OAuth', () => {
       randomBytes: () => Buffer.alloc(32, 9),
       randomUuid: () => TEST_UUID,
       sleep: async () => {},
-      getDesktopIdentity: async () => ({
+      getDeviceIdentity: () => ({
         machineId: 'provider-machine-id',
         macMachineId: 'provider-mac-machine-id',
         version: '3.16.17',
@@ -194,7 +205,7 @@ describe('CursorAuthorizationHandler native OAuth', () => {
 
     const identityHandler = new CursorAuthorizationHandler({
       getIdentity: () => ({ providerId: 'provider-1', nodeId: 'node-1' }),
-      getDesktopIdentity: async () => ({
+      getDeviceIdentity: () => ({
         machineId: 'provider-machine-id',
         macMachineId: 'provider-mac-machine-id',
         version: '3.16.17',
