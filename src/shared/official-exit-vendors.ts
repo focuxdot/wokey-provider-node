@@ -10,7 +10,8 @@ export type OfficialExitVendorId =
   | 'google'
   | 'xai'
   | 'jimeng'
-  | 'cursor';
+  | 'cursor'
+  | 'volcengine';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -88,6 +89,18 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // Keep the default narrow: these are the two production hosts used by the
     // current Desktop relay for dashboard RPCs and Agent streaming.
     allowedHosts: ['api2.cursor.sh', 'agentn.api5.cursor.sh'],
+  },
+  {
+    id: 'volcengine',
+    displayName: 'Volcengine Ark',
+    // Two different registrable domains, both required: inference goes to the
+    // data plane, while Coding Plan quota can only be read from the control
+    // plane with an AccessKey pair (the inference key is rejected there).
+    // Kept as exact hosts rather than a domain pattern: Ark serves
+    // pay-as-you-go billing from a sibling path on the same origin, and the
+    // Platform already hard-asserts this host on the way out — a wider entry
+    // here would only remove a check without enabling anything we use.
+    allowedHosts: ['ark.cn-beijing.volces.com', 'open.volcengineapi.com'],
   },
 ]);
 

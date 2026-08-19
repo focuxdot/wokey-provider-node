@@ -36,6 +36,8 @@ Each official-exit request names the `targetHost`/`targetPort` to dial. By defau
 - Google Gemini: `generativelanguage.googleapis.com`
 - xAI / Grok: `*.x.ai`, `*.grok.com`
 - Jimeng / Dreamina: `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com`
+- Cursor Desktop: `api2.cursor.sh`, `agentn.api5.cursor.sh`
+- Volcengine Ark: `ark.cn-beijing.volces.com`, `open.volcengineapi.com`
 
 Operators can narrow or extend that local egress allowlist:
 

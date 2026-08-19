@@ -89,6 +89,7 @@ describe('official-exit vendor defaults', () => {
       'xai',
       'jimeng',
       'cursor',
+      'volcengine',
     ]);
   });
 
@@ -141,6 +142,14 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('agentn.api5.cursor.sh', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('cursor.sh.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('future.cursor.sh', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('ark.cn-beijing.volces.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('open.volcengineapi.com', defaults)).toBe(true);
+    // Exact hosts only: neither the registrable domain nor another region is
+    // in scope, and the suffix-lookalike must not match.
+    expect(isOfficialExitHostAllowed('volces.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('ark.cn-shanghai.volces.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('ark.cn-beijing.volces.com.evil.example', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('volcengineapi.com', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('dashscope-us.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('token-plan.cn-beijing.maas.aliyuncs.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('aliyuncs.com', defaults)).toBe(true);

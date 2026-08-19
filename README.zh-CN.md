@@ -150,6 +150,8 @@ Wokey 平台 -> 出站 WebSocket -> Provider Node -> TCP 套接字 -> 厂商域�
 | DeepSeek | `*.deepseek.com` |
 | Google Gemini | `generativelanguage.googleapis.com` |
 | xAI / Grok | `*.x.ai`、`*.grok.com` |
+| Cursor Desktop | `api2.cursor.sh`、`agentn.api5.cursor.sh` |
+| 火山方舟 | `ark.cn-beijing.volces.com`、`open.volcengineapi.com` |
 
 你可以用 `PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS` 收窄或扩展本地出口域名列表。该设置只从本地环境读取，平台无法远程放宽。不支持通配符 `*`；请使用明确域名或形如 `.example.com` / `*.example.com` 的域名模式。
 
