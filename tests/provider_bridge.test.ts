@@ -422,6 +422,7 @@ describe('ProviderBridge endpoint failover', () => {
         .find((message) => message.type === 'provider.hello');
       expect(hello).toMatchObject({
         transportCapabilities: {
+          officialExitLifecycleProtocols: ['request_v1', 'persistent_tunnel_v1'],
           officialExitBulkTransfer: {
             minInitialWindowBytes: 1024 * 1024,
             maxInitialWindowBytes: 4 * 1024 * 1024,

@@ -14,6 +14,7 @@ import type {
   OfficialExitEarlyDataProtocol,
   OfficialExitDataFrame,
   OfficialExitError,
+  OfficialExitLifecycleProtocol,
   OfficialExitOpenRequest,
   OfficialExitOpenResponse,
   OfficialExitTransportDiagnostic,
@@ -31,6 +32,7 @@ export { DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS, OFFICIAL_EXIT_VENDOR_CONFIGS } fro
 
 export const OFFICIAL_EXIT_ALLOWLIST_ENV = 'PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS';
 export const OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES = 64 * 1024;
+export const OFFICIAL_EXIT_PERSISTENT_TRANSPORT_INACTIVITY_TIMEOUT_MS = 1_860_000;
 const OFFICIAL_EXIT_OPEN_RESPONSE_MARGIN_MS = 10_000;
 
 // Operator-controlled egress allowlist for the official-exit tunnel. The node
@@ -80,6 +82,7 @@ interface OfficialExitSession {
   connected: boolean;
   maxBytesIn?: number;
   maxBytesOut?: number;
+  lifecycleProtocol: OfficialExitLifecycleProtocol;
   connectedAt: number;
   connectMs: number;
   addressFamily?: 'ipv4' | 'ipv6';
@@ -162,6 +165,14 @@ export class ProviderOfficialExitTunnelManager {
     return this.sessions.size;
   }
 
+  requestScopedSessionCount(): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.lifecycleProtocol === 'request_v1') count += 1;
+    }
+    return count;
+  }
+
   setNegotiatedDataProtocol(dataProtocol: OfficialExitDataProtocol): void {
     this.negotiatedDataProtocol = dataProtocol;
   }
@@ -233,6 +244,8 @@ export class ProviderOfficialExitTunnelManager {
         host: request.targetHost,
         port: request.targetPort,
       });
+      const lifecycleProtocol = request.lifecycleProtocol ?? 'request_v1';
+      const persistent = lifecycleProtocol === 'persistent_tunnel_v1';
       const session: OfficialExitSession = {
         socket,
         seqOut: 0,
@@ -241,8 +254,9 @@ export class ProviderOfficialExitTunnelManager {
         platformPayloadBytes: 0,
         closed: false,
         connected: false,
-        maxBytesIn: request.maxBytesIn,
-        maxBytesOut: request.maxBytesOut,
+        maxBytesIn: persistent ? undefined : request.maxBytesIn,
+        maxBytesOut: persistent ? undefined : request.maxBytesOut,
+        lifecycleProtocol,
         connectedAt: connectStartedAt,
         connectMs: 0,
         dataProtocol: request.dataProtocol ?? 'json_base64_v1',
@@ -297,7 +311,9 @@ export class ProviderOfficialExitTunnelManager {
         // Connect/open_response remains bounded by deadlineMs. Once the tunnel is
         // open, use the independent response-idle budget when a newer Platform
         // supplies it; older Platforms retain the legacy deadlineMs behavior.
-        socket.setTimeout(officialExitSocketIdleTimeoutMs(request.deadlineMs, request.socketIdleTimeoutMs));
+        socket.setTimeout(persistent
+          ? OFFICIAL_EXIT_PERSISTENT_TRANSPORT_INACTIVITY_TIMEOUT_MS
+          : officialExitSocketIdleTimeoutMs(request.deadlineMs, request.socketIdleTimeoutMs));
         const addressFamily = socket.remoteFamily === 'IPv4' ? 'ipv4' : socket.remoteFamily === 'IPv6' ? 'ipv6' : undefined;
         const connectMs = Date.now() - connectStartedAt;
         session.connected = true;
@@ -354,6 +370,16 @@ export class ProviderOfficialExitTunnelManager {
     if (requestedDataProtocol !== this.negotiatedDataProtocol) return 'official_exit_data_protocol_not_negotiated';
     if (request.earlyDataProtocol !== undefined && request.earlyDataProtocol !== this.negotiatedEarlyDataProtocol) {
       return 'official_exit_early_data_protocol_not_negotiated';
+    }
+    const lifecycleProtocol = request.lifecycleProtocol ?? 'request_v1';
+    if (lifecycleProtocol !== 'request_v1' && lifecycleProtocol !== 'persistent_tunnel_v1') {
+      return 'official_exit_lifecycle_protocol_invalid';
+    }
+    if (
+      lifecycleProtocol === 'persistent_tunnel_v1'
+      && (requestedDataProtocol !== 'binary_v1' || request.earlyDataProtocol !== 'buffered_v1')
+    ) {
+      return 'official_exit_persistent_transport_required';
     }
     const trafficClass = request.trafficClass ?? 'interactive';
     if (trafficClass !== 'interactive' && trafficClass !== 'bulk') {
@@ -737,6 +763,7 @@ export class ProviderOfficialExitTunnelManager {
       backpressureCount: session.backpressureCount,
       peakBufferedBytes: session.peakBufferedBytes,
       earlyDataBytes: session.earlyDataBytes,
+      lifecycleProtocol: session.lifecycleProtocol,
     };
   }
 }

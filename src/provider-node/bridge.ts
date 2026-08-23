@@ -327,6 +327,12 @@ class ProviderCredentialDataChannelPool {
     return count;
   }
 
+  requestScopedSessionCount(): number {
+    let count = 0;
+    for (const channel of this.channels.values()) count += channel.tunnels.requestScopedSessionCount();
+    return count;
+  }
+
   stateSnapshot(): ProviderCredentialDataChannelPoolState {
     let connecting = 0;
     let awaitingReady = 0;
@@ -872,7 +878,8 @@ export class ProviderBridge {
   }
 
   inFlightCount(): number {
-    return this.officialExitTunnels.activeSessionCount() + this.credentialDataChannels.activeSessionCount();
+    return this.officialExitTunnels.requestScopedSessionCount()
+      + this.credentialDataChannels.requestScopedSessionCount();
   }
 
   credentialDataChannelState(): ProviderCredentialDataChannelPoolState {
@@ -1044,6 +1051,7 @@ export class ProviderBridge {
       transportCapabilities: {
         officialExitDataProtocols: ['json_base64_v1', 'binary_v1'],
         officialExitEarlyDataProtocols: ['buffered_v1'],
+        officialExitLifecycleProtocols: ['request_v1', 'persistent_tunnel_v1'],
         officialExitBulkTransfer: {
           minInitialWindowBytes: OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES,
           maxInitialWindowBytes: OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES,
@@ -1435,7 +1443,8 @@ export class ProviderBridge {
     const healthy = !this.state.lastError;
     return {
       status: healthy ? 'healthy' : 'degraded',
-      activeSessions: this.inFlightCount(),
+      activeSessions: this.officialExitTunnels.activeSessionCount()
+        + this.credentialDataChannels.activeSessionCount(),
       recentConnectErrorRate: 0,
       recentTimeoutRate: 0,
       lastCheckAt: new Date().toISOString(),

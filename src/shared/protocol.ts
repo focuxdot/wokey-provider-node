@@ -22,6 +22,7 @@ export interface ProviderOfficialExitMetadata {
 
 export type OfficialExitDataProtocol = 'json_base64_v1' | 'binary_v1';
 export type OfficialExitEarlyDataProtocol = 'buffered_v1';
+export type OfficialExitLifecycleProtocol = 'request_v1' | 'persistent_tunnel_v1';
 export type OfficialExitTrafficClass = 'interactive' | 'bulk';
 
 export interface OfficialExitBulkTransferCapabilities {
@@ -33,6 +34,7 @@ export interface OfficialExitBulkTransferCapabilities {
 export interface ProviderTransportCapabilities {
   officialExitDataProtocols?: OfficialExitDataProtocol[];
   officialExitEarlyDataProtocols?: OfficialExitEarlyDataProtocol[];
+  officialExitLifecycleProtocols?: OfficialExitLifecycleProtocol[];
   officialExitBulkTransfer?: OfficialExitBulkTransferCapabilities;
   flowControl?: Array<'credit_v1'>;
   maxBinaryFrameBytes?: number;
@@ -562,6 +564,8 @@ export interface OfficialExitOpenRequest {
   deadlineMs: number;
   /** Post-connect upstream socket inactivity timeout; omitted by older Platforms. */
   socketIdleTimeoutMs?: number;
+  /** Tunnel ownership contract; omitted by older Platforms and defaults to request_v1. */
+  lifecycleProtocol?: OfficialExitLifecycleProtocol;
   maxBytesIn?: number;
   maxBytesOut?: number;
   dataProtocol?: OfficialExitDataProtocol;
@@ -595,6 +599,7 @@ export interface OfficialExitTransportDiagnostic {
   backpressureCount?: number;
   peakBufferedBytes?: number;
   earlyDataBytes?: number;
+  lifecycleProtocol?: OfficialExitLifecycleProtocol;
 }
 
 export interface OfficialExitDataFrame {

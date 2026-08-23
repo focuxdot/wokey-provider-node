@@ -37,6 +37,19 @@ remote consumer. This prevents one slow tunnel from creating an unbounded
 WebSocket queue. Diagnostics report upstream payload bytes separately from
 WebSocket frame bytes, along with backpressure count and peak buffered bytes.
 WebSocket messages are capped at 1 MiB on both peers before protocol decoding.
+
+The node also advertises `request_v1` and `persistent_tunnel_v1` lifecycle
+support. Missing lifecycle defaults to the legacy request-scoped behavior. A
+persistent tunnel is accepted only with `binary_v1 + buffered_v1`; its
+1,860-second socket timer is a transport-inactivity safety bound, not a request
+deadline or absolute connection age. Platform/Renderer owns every logical H2
+request deadline and byte limit. Request-sized cumulative byte caps are not
+applied to a persistent encrypted TCP connection; all buffers and WebSocket
+queues remain bounded.
+
+Heartbeat `inFlight` counts request-scoped tunnels only.
+`officialExit.activeSessions` counts all active encrypted transport sessions,
+including idle persistent sessions, and is diagnostic rather than routing load.
 During auto-upgrade the node publishes `acceptingSessions: false`, waits for
 Platform acknowledgement, drains active tunnels, then closes the bridge and
 installs the release.

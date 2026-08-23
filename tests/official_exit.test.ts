@@ -501,4 +501,73 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
       vi.useRealTimers();
     }
   });
+
+  it('keeps persistent tunnels out of logical in-flight and ignores request-sized cumulative byte limits', async () => {
+    let upstreamReceived = Buffer.alloc(0);
+    const upstream = createServer((socket) => {
+      socket.on('data', (chunk) => {
+        upstreamReceived = Buffer.concat([upstreamReceived, chunk]);
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const sent: Array<Record<string, unknown> | Buffer> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message),
+      ['127.0.0.1'],
+    );
+    manager.setNegotiatedDataProtocol('binary_v1');
+    manager.setNegotiatedEarlyDataProtocol('buffered_v1');
+
+    await manager.handleMessage({
+      ...openRequest('127.0.0.1', address.port),
+      dataProtocol: 'binary_v1',
+      earlyDataProtocol: 'buffered_v1',
+      lifecycleProtocol: 'persistent_tunnel_v1',
+      socketIdleTimeoutMs: 1,
+      maxBytesIn: 1,
+      maxBytesOut: 1,
+    });
+    const payload = Buffer.from('persistent-bytes');
+    const frame = encodeOfficialExitBinaryData('sess_1', 0, payload);
+    manager.handleBinaryFrame(decodeOfficialExitBinaryFrame(frame), frame.byteLength);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(upstreamReceived).toEqual(payload);
+    expect(manager.activeSessionCount()).toBe(1);
+    expect(manager.requestScopedSessionCount()).toBe(0);
+    expect(sent[0]).toMatchObject({
+      type: 'official_exit.open_response',
+      accepted: true,
+      transportDiagnostic: { lifecycleProtocol: 'persistent_tunnel_v1' },
+    });
+    expect(sent.find((message) => !Buffer.isBuffer(message) && message.type === 'official_exit.error')).toBeUndefined();
+
+    manager.closeAll('test_complete');
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  });
+
+  it('requires binary_v1 plus buffered_v1 for persistent lifecycle', async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message as Record<string, unknown>),
+      ['api.anthropic.com'],
+    );
+
+    await manager.handleMessage({
+      ...openRequest('api.anthropic.com'),
+      lifecycleProtocol: 'persistent_tunnel_v1',
+    });
+
+    expect(sent).toContainEqual({
+      type: 'official_exit.open_response',
+      sessionId: 'sess_1',
+      accepted: false,
+      reasonCode: 'official_exit_persistent_transport_required',
+    });
+    expect(manager.activeSessionCount()).toBe(0);
+  });
 });
