@@ -86,9 +86,10 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
   {
     id: 'cursor',
     displayName: 'Cursor Desktop',
-    // Keep the default narrow: these are the two production hosts used by the
-    // current Desktop relay for dashboard RPCs and Agent streaming.
-    allowedHosts: ['api2.cursor.sh', 'agentn.api5.cursor.sh'],
+    // Keep the default narrow: Cursor dashboard RPCs and Agent streaming use
+    // fixed hosts, while Grok Bot sandbox descriptors resolve gateway and VNC
+    // traffic to dynamic hosts under cursorvm.com.
+    allowedHosts: ['api2.cursor.sh', 'agentn.api5.cursor.sh', '*.cursorvm.com'],
   },
   {
     id: 'volcengine',

@@ -115,6 +115,10 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('future-api.grok.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('notgrok.com', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('grok.com.evil.example', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('cursorvm.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('pod-1340.us10.cursorvm.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('notcursorvm.com', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('cursorvm.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('bytetsd-router.byted.org', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('imagex.bytedanceapi.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('jimeng.jianying.com', defaults)).toBe(true);
