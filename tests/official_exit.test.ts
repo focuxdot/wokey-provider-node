@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createServer } from 'node:net';
+import { createServer, Socket } from 'node:net';
 import {
   decodeOfficialExitBinaryFrame,
   encodeOfficialExitBinaryData,
@@ -505,6 +505,128 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
       expect(session.upstreamBackpressureTimer).toBeDefined();
       expect(session.platformInputBackpressureTimer).toBeUndefined();
       internals.clearUpstreamBackpressureTimeout(session);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps one upstream drain listener across repeated binary backpressure cycles', () => {
+    vi.useFakeTimers();
+    try {
+      const manager = new ProviderOfficialExitTunnelManager(
+        () => config,
+        () => undefined,
+        ['127.0.0.1'],
+      );
+      const socket = new Socket();
+      socket.write = vi.fn(() => false) as unknown as typeof socket.write;
+      const session = {
+        socket,
+        closed: false,
+        platformInputBlocked: false,
+        backpressureCount: 0,
+        bytesOut: 0,
+        webSocketBytesOut: 0,
+      } as Record<string, unknown>;
+      const internals = manager as unknown as {
+        sessions: Map<string, Record<string, unknown>>;
+        writeToUpstream: (
+          sessionId: string,
+          value: Record<string, unknown>,
+          payload: Buffer,
+          creditBytes: number,
+        ) => void;
+        closeSession: (
+          sessionId: string,
+          value: Record<string, unknown>,
+          reasonCode: string,
+          notifyPlatform: boolean,
+        ) => void;
+      };
+      internals.sessions.set('sess_backpressure', session);
+
+      for (let index = 0; index < 12; index += 1) {
+        internals.writeToUpstream('sess_backpressure', session, Buffer.from([index]), 1);
+      }
+
+      expect(session.backpressureCount).toBe(12);
+      expect(socket.listenerCount('drain')).toBe(1);
+      expect(session.upstreamDrainHandler).toBeTypeOf('function');
+      expect(session.platformInputBackpressureTimer).toBeDefined();
+
+      socket.emit('drain');
+
+      expect(socket.listenerCount('drain')).toBe(0);
+      expect(session.upstreamDrainHandler).toBeUndefined();
+      expect(session.platformInputBackpressureTimer).toBeUndefined();
+
+      internals.writeToUpstream('sess_backpressure', session, Buffer.from([13]), 1);
+      expect(socket.listenerCount('drain')).toBe(1);
+      internals.closeSession('sess_backpressure', session, 'test_complete', false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shares the drain listener with blocked Platform input and removes it on close', () => {
+    vi.useFakeTimers();
+    try {
+      const inputBackpressure: boolean[] = [];
+      const manager = new ProviderOfficialExitTunnelManager(
+        () => config,
+        () => undefined,
+        ['127.0.0.1'],
+        {
+          setPlatformInputBackpressure: (_sessionId, blocked) => inputBackpressure.push(blocked),
+        },
+      );
+      const socket = new Socket();
+      socket.write = vi.fn(() => false) as unknown as typeof socket.write;
+      const session = {
+        socket,
+        closed: false,
+        platformInputBlocked: false,
+        backpressureCount: 0,
+        bytesOut: 0,
+        webSocketBytesOut: 0,
+      } as Record<string, unknown>;
+      const internals = manager as unknown as {
+        sessions: Map<string, Record<string, unknown>>;
+        writeToUpstream: (
+          sessionId: string,
+          value: Record<string, unknown>,
+          payload: Buffer,
+          creditBytes: number,
+        ) => void;
+        closeSession: (
+          sessionId: string,
+          value: Record<string, unknown>,
+          reasonCode: string,
+          notifyPlatform: boolean,
+        ) => void;
+      };
+      internals.sessions.set('sess_blocked', session);
+
+      internals.writeToUpstream('sess_blocked', session, Buffer.from('binary'), 1);
+      internals.writeToUpstream('sess_blocked', session, Buffer.from('json'), 0);
+
+      expect(inputBackpressure).toEqual([true]);
+      expect(session.platformInputBlocked).toBe(true);
+      expect(socket.listenerCount('drain')).toBe(1);
+
+      socket.emit('drain');
+
+      expect(inputBackpressure).toEqual([true, false]);
+      expect(session.platformInputBlocked).toBe(false);
+      expect(socket.listenerCount('drain')).toBe(0);
+
+      internals.writeToUpstream('sess_blocked', session, Buffer.from('binary-again'), 1);
+      expect(socket.listenerCount('drain')).toBe(1);
+      internals.closeSession('sess_blocked', session, 'test_complete', false);
+
+      expect(socket.listenerCount('drain')).toBe(0);
+      expect(session.upstreamDrainHandler).toBeUndefined();
+      expect(internals.sessions.has('sess_blocked')).toBe(false);
     } finally {
       vi.useRealTimers();
     }

@@ -105,6 +105,7 @@ interface OfficialExitSession {
   upstreamBackpressureTimer?: NodeJS.Timeout;
   platformInputBackpressureTimer?: NodeJS.Timeout;
   platformInputBlocked: boolean;
+  upstreamDrainHandler?: () => void;
 }
 
 export interface ProviderOfficialExitTunnelManagerOptions {
@@ -552,10 +553,7 @@ export class ProviderOfficialExitTunnelManager {
       }
       session.backpressureCount += 1;
       this.startPlatformInputBackpressureTimeout(sessionId, session);
-      session.socket.once('drain', () => {
-        if (session.closed || session.platformInputBlocked) return;
-        this.clearPlatformInputBackpressureTimeout(session);
-      });
+      this.armUpstreamDrain(sessionId, session);
     }
   }
 
@@ -642,12 +640,32 @@ export class ProviderOfficialExitTunnelManager {
     session.backpressureCount += 1;
     this.options.setPlatformInputBackpressure?.(sessionId, true);
     this.startPlatformInputBackpressureTimeout(sessionId, session);
-    session.socket.once('drain', () => {
+    this.armUpstreamDrain(sessionId, session);
+  }
+
+  private armUpstreamDrain(sessionId: string, session: OfficialExitSession): void {
+    if (session.closed || session.upstreamDrainHandler) return;
+    const handler = () => {
+      if (session.upstreamDrainHandler !== handler) return;
+      session.upstreamDrainHandler = undefined;
       if (session.closed) return;
-      session.platformInputBlocked = false;
-      this.options.setPlatformInputBackpressure?.(sessionId, false);
+      // Clear the completed backpressure interval before unblocking Platform input.
+      // The callback may synchronously deliver more data and arm a fresh interval.
       this.clearPlatformInputBackpressureTimeout(session);
-    });
+      if (session.platformInputBlocked) {
+        session.platformInputBlocked = false;
+        this.options.setPlatformInputBackpressure?.(sessionId, false);
+      }
+    };
+    session.upstreamDrainHandler = handler;
+    session.socket.once('drain', handler);
+  }
+
+  private clearUpstreamDrain(session: OfficialExitSession): void {
+    const handler = session.upstreamDrainHandler;
+    if (!handler) return;
+    session.upstreamDrainHandler = undefined;
+    session.socket.off('drain', handler);
   }
 
   private startUpstreamBackpressureTimeout(sessionId: string, session: OfficialExitSession): void {
@@ -724,6 +742,7 @@ export class ProviderOfficialExitTunnelManager {
   ): void {
     if (session.closed) return;
     session.closed = true;
+    this.clearUpstreamDrain(session);
     this.clearUpstreamBackpressureTimeout(session);
     this.clearPlatformInputBackpressureTimeout(session);
     if (session.platformInputBlocked) {
