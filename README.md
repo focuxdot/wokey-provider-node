@@ -160,6 +160,7 @@ This is the single most important safety property, so it is enforced in source, 
 | MiniMax | `*.minimax.io`, `*.minimaxi.com` |
 | Xiaomi MiMo | `*.xiaomimimo.com` |
 | DeepSeek | `*.deepseek.com` |
+| Ollama Cloud | `ollama.com` |
 | Google Gemini | `generativelanguage.googleapis.com` |
 | xAI / Grok | `*.x.ai`, `*.grok.com` |
 | Jimeng / Dreamina | `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com` |

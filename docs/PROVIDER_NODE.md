@@ -70,6 +70,7 @@ By default the node only dials official vendor domains for currently supported o
 - MiniMax: `*.minimax.io`, `*.minimaxi.com`
 - Xiaomi MiMo: `*.xiaomimimo.com`
 - DeepSeek: `*.deepseek.com`
+- Ollama Cloud: `ollama.com`
 - Google Gemini: `generativelanguage.googleapis.com`
 - xAI / Grok: `*.x.ai`, `*.grok.com`
 - Jimeng / Dreamina: `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com`

@@ -33,6 +33,7 @@ Each official-exit request names the `targetHost`/`targetPort` to dial. By defau
 - MiniMax: `*.minimax.io`, `*.minimaxi.com`
 - Xiaomi MiMo: `*.xiaomimimo.com`
 - DeepSeek: `*.deepseek.com`
+- Ollama Cloud: `ollama.com`
 - Google Gemini: `generativelanguage.googleapis.com`
 - xAI / Grok: `*.x.ai`, `*.grok.com`
 - Jimeng / Dreamina: `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com`

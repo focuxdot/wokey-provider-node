@@ -7,6 +7,7 @@ export type OfficialExitVendorId =
   | 'minimax'
   | 'xiaomi'
   | 'deepseek'
+  | 'ollama'
   | 'google'
   | 'xai'
   | 'jimeng'
@@ -59,6 +60,11 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     id: 'deepseek',
     displayName: 'DeepSeek',
     allowedHosts: ['*.deepseek.com'],
+  },
+  {
+    id: 'ollama',
+    displayName: 'Ollama Cloud',
+    allowedHosts: ['ollama.com'],
   },
   {
     id: 'google',
