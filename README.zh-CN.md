@@ -127,7 +127,7 @@ Wokey 平台 -> 出站 WebSocket -> Provider Node -> TCP 套接字 -> 厂商域�
 - xAI/Grok 一键设备码 / OAuth 流程
 - 手动 OAuth token JSON
 
-接入时由你显式授权或导入一份凭证。所选凭证会上传到 Wokey 平台的加密凭据库，供平台代你构造官方厂商请求。
+接入时由你显式授权或导入凭证。Codex、Claude、Grok、Cursor 的交互式授权由平台持有：节点只转发版本化 flow 控制和渲染后的 TCP 字节，PKCE/device 状态与厂商 token 不下沉到节点。显式选择的本地 CLI 凭证则上传到平台加密凭据库后统一校验。
 
 浏览器 Cookie、浏览器会话、浏览器保存的密钥（操作系统钥匙串）一律不支持导入。Provider Node 不会扫描浏览器 Cookie 数据库。
 

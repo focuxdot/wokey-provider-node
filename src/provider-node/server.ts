@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server as HttpServer } from 'node:http';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { getEnv, getEnvNumber } from '../shared/env.js';
 import type { PlatformCredentialRefreshHint, PlatformUpgradeAvailable, ProviderUpgradeStatus } from '../shared/protocol.js';
+import { PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION } from '../shared/protocol.js';
 import {
   AutoUpgradeController,
   checkCrashLoopOnStartup,
@@ -31,10 +32,8 @@ import {
 } from './config.js';
 import { ProviderBridge } from './bridge.js';
 import { currentProviderNodeRuntimeIdentity } from './runtime-identity.js';
-import { BoundedDevicePoller, type DevicePollFailure, type DevicePollSnapshot } from './bounded-device-poller.js';
-import { AsyncMutex, SingleFlight } from './single-flight.js';
+import { AsyncMutex } from './single-flight.js';
 import { detectDreaminaCli, JimengAuthorizationHandler, type DreaminaCliDescriptor } from './jimeng-auth.js';
-import { CursorAuthorizationHandler } from './cursor-auth.js';
 import { DreaminaCliInstallError, DreaminaCliInstaller } from './jimeng-cli-installer.js';
 import { JimengVideoHandler } from './jimeng-video.js';
 import { applyClaudeCodeMetadataToOAuth, importClaudeCodeOAuth } from './claude-code-auth.js';
@@ -58,24 +57,6 @@ import {
   validateManualOAuthConfigForAuthorization,
 } from './manual-oauth-token.js';
 import { networkProviderNodeError, ProviderNodeError, providerNodeErrorPayload } from './errors.js';
-import {
-  applyTokenToOAuthConfig,
-  createAnthropicOAuthStart,
-  createCodexOAuthStart,
-  exchangeAnthropicCode,
-  formatAnthropicAuthorizationCode,
-  exchangeCodexCode,
-  parseAnthropicAuthorizationCode,
-  pollCodexDeviceCode,
-  requestCodexDeviceCode,
-  pollXaiDeviceCode,
-  requestXaiDeviceCode,
-  verifyState,
-  type CodexDeviceCode,
-  type XaiDeviceCode,
-  type OAuthStart,
-  type OAuthTokenResponse,
-} from './oauth.js';
 
 const CONFIG_PATH = getEnv('PROVIDER_CONFIG_PATH', './data/provider-node.json');
 const CONSOLE_HOST = getEnv('PROVIDER_CONSOLE_HOST', '127.0.0.1');
@@ -214,11 +195,24 @@ try {
   );
   process.exit(1);
 }
-const pendingCodexOAuth = new Map<string, OAuthStart>();
-const pendingAnthropicOAuth = new Map<string, OAuthStart>();
-const pendingCodexDeviceCodes = new Map<string, CodexDeviceCode>();
+interface PlatformOAuthStart {
+  protocolVersion: number;
+  flowId: string;
+  authorizationUrl: string;
+  state: string;
+  redirectUri: string;
+  expiresAt: string;
+}
+interface PlatformOAuthDeviceStart extends Record<string, unknown> {
+  flowId: string;
+}
+interface PlatformOAuthPollResult extends Record<string, unknown> {
+  status: string;
+}
+const pendingCodexOAuth = new Map<string, PlatformOAuthStart>();
+const pendingAnthropicOAuth = new Map<string, PlatformOAuthStart>();
 let codexBrowserAttempt: {
-  flow: OAuthStart;
+  flow: PlatformOAuthStart;
   port: number;
   server: HttpServer;
   status: 'pending' | 'succeeded' | 'failed';
@@ -263,13 +257,7 @@ const app = Fastify({
   },
 });
 
-const xaiDeviceAuthorizations = new BoundedDevicePoller<Record<string, unknown>>();
-const xaiDeviceStarts = new SingleFlight<Record<string, unknown>>();
-let currentXaiDeviceCode: XaiDeviceCode | undefined;
-
-app.addHook('onClose', async () => {
-  xaiDeviceAuthorizations.close();
-});
+let currentXaiDeviceAuthorization: Record<string, unknown> | undefined;
 
 // Reject any request whose Host header is not a trusted loopback/bind name. Runs
 // before routing so it covers every console endpoint (reads and writes alike),
@@ -441,9 +429,6 @@ function createJimengRuntime(cli: DreaminaCliDescriptor | undefined): {
 }
 
 let { authorization: jimengAuthorization, video: jimengVideo } = createJimengRuntime(dreaminaCli);
-const cursorAuthorization = new CursorAuthorizationHandler({
-  getIdentity: () => ({ nodeId: config.nodeId, providerId: config.providerId }),
-});
 
 function jimengVideoTransferOrigins(platformWsUrl: string, configured: string): string[] {
   const explicit = configured
@@ -479,7 +464,6 @@ const bridge = new ProviderBridge(() => config, {
     reportPersistedUpgradeState();
   },
   jimengAuthorization,
-  cursorAuthorization,
   jimengVideo,
   jimengCliInstall: dreaminaCliInstaller.status().supported ? { install: installDreaminaCliAndActivate } : undefined,
   onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,
@@ -548,10 +532,7 @@ app.get('/api/status', async () => ({
       : undefined,
   },
   xai: {
-    deviceAuthorization: (() => {
-      const attempt = xaiDeviceAuthorizations.current();
-      return attempt ? publicXaiDeviceAuthorization(attempt) : undefined;
-    })(),
+    deviceAuthorization: currentXaiDeviceAuthorization,
   },
   jimeng: publicJimengStatus(),
 }));
@@ -917,7 +898,10 @@ app.post('/api/oauth/direct', async (request) => {
 
 app.post('/api/oauth/codex/start', async (request) => {
   const body = request.body as { redirectUri?: string };
-  const flow = createCodexOAuthStart(body.redirectUri);
+  const flow = await startPlatformOAuth<PlatformOAuthStart>('openai', {
+    flow: 'authorization_code',
+    redirectUri: body.redirectUri,
+  });
   pendingCodexOAuth.set(flow.state, flow);
   return publicOAuthStart(flow);
 });
@@ -927,20 +911,14 @@ app.post('/api/oauth/codex/exchange', async (request) => {
   if (!body.code) throw new Error('code_required');
   const flow = body.state ? pendingCodexOAuth.get(body.state) : undefined;
   if (!flow) throw new Error('codex_oauth_start_required');
-  if (body.state && flow && !verifyState(body.state, flow.state)) throw new Error('invalid_state');
-  const token = await exchangeCodexCode({
+  if (body.state && flow && !verifyOpaqueState(body.state, flow.state)) throw new Error('invalid_state');
+  const authorization = await exchangePlatformOAuth('openai', flow.flowId, {
     code: body.code,
-    codeVerifier: flow.codeVerifier,
-    redirectUri: body.redirectUri || flow?.redirectUri,
-  });
-  const receivedAt = new Date().toISOString();
-  const oauth = setOAuthToken('codex-oauth', token, {
-    accessTokenReceivedAt: receivedAt,
-    accessTokenSource: 'codex_oauth_code',
-    lastRefreshAt: receivedAt,
+    state: flow.state,
+    redirectUri: body.redirectUri || flow.redirectUri,
   });
   if (body.state) pendingCodexOAuth.delete(body.state);
-  return authorizeOAuthCredential(oauth, 'openai', body);
+  return { ok: true, ...authorization };
 });
 
 app.post('/api/oauth/codex/browser/start', async () => {
@@ -972,153 +950,35 @@ app.post('/api/oauth/codex/auth-json/import', async (request) => {
 });
 
 app.post('/api/oauth/codex/device/start', async () => {
-  const deviceCode = await requestCodexDeviceCode();
-  pendingCodexDeviceCodes.set(deviceCode.deviceAuthId, deviceCode);
-  return { ok: true, ...deviceCode };
+  const deviceCode = await startPlatformOAuth<PlatformOAuthDeviceStart>('openai', { flow: 'device_code' });
+  return { ok: true, ...deviceCode, deviceAuthId: deviceCode.flowId };
 });
 
 app.post('/api/oauth/codex/device/poll', async (request) => {
   const body = request.body as { deviceAuthId?: string };
   if (!body.deviceAuthId) throw new Error('device_auth_id_required');
-  const deviceCode = pendingCodexDeviceCodes.get(body.deviceAuthId);
-  if (!deviceCode) throw new Error('device_auth_not_found');
-  if (Date.now() > deviceCode.expiresAt) {
-    pendingCodexDeviceCodes.delete(body.deviceAuthId);
-    return { ok: false, status: 'expired' };
-  }
-  const result = await pollCodexDeviceCode({
-    deviceAuthId: deviceCode.deviceAuthId,
-    userCode: deviceCode.userCode,
-  });
-  if (result.status === 'pending') return { ok: true, status: 'pending' };
-  const receivedAt = new Date().toISOString();
-  const oauth = setOAuthToken('codex-oauth', result.token, {
-    accessTokenReceivedAt: receivedAt,
-    accessTokenSource: 'codex_device_code',
-    lastRefreshAt: receivedAt,
-  });
-  pendingCodexDeviceCodes.delete(body.deviceAuthId);
-  const authorization = await authorizeOAuthCredential(oauth, 'openai', {});
-  return { ok: true, status: 'succeeded', authorization };
+  const result = await pollPlatformOAuth<PlatformOAuthPollResult>('openai', body.deviceAuthId);
+  return result.status === 'succeeded'
+    ? { ok: true, ...result, authorization: result }
+    : { ok: result.status !== 'expired', ...result };
 });
 
 app.post('/api/oauth/xai/device/start', async () => {
-  const current = xaiDeviceAuthorizations.current();
-  if (current?.status === 'pending' && currentXaiDeviceCode?.deviceCode === current.id) {
-    return publicXaiDeviceStart(currentXaiDeviceCode, current);
-  }
-  return xaiDeviceStarts.run(startXaiDeviceAuthorization);
+  const deviceCode = await startPlatformOAuth<PlatformOAuthDeviceStart>('xai', { flow: 'device_code' });
+  currentXaiDeviceAuthorization = { ...deviceCode, status: 'pending', deviceCode: deviceCode.flowId };
+  return { ok: true, ...deviceCode, deviceCode: deviceCode.flowId };
 });
-
-async function startXaiDeviceAuthorization(): Promise<Record<string, unknown>> {
-  const deviceCode = await requestXaiDeviceCode();
-  let oauth: ProviderOAuthConfig | undefined;
-  const attempt = xaiDeviceAuthorizations.start({
-    id: deviceCode.deviceCode,
-    vendorIntervalMs: deviceCode.interval * 1_000,
-    vendorExpiresAt: deviceCode.expiresAt,
-    poll: async (signal) => {
-      if (!oauth) {
-        const result = await pollXaiDeviceCode({ deviceCode: deviceCode.deviceCode, signal });
-        if (result.status === 'pending') return result;
-        const receivedAt = new Date().toISOString();
-        oauth = setOAuthToken('xai-oauth', result.token, {
-          accessTokenReceivedAt: receivedAt,
-          accessTokenSource: 'xai_device_code',
-          lastRefreshAt: receivedAt,
-        });
-        app.log.info({}, 'xai device authorization token issued');
-      }
-      // Token 兑换成功后只重试 Platform 上传，不再重复消耗一次性的 xAI device code。
-      const authorization = await authorizeOAuthCredential(oauth, 'xai', {}, signal);
-      app.log.info(
-        { credentialBindingId: authorization.credentialBindingId },
-        'xai device authorization saved to Platform',
-      );
-      return { status: 'succeeded' as const, value: authorization };
-    },
-    classifyError: classifyXaiDeviceAuthorizationError,
-  });
-  app.log.info(
-    { intervalMs: Math.max(5_000, deviceCode.interval * 1_000), expiresAt: attempt.expiresAt },
-    'xai device authorization started',
-  );
-  currentXaiDeviceCode = deviceCode;
-  return publicXaiDeviceStart(deviceCode, attempt);
-}
-
-function publicXaiDeviceStart(
-  deviceCode: XaiDeviceCode,
-  attempt: DevicePollSnapshot<Record<string, unknown>>,
-): Record<string, unknown> {
-  return { ok: true, ...deviceCode, expiresAt: attempt.expiresAt };
-}
 
 app.post('/api/oauth/xai/device/poll', async (request) => {
   const body = request.body as { deviceCode?: string };
   if (!body.deviceCode) throw new Error('device_code_required');
-  return xaiDeviceAuthorizationStatus(body.deviceCode);
+  const result = await pollPlatformOAuth<PlatformOAuthPollResult>('xai', body.deviceCode);
+  currentXaiDeviceAuthorization = result;
+  return { ok: result.status === 'pending' || result.status === 'succeeded', ...result };
 });
 
-function xaiDeviceAuthorizationStatus(deviceCode: string): Record<string, unknown> {
-  const attempt = xaiDeviceAuthorizations.get(deviceCode);
-  if (!attempt) throw new Error('device_code_not_found');
-  return publicXaiDeviceAuthorization(attempt);
-}
-
-function publicXaiDeviceAuthorization(attempt: DevicePollSnapshot<Record<string, unknown>>): Record<string, unknown> {
-  return {
-    ok: attempt.status === 'pending' || attempt.status === 'succeeded',
-    status: attempt.status,
-    startedAt: attempt.startedAt,
-    expiresAt: attempt.expiresAt,
-    nextPollAt: attempt.nextPollAt,
-    pollCount: attempt.pollCount,
-    authorization: attempt.value,
-    ...(attempt.error
-      ? {
-          error: attempt.error.code,
-          message: attempt.error.message,
-          retryable: attempt.error.retryable,
-          upstreamStatus: attempt.error.upstreamStatus,
-          details: attempt.error.details,
-          requestId: attempt.error.requestId,
-        }
-      : {}),
-  };
-}
-
-function classifyXaiDeviceAuthorizationError(error: unknown): DevicePollFailure {
-  if (error instanceof ProviderNodeError) {
-    const payload = providerNodeErrorPayload(error);
-    app.log.warn(
-      {
-        errorCode: payload.error,
-        retryable: payload.retryable,
-        upstreamStatus: payload.upstreamStatus,
-      },
-      'xai device authorization attempt failed',
-    );
-    return {
-      code: payload.error,
-      message: payload.message,
-      retryable: payload.retryable,
-      upstreamStatus: payload.upstreamStatus,
-      details: payload.details,
-    };
-  }
-  const requestId = `xai_${randomBytes(8).toString('hex')}`;
-  app.log.error({ err: error, requestId }, 'xai device authorization failed');
-  return {
-    code: 'provider_node_internal_error',
-    message: 'Provider Node encountered an unexpected error while completing Grok authorization.',
-    retryable: false,
-    requestId,
-  };
-}
-
 app.post('/api/oauth/anthropic/start', async () => {
-  const flow = createAnthropicOAuthStart();
+  const flow = await startPlatformOAuth<PlatformOAuthStart>('anthropic', { flow: 'authorization_code' });
   pendingAnthropicOAuth.set(flow.state, flow);
   trimPendingOAuthFlows(pendingAnthropicOAuth);
   return publicOAuthStart(flow);
@@ -1127,14 +987,13 @@ app.post('/api/oauth/anthropic/start', async () => {
 app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
   const body = request.body as { code?: string; state?: string; flowState?: string; setupToken?: boolean };
   if (!body.code) throw new Error('code_required');
-  const parsedCode = parseAnthropicAuthorizationCode(body.code);
-  if (!parsedCode.code) throw new Error('code_required');
+  const embeddedState = body.code.includes('#') ? body.code.slice(body.code.lastIndexOf('#') + 1) : undefined;
   const candidateStates = Array.from(
-    new Set([parsedCode.state, body.state, body.flowState].filter((value): value is string => Boolean(value))),
+    new Set([embeddedState, body.state, body.flowState].filter((value): value is string => Boolean(value))),
   );
   let matchedState = candidateStates.find((state) => {
     const candidate = pendingAnthropicOAuth.get(state);
-    return candidate ? verifyState(state, candidate.state) : false;
+    return candidate ? verifyOpaqueState(state, candidate.state) : false;
   });
   let flow = matchedState ? pendingAnthropicOAuth.get(matchedState) : undefined;
   let flowSource = matchedState ? 'state' : 'none';
@@ -1154,7 +1013,7 @@ app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
     {
       pendingFlows: pendingAnthropicOAuth.size,
       flowSource,
-      parsedState: shortSecret(parsedCode.state),
+      parsedState: shortSecret(embeddedState),
       bodyState: shortSecret(body.state),
       flowState: shortSecret(body.flowState),
       matchedState: shortSecret(matchedState),
@@ -1170,20 +1029,13 @@ app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
         'This Claude authorization flow has expired. Refresh this page, generate a new authorization link, then submit the new code.',
     };
   }
-  const tokenState = parsedCode.state || matchedState;
-  const token: OAuthTokenResponse = await exchangeAnthropicCode({
-    code: formatAnthropicAuthorizationCode({ code: parsedCode.code, state: tokenState }),
-    codeVerifier: flow.codeVerifier,
+  const authorization = await exchangePlatformOAuth('anthropic', flow.flowId, {
+    code: body.code,
+    state: embeddedState || matchedState,
     setupToken: body.setupToken,
   });
-  const receivedAt = new Date().toISOString();
-  const oauth = setOAuthToken('anthropic-oauth', token, {
-    accessTokenReceivedAt: receivedAt,
-    accessTokenSource: 'anthropic_oauth_code',
-    lastRefreshAt: receivedAt,
-  });
   if (matchedState) pendingAnthropicOAuth.delete(matchedState);
-  return authorizeOAuthCredential(oauth, 'anthropic', body);
+  return { ok: true, ...authorization };
 });
 
 let cachedConsoleHtml: string | undefined;
@@ -1280,15 +1132,18 @@ function normalizeOAuthMode(mode?: ProviderUpstreamMode): 'codex-oauth' | 'anthr
   return mode === 'anthropic-oauth' ? 'anthropic-oauth' : 'codex-oauth';
 }
 
-function publicOAuthStart(flow: OAuthStart): Omit<OAuthStart, 'codeVerifier'> {
+function publicOAuthStart(flow: PlatformOAuthStart): PlatformOAuthStart {
   return {
+    protocolVersion: flow.protocolVersion,
+    flowId: flow.flowId,
     authorizationUrl: flow.authorizationUrl,
     state: flow.state,
     redirectUri: flow.redirectUri,
+    expiresAt: flow.expiresAt,
   };
 }
 
-function trimPendingOAuthFlows(flows: Map<string, OAuthStart>): void {
+function trimPendingOAuthFlows(flows: Map<string, PlatformOAuthStart>): void {
   while (flows.size > MAX_PENDING_OAUTH_FLOWS) {
     const oldest = flows.keys().next().value;
     if (!oldest) break;
@@ -1301,6 +1156,12 @@ function shortSecret(value?: string): string | undefined {
   return value.length > 12 ? `${value.slice(0, 4)}...${value.slice(-4)}` : value;
 }
 
+function verifyOpaqueState(actual: string, expected: string): boolean {
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
 function parseExpiresAt(value: number | string | undefined): number | undefined {
   if (typeof value === 'number') return value;
   if (!value) return undefined;
@@ -1310,66 +1171,8 @@ function parseExpiresAt(value: number | string | undefined): number | undefined 
   return Number.isFinite(time) ? time : undefined;
 }
 
-function setOAuthToken(
-  mode: 'codex-oauth' | 'anthropic-oauth' | 'xai-oauth',
-  token: OAuthTokenResponse,
-  extra?: Partial<ProviderOAuthConfig>,
-): ProviderOAuthConfig {
-  const previousOAuth = config.upstream.mode === mode ? config.upstream.oauth : undefined;
-  const oauth = oauthConfigFromToken(token, { ...previousOAuth, ...extra });
-  if (mode === 'anthropic-oauth') enrichAnthropicOAuthFromClaudeMetadata(oauth);
-  else if (mode === 'xai-oauth') enrichXaiOAuthFromToken(oauth);
-  else enrichOpenAIOAuthFromToken(oauth);
-  config.upstream = { ...config.upstream, mode, oauth };
-  persistConfig();
-  return oauth;
-}
-
-function oauthConfigFromToken(token: OAuthTokenResponse, extra?: Partial<ProviderOAuthConfig>): ProviderOAuthConfig {
-  const oauth: ProviderOAuthConfig = { ...extra };
-  applyTokenToOAuthConfig(oauth, token);
-  oauth.lastRefreshAt = new Date().toISOString();
-  return oauth;
-}
-
 function enrichAnthropicOAuthFromClaudeMetadata(oauth: ProviderOAuthConfig): void {
   applyClaudeCodeMetadataToOAuth(oauth);
-}
-
-function enrichOpenAIOAuthFromToken(oauth: ProviderOAuthConfig): void {
-  const derived = providerOAuthConfigFromManualTokenBody(
-    {
-      accessToken: oauth.accessToken,
-      refreshToken: oauth.refreshToken,
-      idToken: oauth.idToken,
-      tokenType: oauth.tokenType,
-      expiresAt: oauth.expiresAt,
-      scope: oauth.scope,
-    },
-    'openai',
-  );
-  oauth.organizationId = derived.organizationId || oauth.organizationId;
-  oauth.accountEmail = derived.accountEmail || oauth.accountEmail;
-  oauth.subscriptionType = derived.subscriptionType || oauth.subscriptionType;
-  oauth.subscriptionDisplayName = derived.subscriptionDisplayName || oauth.subscriptionDisplayName;
-}
-
-// xAI:身份/档位(email/tier)权威值由 relay 写入期解 access token JWT 决定,节点本地仅做轻量回填(展示用)。
-function enrichXaiOAuthFromToken(oauth: ProviderOAuthConfig): void {
-  const derived = providerOAuthConfigFromManualTokenBody(
-    {
-      accessToken: oauth.accessToken,
-      refreshToken: oauth.refreshToken,
-      idToken: oauth.idToken,
-      tokenType: oauth.tokenType,
-      expiresAt: oauth.expiresAt,
-      scope: oauth.scope,
-    },
-    'xai',
-  );
-  oauth.accountEmail = derived.accountEmail || oauth.accountEmail;
-  oauth.subscriptionType = derived.subscriptionType || oauth.subscriptionType;
-  oauth.subscriptionDisplayName = derived.subscriptionDisplayName || oauth.subscriptionDisplayName;
 }
 
 function localCredentialDetections(): LocalCredentialDetection[] {
@@ -1829,6 +1632,61 @@ function platformHttpUrl(wsUrl: string, path: string): string {
   return url.toString();
 }
 
+type PlatformOAuthVendor = 'openai' | 'anthropic' | 'xai' | 'moonshot' | 'cursor';
+
+async function startPlatformOAuth<T = Record<string, unknown>>(
+  vendor: PlatformOAuthVendor,
+  body: Record<string, unknown>,
+): Promise<T> {
+  await assertPlatformBindingIsUsable();
+  const response = await fetchPlatform(
+    platformHttpUrl(config.platformWsUrl, `/internal/provider/oauth/${vendor}/start`),
+    {
+      method: 'POST',
+      headers: { ...providerCredentialHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION,
+        ...body,
+      }),
+    },
+  );
+  return parseJsonResponse<T>(response);
+}
+
+async function exchangePlatformOAuth<T = Record<string, unknown>>(
+  vendor: 'openai' | 'anthropic',
+  flowId: string,
+  body: Record<string, unknown>,
+): Promise<T> {
+  const response = await fetchPlatform(
+    platformHttpUrl(config.platformWsUrl, `/internal/provider/oauth/${vendor}/${encodeURIComponent(flowId)}/exchange`),
+    {
+      method: 'POST',
+      headers: { ...providerCredentialHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        protocolVersion: PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION,
+        ...body,
+      }),
+    },
+  );
+  return parseJsonResponse<T>(response);
+}
+
+async function pollPlatformOAuth<T = Record<string, unknown>>(
+  vendor: PlatformOAuthVendor,
+  flowId: string,
+): Promise<T> {
+  const response = await fetchPlatform(
+    platformHttpUrl(config.platformWsUrl, `/internal/provider/oauth/${vendor}/${encodeURIComponent(flowId)}/poll`),
+    {
+      method: 'POST',
+      headers: { ...providerCredentialHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ protocolVersion: PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION }),
+    },
+  );
+  return parseJsonResponse<T>(response);
+}
+
 async function fetchPlatform(url: string, init?: RequestInit): Promise<Response> {
   try {
     return await fetch(url, init);
@@ -1938,7 +1796,10 @@ async function startCodexBrowserAttempt(): Promise<void> {
 
 async function createCodexBrowserAttempt(port: number): Promise<NonNullable<typeof codexBrowserAttempt>> {
   const redirectUri = `http://localhost:${port}/auth/callback`;
-  const flow = createCodexOAuthStart(redirectUri);
+  const flow = await startPlatformOAuth<PlatformOAuthStart>('openai', {
+    flow: 'authorization_code',
+    redirectUri,
+  });
   const attempt: NonNullable<typeof codexBrowserAttempt> = {
     flow,
     port,
@@ -1957,9 +1818,8 @@ async function createCodexBrowserAttempt(port: number): Promise<NonNullable<type
         }
         const code = requestUrl.searchParams.get('code');
         const state = requestUrl.searchParams.get('state');
-        if (!code || !state || !verifyState(state, flow.state)) throw new Error('invalid_oauth_callback');
-        const token = await exchangeCodexCode({ code, codeVerifier: flow.codeVerifier, redirectUri: flow.redirectUri });
-        setOAuthToken('codex-oauth', token);
+        if (!code || !state || !verifyOpaqueState(state, flow.state)) throw new Error('invalid_oauth_callback');
+        await exchangePlatformOAuth('openai', flow.flowId, { code, state, redirectUri: flow.redirectUri });
         attempt.status = 'succeeded';
         response
           .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })

@@ -75,8 +75,15 @@ export const JIMENG_USAGE_CONTROL_PROTOCOL_VERSION = 1;
 export type JimengUsageControlProtocolVersion = typeof JIMENG_USAGE_CONTROL_PROTOCOL_VERSION;
 export const CURSOR_AUTH_CONTROL_PROTOCOL_VERSION = 1;
 export type CursorAuthControlProtocolVersion = typeof CURSOR_AUTH_CONTROL_PROTOCOL_VERSION;
+export const PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION = 1;
+export type ProviderOAuthEgressControlProtocolVersion = typeof PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION;
 
 export interface ProviderNodeControlCapabilities {
+  /** Platform owns PKCE/tokens/persona; the node only carries rendered TCP egress. */
+  credentialOAuthEgress?: {
+    protocolVersions: ProviderOAuthEgressControlProtocolVersion[];
+    implementation: 'platform_persona';
+  };
   cursorAuth?: {
     protocolVersions: CursorAuthControlProtocolVersion[];
     implementation: 'native_oauth';

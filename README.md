@@ -135,7 +135,7 @@ Supported local authorization paths:
 - xAI/Grok one-click device-code / OAuth flow
 - Manual OAuth token JSON
 
-During onboarding you explicitly authorize or import a credential bundle. The selected bundle is uploaded to Wokey Platform's encrypted credential store so Platform can construct official vendor requests on your behalf.
+During onboarding you explicitly authorize or import a credential. Interactive Codex, Claude, Grok, and Cursor flows are Platform-owned: this node relays only versioned flow control and rendered TCP bytes, while PKCE/device state and vendor tokens remain on Platform. Explicit local CLI imports are uploaded to Platform's encrypted credential store for verification.
 
 The local console lists only credentials authorized or imported on this node.
 Provider-owned credentials assigned to the node for routing remain private and

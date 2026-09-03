@@ -130,18 +130,15 @@ describe('console routes', () => {
     expect(script).toContain("setToast('oauthResult', t('deviceAuthorizationExpired'), 'error')");
   });
 
-  it('keeps Grok polling in the node process with a bounded browser status loop', () => {
+  it('delegates Grok polling to the versioned Platform persona flow', () => {
     const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
     const server = readFileSync(new URL('../src/provider-node/server.ts', import.meta.url), 'utf8');
 
-    expect(server).toContain('new BoundedDevicePoller<Record<string, unknown>>()');
-    expect(server).toContain('new SingleFlight<Record<string, unknown>>()');
-    expect(server).toContain('return xaiDeviceStarts.run(startXaiDeviceAuthorization)');
-    expect(server).toContain('currentXaiDeviceCode?.deviceCode === current.id');
-    expect(server).toContain('vendorIntervalMs: deviceCode.interval * 1_000');
-    expect(server).toContain('return xaiDeviceAuthorizationStatus(body.deviceCode)');
-    expect(server).toContain('xaiDeviceAuthorizations.current()');
-    expect(server).toContain('Token 兑换成功后只重试 Platform 上传');
+    expect(server).toContain("startPlatformOAuth<PlatformOAuthDeviceStart>('xai', { flow: 'device_code' })");
+    expect(server).toContain("pollPlatformOAuth<PlatformOAuthPollResult>('xai', body.deviceCode)");
+    expect(server).toContain('PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION');
+    expect(server).not.toContain('new BoundedDevicePoller');
+    expect(server).not.toContain('requestXaiDeviceCode');
     expect(script).toContain('schedule(data.nextPollAt)');
     expect(script).toContain("if (data.status === 'failed')");
     expect(script).toContain('statusState.xai?.deviceAuthorization');
@@ -260,9 +257,9 @@ describe('console security hook', () => {
       headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': token },
       payload: {},
     });
-    // Passed the security hook; the handler returns an OAuth start (no network).
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).authorizationUrl).toContain('https://');
+    // Passed the security hook; the Platform-owned flow then rejects this unbound test node.
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body).error).toBe('node_binding_invalid');
   });
 
   it('rejects plaintext Platform bind URLs for non-loopback hosts', async () => {

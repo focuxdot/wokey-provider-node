@@ -88,18 +88,19 @@ Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_
 - Codex device code / OAuth flow
 - xAI/Grok device code / OAuth flow
 - Jimeng/Dreamina CLI device authorization
-- Native Cursor browser OAuth authorization (enabled by default; no Cursor CLI
-  or Cursor Desktop installation required)
+- Platform-managed Cursor browser OAuth authorization through this node's
+  rendered TCP egress (no Cursor CLI or Cursor Desktop installation required)
 
 Browser cookie/session import is intentionally unsupported. Provider Node does not scan browser cookie databases and does not read browser safe-storage secrets.
 
-Cursor authorization generates a one-time verifier/challenge locally, sends
-only the official `cursor.com` authorization URL, and polls Cursor's OAuth
-result endpoint directly. It returns a versioned credential bundle over the
-authenticated control socket without installing or executing Cursor Agent.
+Cursor authorization generates and retains the one-time verifier/challenge on
+Platform. Provider Node advertises the versioned `platform_persona` capability,
+opens only the official `cursor.com` authorization URL, and carries the
+Platform-rendered TLS bytes; it never receives the Cursor token response.
 
 The local console makes Grok authorization one browser action: it opens a local
-placeholder tab from the click, requests the xAI device code, navigates that tab
+placeholder tab from the click, asks Platform to request the xAI device code through
+the selected rendered tunnel, navigates that tab
 to `verification_uri_complete` with the user code prefilled, and polls until the
 credential is ready. Because the console is served from `localhost` (including
 through a loopback SSH tunnel), this navigation does not expose a Wokey public

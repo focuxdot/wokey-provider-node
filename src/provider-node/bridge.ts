@@ -21,8 +21,6 @@ import type {
   PlatformCredentialDataChannelPlan,
   PlatformCredentialDataChannelReady,
   PlatformCredentialDataChannelsUpdated,
-  PlatformCursorAuthCancel,
-  PlatformCursorAuthStart,
   PlatformJimengAuthCancel,
   PlatformJimengAuthStart,
   PlatformJimengCliInstall,
@@ -41,7 +39,10 @@ import type {
   ProviderHello,
   ProviderUpgradeStatus,
 } from '../shared/protocol.js';
-import { JIMENG_CLI_INSTALL_PROTOCOL_VERSION } from '../shared/protocol.js';
+import {
+  JIMENG_CLI_INSTALL_PROTOCOL_VERSION,
+  PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION,
+} from '../shared/protocol.js';
 import { sha256Json } from '../shared/crypto.js';
 import { type ProviderNodeConfig, platformFallbackUrl } from './config.js';
 import { ProviderRiskController, type ProviderRiskSnapshot } from './risk.js';
@@ -54,7 +55,6 @@ import {
 import { WebSocketSendScheduler } from '../shared/websocket-send-scheduler.js';
 import type { JimengAuthorizationHandler } from './jimeng-auth.js';
 import type { JimengVideoHandler } from './jimeng-video.js';
-import type { CursorAuthorizationHandler } from './cursor-auth.js';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
 // Official-exit nodes report state less often: tunnel traffic already carries
@@ -136,7 +136,6 @@ export interface ProviderBridgeOptions {
   onPlatformCredentialRefreshHint?: (message: PlatformCredentialRefreshHint) => void;
   onPlatformUpgradeAvailable?: (message: PlatformUpgradeAvailable) => void | Promise<void>;
   jimengAuthorization?: JimengAuthorizationHandler;
-  cursorAuthorization?: CursorAuthorizationHandler;
   jimengVideo?: JimengVideoHandler;
   jimengCliInstall?: {
     install: () => Promise<{ cliVersion: string }>;
@@ -824,7 +823,6 @@ export class ProviderBridge {
     this.finishPendingDrainAck();
     this.rejectPendingMirrorUpdates(new Error('provider_bridge_stopped'));
     this.options.jimengAuthorization?.cancelAll();
-    this.options.cursorAuthorization?.cancelAll();
     this.options.jimengVideo?.cancelAll();
     this.socket?.close();
   }
@@ -1068,11 +1066,14 @@ export class ProviderBridge {
             }
           : {}),
       },
-      controlCapabilities:
-        this.options.cursorAuthorization || this.options.jimengCliInstall || this.options.jimengAuthorization || this.options.jimengVideo
-          ? {
-              ...(this.options.cursorAuthorization
-                ? { cursorAuth: this.options.cursorAuthorization.capability() }
+      controlCapabilities: {
+              ...(config.officialExit?.enabled
+                ? {
+                    credentialOAuthEgress: {
+                      protocolVersions: [PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION],
+                      implementation: 'platform_persona' as const,
+                    },
+                  }
                 : {}),
               ...(this.options.jimengCliInstall
                 ? { jimengCliInstall: { protocolVersions: [JIMENG_CLI_INSTALL_PROTOCOL_VERSION] } }
@@ -1088,8 +1089,7 @@ export class ProviderBridge {
                       : {}),
                   }
                 : {}),
-            }
-          : undefined,
+            },
     };
     this.send(hello);
   }
@@ -1204,28 +1204,6 @@ export class ProviderBridge {
         return;
       }
       this.options.jimengAuthorization.start(start, (event) => this.send(event));
-      return;
-    }
-    if (message.type === 'platform.cursor_auth_start') {
-      const start = message as PlatformCursorAuthStart;
-      if (!this.options.cursorAuthorization) {
-        this.send({
-          type: 'provider.cursor_auth_failed',
-          protocolVersion: start.protocolVersion,
-          requestId: start.requestId,
-          flowId: start.flowId,
-          nodeId: this.getConfig().nodeId,
-          stage: 'launch',
-          errorCode: 'cursor_auth_not_supported',
-          retryable: false,
-        });
-        return;
-      }
-      this.options.cursorAuthorization.start(start, (event) => this.send(event));
-      return;
-    }
-    if (message.type === 'platform.cursor_auth_cancel') {
-      this.options.cursorAuthorization?.cancel(message as PlatformCursorAuthCancel);
       return;
     }
     if (message.type === 'platform.jimeng_auth_cancel') {
