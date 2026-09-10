@@ -91,6 +91,7 @@ describe('official-exit vendor defaults', () => {
       'jimeng',
       'cursor',
       'volcengine',
+      'opencode',
     ]);
   });
 
@@ -114,6 +115,9 @@ describe('isOfficialExitHostAllowed', () => {
     expect(isOfficialExitHostAllowed('cli-chat-proxy.grok.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('grok.com', defaults)).toBe(true);
     expect(isOfficialExitHostAllowed('ollama.com', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('opencode.ai', defaults)).toBe(true);
+    expect(isOfficialExitHostAllowed('api.opencode.ai', defaults)).toBe(false);
+    expect(isOfficialExitHostAllowed('opencode.ai.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('api.ollama.com', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('ollama.com.evil.example', defaults)).toBe(false);
     expect(isOfficialExitHostAllowed('future-api.grok.com', defaults)).toBe(true);

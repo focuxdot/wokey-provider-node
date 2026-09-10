@@ -6,6 +6,10 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+- Allow official exit to `opencode.ai` so OpenCode Go subscriptions can be
+  hosted. Exact host only; the Platform asserts the `/zen/go/` path prefix.
+
 ### Changed
 - Advertise the versioned `platform_persona` OAuth egress capability and proxy
   Codex, Claude, Grok, Kimi, and Cursor authorization control to Platform.

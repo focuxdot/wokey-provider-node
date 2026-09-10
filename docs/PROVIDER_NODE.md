@@ -76,6 +76,7 @@ By default the node only dials official vendor domains for currently supported o
 - Jimeng / Dreamina: `*.byted.org`, `*.bytedanceapi.com`, `*.jianying.com`, `*.vlabvod.com`, `*.snssdk.com`, `*.bytedancevod.com`
 - Cursor Desktop: `api2.cursor.sh`, `agentn.api5.cursor.sh`
 - Volcengine Ark: `ark.cn-beijing.volces.com`, `open.volcengineapi.com`
+- OpenCode Go: `opencode.ai`
 
 Operators can narrow or extend the allowed egress hosts with `PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS` (see [Official Exit Verification](OFFICIAL_VERIFICATION.md#restricting-egress)); the setting is local-only and cannot be overridden by Platform. Wildcard `*` is not supported; use explicit hosts or domain patterns such as `.example.com` / `*.example.com`.
 

@@ -12,7 +12,8 @@ export type OfficialExitVendorId =
   | 'xai'
   | 'jimeng'
   | 'cursor'
-  | 'volcengine';
+  | 'volcengine'
+  | 'opencode';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -108,6 +109,15 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // Platform already hard-asserts this host on the way out — a wider entry
     // here would only remove a check without enabling anything we use.
     allowedHosts: ['ark.cn-beijing.volces.com', 'open.volcengineapi.com'],
+  },
+  {
+    id: 'opencode',
+    displayName: 'OpenCode Go',
+    // Exact host, no wildcard: the Go subscription lives under one origin and
+    // the Platform hard-asserts the /zen/go/ path prefix on the way out (the
+    // same key on /zen/v1/ silently bills per token). A domain pattern here
+    // would drop a check without enabling anything the Platform dials.
+    allowedHosts: ['opencode.ai'],
   },
 ]);
 
