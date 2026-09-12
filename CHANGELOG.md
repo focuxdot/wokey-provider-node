@@ -12,7 +12,7 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Fixed
 - Rewrite leftover public-site bind URLs (`https://wokey.ai/internal/provider/bind`)
-  onto the grey-cloud control plane before the nodey fallback runs, so one-click
+  onto the primary control endpoint before the nodey fallback runs, so one-click
   bind from the Provider page actually tries both dedicated endpoints.
 - Bound each bind HTTP attempt to 10s so a blackholed primary flips to the
   fallback instead of hanging on the OS TCP timeout.

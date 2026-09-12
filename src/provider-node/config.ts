@@ -124,10 +124,8 @@ export function platformFallbackUrl(rawUrl: string): string | null {
   return url.toString();
 }
 
-// One-click bind from the public site used to pass `https://wokey.ai/internal/provider/bind`.
-// That host is the Cloudflare-fronted website, not the node control plane, so the
-// nodey fallback never engaged (it only rewrites `node.wokey.ai`). Map those
-// leftover public-site URLs onto the packaged primary before bind/fallback run.
+// One-click bind from the public site may pass a legacy bind URL. Map that
+// leftover URL onto the packaged primary before bind/fallback run.
 export function rewriteLegacyPlatformUrl(rawUrl: string): string {
   let parsed: URL;
   try {

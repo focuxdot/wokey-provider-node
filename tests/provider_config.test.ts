@@ -34,7 +34,7 @@ describe('platform fallback url', () => {
 });
 
 describe('legacy platform URL rewrite', () => {
-  it('maps the public-site bind URL onto the grey-cloud primary so fallback can run', () => {
+  it('maps the public-site bind URL onto the primary so fallback can run', () => {
     expect(rewriteLegacyPlatformUrl('https://wokey.ai/internal/provider/bind')).toBe(
       'https://node.wokey.ai:8443/internal/provider/bind',
     );

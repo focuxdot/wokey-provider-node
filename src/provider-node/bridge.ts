@@ -661,7 +661,7 @@ class ProviderCredentialDataChannelPool {
 
   private releaseIdleChannel(channel: ProviderCredentialDataChannel): void {
     const plan = this.plan;
-    if (!plan || plan.mode !== 'on_demand') return;
+    if (plan?.mode !== 'on_demand') return;
     this.sendControl({
       type: 'provider.credential_data_channel_idle',
       nodeId: this.getConfig().nodeId,
