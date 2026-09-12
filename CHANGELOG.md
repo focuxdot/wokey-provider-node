@@ -10,6 +10,13 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 - Allow official exit to `opencode.ai` so OpenCode Go subscriptions can be
   hosted. Exact host only; the Platform asserts the `/zen/go/` path prefix.
 
+### Fixed
+- Rewrite leftover public-site bind URLs (`https://wokey.ai/internal/provider/bind`)
+  onto the grey-cloud control plane before the nodey fallback runs, so one-click
+  bind from the Provider page actually tries both dedicated endpoints.
+- Bound each bind HTTP attempt to 10s so a blackholed primary flips to the
+  fallback instead of hanging on the OS TCP timeout.
+
 ### Changed
 - Advertise the versioned `platform_persona` OAuth egress capability and proxy
   Codex, Claude, Grok, Kimi, and Cursor authorization control to Platform.

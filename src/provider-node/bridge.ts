@@ -21,6 +21,7 @@ import type {
   PlatformCredentialDataChannelPlan,
   PlatformCredentialDataChannelReady,
   PlatformCredentialDataChannelsUpdated,
+  PlatformCredentialDataChannelOpen,
   PlatformJimengAuthCancel,
   PlatformJimengAuthStart,
   PlatformJimengCliInstall,
@@ -34,6 +35,7 @@ import type {
   ProviderCredentialDataChannelReady,
   ProviderCredentialDataChannelsApplied,
   ProviderCredentialDataChannelsResyncRequested,
+  ProviderCredentialDataChannelIdle,
   ProviderDrainNotice,
   ProviderHeartbeat,
   ProviderHello,
@@ -108,9 +110,22 @@ const PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS = Math.max(
   positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS', 90_000),
   PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_CHECK_INTERVAL_MS * 3,
 );
+const PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CREDENTIAL_BINDINGS = Math.max(3, Math.min(
+  1000,
+  Math.floor(positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CREDENTIAL_BINDINGS', 1000)),
+));
+const PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_LIVE_CHANNELS = Math.max(1, Math.min(
+  PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CREDENTIAL_BINDINGS,
+  Math.floor(positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_LIVE_CHANNELS', 100)),
+));
+const PROVIDER_CREDENTIAL_DATA_CHANNEL_IDLE_TIMEOUT_MS = Math.max(
+  5_000,
+  Math.floor(positiveEnvNumber('PROVIDER_CREDENTIAL_DATA_CHANNEL_IDLE_TIMEOUT_MS', 60_000)),
+);
 
 export interface ProviderCredentialDataChannelPoolState {
   enabled: boolean;
+  epochId?: string;
   desired: number;
   connecting: number;
   awaitingReady: number;
@@ -208,6 +223,7 @@ type ProviderCredentialDataChannel = {
   state: 'connecting' | 'awaiting_ready' | 'ready' | 'closed';
   readyTimer?: NodeJS.Timeout;
   lastPlatformActivityAt: number;
+  lastRequestActivityAt: number;
   handshakeSlotHeld: boolean;
   finalized: boolean;
   finalize: (reason?: string) => void;
@@ -273,6 +289,7 @@ class ProviderCredentialDataChannelPool {
       }
     }
     if (epochChanged) this.stopChannels('credential_data_channel_epoch_replaced');
+    const previousMode = current?.mode;
     this.plan = {
       ...plan,
       credentialBindingIds: normalizedIds,
@@ -281,6 +298,12 @@ class ProviderCredentialDataChannelPool {
     this.earlyDataProtocol = earlyDataProtocol;
     this.bulkTransfer = bulkTransfer;
     this.acceptingSessions = acceptingSessions;
+    if (this.plan.mode === 'on_demand' && previousMode !== 'on_demand') {
+      this.pendingConnections.clear();
+      for (const timer of this.reconnectTimers.values()) clearTimeout(timer);
+      this.reconnectTimers.clear();
+      this.reconnectAttempts.clear();
+    }
 
     const desired = new Set(this.plan.credentialBindingIds);
     for (const credentialBindingId of [...this.channels.keys()]) {
@@ -306,11 +329,22 @@ class ProviderCredentialDataChannelPool {
       });
     }
     for (const credentialBindingId of desired) {
-      if (!this.channels.has(credentialBindingId) && !this.reconnectTimers.has(credentialBindingId)) {
+      if (this.plan.mode !== 'on_demand'
+        && !this.channels.has(credentialBindingId) && !this.reconnectTimers.has(credentialBindingId)) {
         this.pendingConnections.add(credentialBindingId);
       }
     }
     this.ensureLivenessTimer();
+    this.pumpConnections();
+    return true;
+  }
+
+  requestChannel(credentialBindingId: string): boolean {
+    const plan = this.plan;
+    if (!plan?.credentialBindingIds.includes(credentialBindingId)) return false;
+    if (this.channels.has(credentialBindingId)) return true;
+    if (this.channels.size + this.pendingConnections.size >= (plan.maxLiveChannels ?? PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_LIVE_CHANNELS)) return false;
+    this.pendingConnections.add(credentialBindingId);
     this.pumpConnections();
     return true;
   }
@@ -343,6 +377,7 @@ class ProviderCredentialDataChannelPool {
     }
     return {
       enabled: Boolean(this.plan),
+      epochId: this.plan?.epochId,
       desired: this.plan?.credentialBindingIds.length ?? 0,
       connecting,
       awaitingReady,
@@ -444,6 +479,7 @@ class ProviderCredentialDataChannelPool {
       epochId: plan.epochId,
       state: 'connecting',
       lastPlatformActivityAt: Date.now(),
+      lastRequestActivityAt: Date.now(),
       handshakeSlotHeld: true,
       finalized: false,
       finalize: () => {},
@@ -464,7 +500,7 @@ class ProviderCredentialDataChannelPool {
       if (this.nonRetryableCloseReason(reason)) {
         this.requestPlanResync(channel.epochId);
       }
-      else {
+      else if (this.plan?.mode !== 'on_demand' || reason !== 'credential_data_channel_idle') {
         this.scheduleReconnect(credentialBindingId, plan.epochId);
       }
     };
@@ -569,6 +605,7 @@ class ProviderCredentialDataChannelPool {
     }
     if (message.type === 'official_exit.open' && message.credentialBindingId !== channel.credentialBindingId)
       throw new Error('credential_data_channel_binding_mismatch');
+    if (message.type === 'official_exit.open') channel.lastRequestActivityAt = Date.now();
     await channel.tunnels.handleMessage(message, wireBytes);
   }
 
@@ -582,7 +619,9 @@ class ProviderCredentialDataChannelPool {
   private channelQueueBudgetBytes(): number {
     const totalBudget = this.bulkTransfer?.connectionQueueBudgetBytes
       ?? PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES;
-    const channelCount = Math.max(1, this.plan?.credentialBindingIds.length ?? 1);
+    const channelCount = this.plan?.mode === 'on_demand'
+      ? Math.max(1, this.channels.size)
+      : Math.max(1, this.plan?.credentialBindingIds.length ?? 1);
     return Math.max(1, Math.floor(totalBudget / channelCount));
   }
 
@@ -618,6 +657,18 @@ class ProviderCredentialDataChannelPool {
     catch {
       // local state is already closed
     }
+  }
+
+  private releaseIdleChannel(channel: ProviderCredentialDataChannel): void {
+    const plan = this.plan;
+    if (!plan || plan.mode !== 'on_demand') return;
+    this.sendControl({
+      type: 'provider.credential_data_channel_idle',
+      nodeId: this.getConfig().nodeId,
+      credentialBindingId: channel.credentialBindingId,
+      epochId: channel.epochId,
+    } satisfies ProviderCredentialDataChannelIdle);
+    this.closeChannel(channel.credentialBindingId, 'credential_data_channel_idle');
   }
 
   private scheduleReconnect(credentialBindingId: string, epochId: string): void {
@@ -657,7 +708,8 @@ class ProviderCredentialDataChannelPool {
     const desired = new Set(plan.credentialBindingIds);
     for (const credentialBindingId of desired) {
       if (
-        !this.channels.has(credentialBindingId)
+        plan.mode !== 'on_demand'
+        && !this.channels.has(credentialBindingId)
         && !this.reconnectTimers.has(credentialBindingId)
         && !this.pendingConnections.has(credentialBindingId)
       ) {
@@ -667,6 +719,13 @@ class ProviderCredentialDataChannelPool {
     const now = Date.now();
     for (const channel of [...this.channels.values()]) {
       if (channel.finalized || !desired.has(channel.credentialBindingId)) continue;
+      if (plan.mode === 'on_demand'
+        && channel.state === 'ready'
+        && channel.tunnels.activeSessionCount() === 0
+        && now - channel.lastRequestActivityAt >= (plan.idleTimeoutMs ?? PROVIDER_CREDENTIAL_DATA_CHANNEL_IDLE_TIMEOUT_MS)) {
+        this.releaseIdleChannel(channel);
+        continue;
+      }
       if (now - channel.lastPlatformActivityAt < PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS) {
         if (channel.socket.readyState === WebSocket.OPEN) {
           try {
@@ -1061,6 +1120,10 @@ export class ProviderBridge {
           ? {
               credentialDataChannels: {
                 protocolVersions: [1] as [1],
+                maxCredentialBindings: PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CREDENTIAL_BINDINGS,
+                maxLiveChannels: PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_LIVE_CHANNELS,
+                supportsLazyChannels: true,
+                idleTimeoutMs: PROVIDER_CREDENTIAL_DATA_CHANNEL_IDLE_TIMEOUT_MS,
                 maxConcurrentHandshakes: PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_CONCURRENT_HANDSHAKES,
               },
             }
@@ -1171,6 +1234,13 @@ export class ProviderBridge {
         this.acceptingSessions,
       );
       if (applied) this.acknowledgeCredentialDataChannelPlan(update.plan);
+      return;
+    }
+    if (message.type === 'platform.credential_data_channel_open') {
+      const open = message as PlatformCredentialDataChannelOpen;
+      if (open.nodeId !== this.getConfig().nodeId) return;
+      if (open.epochId !== this.credentialDataChannels.stateSnapshot().epochId) return;
+      this.credentialDataChannels.requestChannel(open.credentialBindingId);
       return;
     }
     if (message.type === 'platform.drain_ack') {

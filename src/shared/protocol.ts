@@ -42,6 +42,10 @@ export interface ProviderTransportCapabilities {
     protocolVersions: Array<1>;
     /** @deprecated Legacy nodes used this as a second total-count ceiling. */
     maxChannels?: number;
+    maxCredentialBindings?: number;
+    maxLiveChannels?: number;
+    supportsLazyChannels?: boolean;
+    idleTimeoutMs?: number;
     maxConcurrentHandshakes: number;
   };
 }
@@ -294,6 +298,23 @@ export interface PlatformCredentialDataChannelPlan {
   revision: number;
   connectionToken: string;
   credentialBindingIds: string[];
+  mode?: 'persistent' | 'on_demand';
+  maxLiveChannels?: number;
+  idleTimeoutMs?: number;
+}
+
+export interface PlatformCredentialDataChannelOpen {
+  type: 'platform.credential_data_channel_open';
+  nodeId: string;
+  credentialBindingId: string;
+  epochId: string;
+}
+
+export interface ProviderCredentialDataChannelIdle {
+  type: 'provider.credential_data_channel_idle';
+  nodeId: string;
+  credentialBindingId: string;
+  epochId: string;
 }
 
 export interface PlatformCredentialDataChannelReady {
@@ -638,6 +659,7 @@ export type ProviderToPlatformMessage =
   | ProviderUpgradeStatus
   | ProviderDrainNotice
   | ProviderCredentialMirrorUpdate
+  | ProviderCredentialDataChannelIdle
   | ProviderJimengAuthStarted
   | ProviderJimengAuthCompleted
   | ProviderJimengAuthFailed
@@ -656,6 +678,7 @@ export type PlatformToProviderMessage =
   | PlatformProviderReady
   | PlatformDrainAck
   | PlatformCredentialMirrorUpdateAck
+  | PlatformCredentialDataChannelOpen
   | PlatformCredentialRefreshHint
   | PlatformUpgradeAvailable
   | PlatformJimengAuthStart

@@ -8,8 +8,10 @@ import {
   defaultConfig,
   encryptProviderNodeLocalSecret,
   loadConfig,
+  platformBindAttemptUrls,
   platformFallbackUrl,
   redactConfig,
+  rewriteLegacyPlatformUrl,
   saveConfig,
 } from '../src/provider-node/config.js';
 
@@ -28,6 +30,36 @@ describe('platform fallback url', () => {
     expect(platformFallbackUrl('ws://127.0.0.1:8780/internal/provider/connect')).toBeNull();
     expect(platformFallbackUrl('wss://nodey.wokey.ai:8443/internal/provider/connect')).toBeNull();
     expect(platformFallbackUrl('not a url')).toBeNull();
+  });
+});
+
+describe('legacy platform URL rewrite', () => {
+  it('maps the public-site bind URL onto the grey-cloud primary so fallback can run', () => {
+    expect(rewriteLegacyPlatformUrl('https://wokey.ai/internal/provider/bind')).toBe(
+      'https://node.wokey.ai:8443/internal/provider/bind',
+    );
+    expect(rewriteLegacyPlatformUrl('https://www.wokey.ai/internal/provider/bind')).toBe(
+      'https://node.wokey.ai:8443/internal/provider/bind',
+    );
+  });
+
+  it('leaves loopback and already-canonical control-plane URLs untouched', () => {
+    expect(rewriteLegacyPlatformUrl('http://127.0.0.1:8780/internal/provider/bind')).toBe(
+      'http://127.0.0.1:8780/internal/provider/bind',
+    );
+    expect(rewriteLegacyPlatformUrl('https://node.wokey.ai:8443/internal/provider/bind')).toBe(
+      'https://node.wokey.ai:8443/internal/provider/bind',
+    );
+  });
+
+  it('builds bind attempts as rewritten primary then CDN fallback', () => {
+    expect(platformBindAttemptUrls('https://wokey.ai/internal/provider/bind')).toEqual([
+      'https://node.wokey.ai:8443/internal/provider/bind',
+      'https://nodey.wokey.ai:8443/internal/provider/bind',
+    ]);
+    expect(platformBindAttemptUrls('http://127.0.0.1:8780/internal/provider/bind')).toEqual([
+      'http://127.0.0.1:8780/internal/provider/bind',
+    ]);
   });
 });
 

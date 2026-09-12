@@ -577,6 +577,44 @@ describe('ProviderBridge endpoint failover', () => {
     }
   });
 
+  it('opens high-cardinality credential channels only on demand', async () => {
+    const bridge = await makeBridge(false, true);
+    try {
+      bridge.start();
+      const control = fakeSockets[0];
+      control.readyState = FakeWebSocket.OPEN;
+      control.emit('open');
+      const nodeId = String(control.sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello')?.nodeId);
+      const plan = {
+        protocolVersion: 1 as const,
+        epochId: 'epoch_lazy',
+        revision: 1,
+        connectionToken: 'epoch_token_lazy',
+        credentialBindingIds: ['credential_a', 'credential_b', 'credential_c'],
+        mode: 'on_demand' as const,
+        maxLiveChannels: 1,
+        idleTimeoutMs: 60_000,
+      };
+      control.emit('message', Buffer.from(JSON.stringify({ type: 'platform.ready', nodeId, credentialDataChannels: plan })), false);
+      await Promise.resolve();
+      expect(fakeSockets).toHaveLength(1);
+      control.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.credential_data_channel_open',
+        nodeId,
+        credentialBindingId: 'credential_b',
+        epochId: 'epoch_lazy',
+      })), false);
+      await Promise.resolve();
+      expect(fakeSockets).toHaveLength(2);
+      expect(fakeSockets[1].options?.headers?.['x-provider-data-channel']).toBe('credential_b');
+    } finally {
+      bridge.stop();
+    }
+  });
+
   it('replaces a ready credential channel that stops receiving Platform activity without a close event', async () => {
     const bridge = await makeBridge(false, true);
     try {

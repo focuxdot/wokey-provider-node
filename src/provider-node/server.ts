@@ -23,7 +23,7 @@ import {
   decryptProviderNodeLocalSecret,
   encryptProviderNodeLocalSecret,
   loadConfig,
-  platformFallbackUrl,
+  platformBindAttemptUrls,
   redactConfig,
   saveConfig,
   type ProviderNodeConfig,
@@ -601,14 +601,14 @@ app.post('/api/platform/bind', async (request, reply) => {
     return { ok: false, error: 'binding_code_required' };
   }
 
-  const primaryBindUrl =
+  const requestedBindUrl =
     body.platformBindUrl?.trim() || platformHttpUrl(config.platformWsUrl, '/internal/provider/bind');
-  // Try the direct origin endpoint first, then its CDN-proxied fallback if
-  // the direct one is unreachable (e.g. the bare origin IP is blocked). A real
-  // platform rejection (bad/expired code, version too old) is returned verbatim —
-  // we never retry it on the fallback, and the user sees the true reason instead
-  // of a generic internal_error.
-  const bindUrls = [primaryBindUrl, platformFallbackUrl(primaryBindUrl)].filter((url): url is string => Boolean(url));
+  // Rewrite leftover public-site bind URLs (`https://wokey.ai/...`) onto the
+  // packaged primary, then try the direct origin and the CDN-proxied fallback.
+  // A real platform rejection (bad/expired code, version too old) is returned
+  // verbatim — we never retry it on the fallback, and the user sees the true
+  // reason instead of a generic internal_error.
+  const bindUrls = platformBindAttemptUrls(requestedBindUrl);
   const bindPayload = JSON.stringify({
     bindingCode: body.bindingCode.trim(),
     nodeId: config.nodeId,
@@ -1743,6 +1743,8 @@ type BindRedemptionResult =
   | { kind: 'platform_error'; error: string; status: number }
   | { kind: 'unreachable'; detail: string };
 
+const PLATFORM_BIND_TIMEOUT_MS = 10_000;
+
 // Redeems a binding code at one platform endpoint, distinguishing three outcomes:
 // a clean success, a real platform rejection (reached the platform, got a
 // structured error — surface it as-is), and an unreachable endpoint (connect
@@ -1750,7 +1752,12 @@ type BindRedemptionResult =
 async function redeemBindingCode(url: string, body: string): Promise<BindRedemptionResult> {
   let response: Response;
   try {
-    response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(PLATFORM_BIND_TIMEOUT_MS),
+    });
   } catch (error) {
     return { kind: 'unreachable', detail: error instanceof Error ? error.message : 'fetch_failed' };
   }
