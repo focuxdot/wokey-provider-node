@@ -590,6 +590,12 @@ export interface OfficialExitOpenRequest {
   targetHost: string;
   targetPort: number;
   deadlineMs: number;
+  /**
+   * How long Platform waits for open_response before abandoning the open;
+   * omitted by older Platforms. Bounds the node's vendor connect so a failed
+   * connect is reported with its real reason instead of a Platform open timeout.
+   */
+  openTimeoutMs?: number;
   /** Post-connect upstream socket inactivity timeout; omitted by older Platforms. */
   socketIdleTimeoutMs?: number;
   /** Tunnel ownership contract; omitted by older Platforms and defaults to request_v1. */
@@ -618,6 +624,16 @@ export interface OfficialExitTransportDiagnostic {
   addressFamily?: 'ipv4' | 'ipv6';
   remoteAddress?: string;
   connectMs?: number;
+  /** Time from connect start until DNS resolved; absent if resolution never finished. */
+  dnsMs?: number;
+  /** Time from DNS resolved until TCP connected (all attempts); connected outcome only. */
+  tcpConnectMs?: number;
+  /** Number of resolved addresses returned by DNS. */
+  resolvedAddressCount?: number;
+  /** TCP connection attempts started (happy-eyeballs may try several addresses). */
+  connectAttempts?: number;
+  /** Budget the node applied to DNS + TCP connect. */
+  connectTimeoutMs?: number;
   elapsedMs?: number;
   bytesFromUpstream?: number;
   bytesToUpstream?: number;

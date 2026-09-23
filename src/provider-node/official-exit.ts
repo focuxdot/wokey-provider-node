@@ -1,4 +1,4 @@
-import { connect, type Socket } from 'node:net';
+import { connect, isIP, type Socket } from 'node:net';
 import {
   OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES,
   OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES,
@@ -33,7 +33,10 @@ export { DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS, OFFICIAL_EXIT_VENDOR_CONFIGS } fro
 export const OFFICIAL_EXIT_ALLOWLIST_ENV = 'PROVIDER_OFFICIAL_EXIT_ALLOWED_HOSTS';
 export const OFFICIAL_EXIT_EARLY_DATA_MAX_BYTES = 64 * 1024;
 export const OFFICIAL_EXIT_PERSISTENT_TRANSPORT_INACTIVITY_TIMEOUT_MS = 1_860_000;
-const OFFICIAL_EXIT_OPEN_RESPONSE_MARGIN_MS = 10_000;
+/** Platforms that predate OfficialExitOpenRequest.openTimeoutMs abandon an open after 15 seconds. */
+const OFFICIAL_EXIT_LEGACY_PLATFORM_OPEN_TIMEOUT_MS = 15_000;
+/** Time reserved for a failed open_response to reach Platform before it gives up. */
+const OFFICIAL_EXIT_OPEN_RESPONSE_MARGIN_MS = 3_000;
 
 // Operator-controlled egress allowlist for the official-exit tunnel. The node
 // trusts its bound Platform to only dial real vendor hosts, but an operator who
@@ -85,6 +88,11 @@ interface OfficialExitSession {
   lifecycleProtocol: OfficialExitLifecycleProtocol;
   connectedAt: number;
   connectMs: number;
+  connectTimeoutMs: number;
+  dnsMs?: number;
+  tcpConnectMs?: number;
+  resolvedAddressCount?: number;
+  connectAttempts: number;
   addressFamily?: 'ipv4' | 'ipv6';
   remoteAddress?: string;
   dataProtocol: OfficialExitDataProtocol;
@@ -260,6 +268,8 @@ export class ProviderOfficialExitTunnelManager {
         lifecycleProtocol,
         connectedAt: connectStartedAt,
         connectMs: 0,
+        connectTimeoutMs: officialExitConnectTimeoutMs(request.deadlineMs, request.openTimeoutMs),
+        connectAttempts: 0,
         dataProtocol: request.dataProtocol ?? 'json_base64_v1',
         earlyDataProtocol: request.earlyDataProtocol,
         trafficClass: request.trafficClass ?? 'interactive',
@@ -291,7 +301,10 @@ export class ProviderOfficialExitTunnelManager {
           stage: 'connect',
           outcome: 'failed',
           reasonCode,
+          addressFamily: session.addressFamily,
+          remoteAddress: session.remoteAddress,
           connectMs: Date.now() - connectStartedAt,
+          ...connectPhaseDiagnostic(session),
           bytesToUpstream: 0,
           earlyDataBytes: session.earlyDataBytes,
           webSocketBytesFromPlatform: session.webSocketBytesIn,
@@ -299,7 +312,29 @@ export class ProviderOfficialExitTunnelManager {
         resolve();
       };
 
-      socket.setTimeout(officialExitConnectTimeoutMs(request.deadlineMs));
+      // An idle timeout on a connecting socket also fires while DNS is still
+      // resolving, so this bounds lookup + every TCP attempt together.
+      socket.setTimeout(session.connectTimeoutMs);
+      if (isIP(request.targetHost)) {
+        session.dnsMs = 0;
+        session.resolvedAddressCount = 1;
+      }
+      // With autoSelectFamily, 'lookup' fires once per resolved address, all at
+      // resolution time; the first one marks when DNS finished.
+      socket.on('lookup', (error, address, family) => {
+        if (settled) return;
+        session.dnsMs ??= Date.now() - connectStartedAt;
+        if (error) return;
+        session.resolvedAddressCount = (session.resolvedAddressCount ?? 0) + 1;
+        if (session.connectAttempts === 0) recordAttemptAddress(session, address, family);
+      });
+      // Emitted by Node >= 20.12 for each TCP attempt; older runtimes leave
+      // connectAttempts at 0, which is reported as absent.
+      socket.on('connectionAttempt', (address: string, _port: number, family: number) => {
+        if (settled) return;
+        session.connectAttempts += 1;
+        recordAttemptAddress(session, address, family);
+      });
       socket.once('connect', () => {
         if (settled) return;
         if (session.closed || this.sessions.get(request.sessionId) !== session) {
@@ -309,7 +344,7 @@ export class ProviderOfficialExitTunnelManager {
           return;
         }
         settled = true;
-        // Connect/open_response remains bounded by deadlineMs. Once the tunnel is
+        // Connect is bounded by officialExitConnectTimeoutMs. Once the tunnel is
         // open, use the independent response-idle budget when a newer Platform
         // supplies it; older Platforms retain the legacy deadlineMs behavior.
         socket.setTimeout(persistent
@@ -320,6 +355,7 @@ export class ProviderOfficialExitTunnelManager {
         session.connected = true;
         session.connectedAt = Date.now();
         session.connectMs = connectMs;
+        if (session.dnsMs !== undefined) session.tcpConnectMs = Math.max(0, connectMs - session.dnsMs);
         session.addressFamily = addressFamily;
         session.remoteAddress = socket.remoteAddress;
         this.attachSocketHandlers(request.sessionId, session);
@@ -773,6 +809,7 @@ export class ProviderOfficialExitTunnelManager {
       addressFamily: session.addressFamily,
       remoteAddress: session.remoteAddress,
       connectMs: session.connectMs,
+      ...connectPhaseDiagnostic(session),
       elapsedMs: Date.now() - session.connectedAt,
       bytesFromUpstream: session.bytesIn,
       bytesToUpstream: session.bytesOut,
@@ -787,21 +824,48 @@ export class ProviderOfficialExitTunnelManager {
   }
 }
 
+function recordAttemptAddress(session: OfficialExitSession, address: string, family: number | string | null | undefined): void {
+  session.remoteAddress = address;
+  session.addressFamily = family === 4 || family === 'IPv4' ? 'ipv4' : family === 6 || family === 'IPv6' ? 'ipv6' : undefined;
+}
+
+function connectPhaseDiagnostic(session: OfficialExitSession): Pick<
+  OfficialExitTransportDiagnostic,
+  'dnsMs' | 'tcpConnectMs' | 'resolvedAddressCount' | 'connectAttempts' | 'connectTimeoutMs'
+> {
+  return {
+    dnsMs: session.dnsMs,
+    tcpConnectMs: session.tcpConnectMs,
+    resolvedAddressCount: session.resolvedAddressCount,
+    connectAttempts: session.connectAttempts || undefined,
+    connectTimeoutMs: session.connectTimeoutMs,
+  };
+}
+
 /**
- * Leave enough time for the node's failed open_response and diagnostics to
- * reach Platform before Platform abandons the pending open. Use a proportional
- * margin for short development deadlines and cap the production margin at ten
- * seconds.
+ * Bound DNS + TCP connect by how long Platform actually waits for the
+ * open_response (not the whole request deadline), leaving a margin so a failed
+ * connect is reported with its real reason (dns_failed, connect_timeout, ...)
+ * before Platform abandons the open as official_exit_open_timeout.
+ *
+ * Platforms that don't send openTimeoutMs wait 15 seconds. The margin is
+ * proportional for short development budgets and capped at three seconds.
  */
-export function officialExitConnectTimeoutMs(deadlineMs: number): number {
-  const relativeBudgetMs = Number.isFinite(deadlineMs) && deadlineMs > 0
-    ? Math.max(1, Math.floor(deadlineMs))
-    : 1_000;
+export function officialExitConnectTimeoutMs(deadlineMs: number, openTimeoutMs?: number): number {
+  const deadline = positiveFiniteMs(deadlineMs) ?? 1_000;
+  const platformWaitMs = Math.min(
+    deadline,
+    positiveFiniteMs(openTimeoutMs) ?? OFFICIAL_EXIT_LEGACY_PLATFORM_OPEN_TIMEOUT_MS,
+  );
   const marginMs = Math.min(
     OFFICIAL_EXIT_OPEN_RESPONSE_MARGIN_MS,
-    Math.max(1, Math.floor(relativeBudgetMs * 0.1)),
+    Math.max(1, Math.floor(platformWaitMs * 0.2)),
   );
-  return Math.max(1, relativeBudgetMs - marginMs);
+  return Math.max(1, platformWaitMs - marginMs);
+}
+
+function positiveFiniteMs(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : undefined;
 }
 
 export function officialExitSocketIdleTimeoutMs(

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import dns from 'node:dns';
 import { createServer, Socket } from 'node:net';
 import {
   decodeOfficialExitBinaryFrame,
@@ -42,16 +43,28 @@ describe('official-exit transport error classification', () => {
 });
 
 describe('official-exit connect deadline', () => {
-  it('leaves ten seconds for open_response delivery before a 300-second Platform deadline', () => {
-    expect(officialExitConnectTimeoutMs(300_000)).toBe(290_000);
+  it('bounds connect by the Platform open wait, not the whole request deadline', () => {
+    expect(officialExitConnectTimeoutMs(300_000, 15_000)).toBe(12_000);
+    expect(officialExitConnectTimeoutMs(1_800_000, 15_000)).toBe(12_000);
+    expect(officialExitConnectTimeoutMs(300_000, 60_000)).toBe(57_000);
   });
 
-  it('uses a proportional margin for short test and development deadlines', () => {
-    expect(officialExitConnectTimeoutMs(5_000)).toBe(4_500);
+  it('assumes the legacy 15-second Platform open wait when openTimeoutMs is absent or invalid', () => {
+    expect(officialExitConnectTimeoutMs(300_000)).toBe(12_000);
+    expect(officialExitConnectTimeoutMs(1_800_000, undefined)).toBe(12_000);
+    expect(officialExitConnectTimeoutMs(300_000, Number.NaN)).toBe(12_000);
+    expect(officialExitConnectTimeoutMs(300_000, 0)).toBe(12_000);
+  });
+
+  it('never exceeds the request deadline and uses a proportional margin for short budgets', () => {
+    expect(officialExitConnectTimeoutMs(5_000)).toBe(4_000);
+    expect(officialExitConnectTimeoutMs(5_000, 15_000)).toBe(4_000);
+    expect(officialExitConnectTimeoutMs(1_000, 500)).toBe(400);
+    expect(officialExitConnectTimeoutMs(Number.NaN)).toBe(800);
   });
 
   it('keeps connect and post-connect idle budgets independent', () => {
-    expect(officialExitConnectTimeoutMs(300_000)).toBe(290_000);
+    expect(officialExitConnectTimeoutMs(300_000, 15_000)).toBe(12_000);
     expect(officialExitSocketIdleTimeoutMs(300_000, 1_800_000)).toBe(1_800_000);
   });
 
@@ -287,6 +300,84 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
         bytesToUpstream: 0,
       },
     });
+  });
+
+  it('splits connect time into DNS and TCP phases', async () => {
+    const upstream = createServer((socket) => socket.end());
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const lookup = vi.spyOn(dns, 'lookup').mockImplementation(((
+      _host: string,
+      options: { all?: boolean },
+      callback: (...args: unknown[]) => void,
+    ) => {
+      setTimeout(() => {
+        if (options?.all) callback(null, [{ address: '127.0.0.1', family: 4 }]);
+        else callback(null, '127.0.0.1', 4);
+      }, 30);
+    }) as unknown as typeof dns.lookup);
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message as unknown as Record<string, unknown>),
+      ['vendor.test'],
+    );
+
+    try {
+      await manager.handleMessage({ ...openRequest('vendor.test', address.port), deadlineMs: 300_000, openTimeoutMs: 15_000 });
+    } finally {
+      lookup.mockRestore();
+      upstream.close();
+    }
+
+    const diagnostic = (sent[0] as { transportDiagnostic: Record<string, number> }).transportDiagnostic;
+    expect(sent[0]).toMatchObject({ type: 'official_exit.open_response', accepted: true });
+    expect(diagnostic).toMatchObject({
+      outcome: 'connected',
+      remoteAddress: '127.0.0.1',
+      addressFamily: 'ipv4',
+      resolvedAddressCount: 1,
+      connectTimeoutMs: 12_000,
+    });
+    expect(diagnostic.dnsMs).toBeGreaterThanOrEqual(25);
+    expect(diagnostic.tcpConnectMs).toBeGreaterThanOrEqual(0);
+    expect(diagnostic.dnsMs + diagnostic.tcpConnectMs).toBe(diagnostic.connectMs);
+  });
+
+  it('reports connect_timeout within the Platform open wait when DNS never resolves', async () => {
+    const lookup = vi.spyOn(dns, 'lookup').mockImplementation((() => undefined) as unknown as typeof dns.lookup);
+    const sent: Array<Record<string, unknown>> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message) => sent.push(message as unknown as Record<string, unknown>),
+      ['vendor.test'],
+    );
+
+    const started = Date.now();
+    try {
+      await manager.handleMessage({ ...openRequest('vendor.test'), deadlineMs: 300_000, openTimeoutMs: 250 });
+    } finally {
+      lookup.mockRestore();
+    }
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(sent).toEqual([
+      expect.objectContaining({
+        type: 'official_exit.open_response',
+        accepted: false,
+        reasonCode: 'official_exit_connect_timeout',
+        transportDiagnostic: expect.objectContaining({
+          stage: 'connect',
+          outcome: 'failed',
+          connectTimeoutMs: 200,
+        }),
+      }),
+    ]);
+    const diagnostic = (sent[0] as { transportDiagnostic: Record<string, unknown> }).transportDiagnostic;
+    expect(diagnostic.dnsMs).toBeUndefined();
+    expect(diagnostic.connectAttempts).toBeUndefined();
+    expect(manager.activeSessionCount()).toBe(0);
   });
 
   it('moves binary-v1 bytes losslessly in both directions and returns credit', async () => {

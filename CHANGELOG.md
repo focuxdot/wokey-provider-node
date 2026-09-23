@@ -9,6 +9,9 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 ### Added
 - Allow official exit to `opencode.ai` so OpenCode Go subscriptions can be
   hosted. Exact host only; the Platform asserts the `/zen/go/` path prefix.
+- Report `dnsMs`, `tcpConnectMs`, `resolvedAddressCount`, `connectAttempts`
+  and `connectTimeoutMs` in official-exit transport diagnostics. Failed
+  connects also carry the last attempted address.
 
 ### Fixed
 - Rewrite leftover public-site bind URLs (`https://wokey.ai/internal/provider/bind`)
@@ -16,6 +19,11 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   bind from the Provider page actually tries both dedicated endpoints.
 - Bound each bind HTTP attempt to 10s so a blackholed primary flips to the
   fallback instead of hanging on the OS TCP timeout.
+- Bound official-exit vendor DNS + TCP connect by how long Platform waits for
+  the open response (`openTimeoutMs`, 15s on Platforms that don't send it)
+  minus a 3s margin, instead of the whole request deadline (~290s). Slow or
+  failed vendor connects are now reported as `dns_failed` / `connect_timeout`
+  rather than surfacing as a Platform open timeout.
 
 ### Changed
 - Advertise the versioned `platform_persona` OAuth egress capability and proxy
