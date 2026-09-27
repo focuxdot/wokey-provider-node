@@ -4,6 +4,7 @@ import { createServer, Socket } from 'node:net';
 import {
   decodeOfficialExitBinaryFrame,
   encodeOfficialExitBinaryData,
+  encodeOfficialExitBinaryWindowUpdate,
 } from '../src/shared/official-exit-binary.js';
 import {
   DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS,
@@ -14,6 +15,7 @@ import {
   classifyConnectError,
   classifySocketError,
   isOfficialExitHostAllowed,
+  officialExitAddressAttemptTimeoutMs,
   officialExitConnectTimeoutMs,
   officialExitSocketIdleTimeoutMs,
   parseOfficialExitAllowlist,
@@ -32,6 +34,18 @@ describe('official-exit transport error classification', () => {
     expect(classifyConnectError(networkError('ECONNREFUSED'))).toBe('official_exit_connect_refused');
     expect(classifyConnectError(networkError('ETIMEDOUT'))).toBe('official_exit_connect_timeout');
     expect(classifyConnectError(networkError('ENETUNREACH'))).toBe('official_exit_connect_failed');
+  });
+
+  it('classifies a failed happy-eyeballs connect by its attempts, not only the first code', () => {
+    const aggregate = (...codes: string[]) => Object.assign(
+      new AggregateError(codes.map(networkError), 'connect failed'),
+      { code: codes[0] },
+    );
+    // IPv4 attempt abandoned by the attempt timer, then IPv6 has no route.
+    expect(classifyConnectError(aggregate('ETIMEDOUT', 'ENETUNREACH'))).toBe('official_exit_connect_timeout');
+    expect(classifyConnectError(aggregate('ENETUNREACH', 'ETIMEDOUT'))).toBe('official_exit_connect_timeout');
+    expect(classifyConnectError(aggregate('ETIMEDOUT', 'ECONNREFUSED'))).toBe('official_exit_connect_refused');
+    expect(classifyConnectError(aggregate('ENETUNREACH', 'EHOSTUNREACH'))).toBe('official_exit_connect_failed');
   });
 
   it('uses socket-stage errors after TCP connect', () => {
@@ -61,6 +75,12 @@ describe('official-exit connect deadline', () => {
     expect(officialExitConnectTimeoutMs(5_000, 15_000)).toBe(4_000);
     expect(officialExitConnectTimeoutMs(1_000, 500)).toBe(400);
     expect(officialExitConnectTimeoutMs(Number.NaN)).toBe(800);
+  });
+
+  it('gives each happy-eyeballs address room for one SYN retransmit within the connect budget', () => {
+    expect(officialExitAddressAttemptTimeoutMs(12_000)).toBe(2_000);
+    expect(officialExitAddressAttemptTimeoutMs(4_500)).toBe(1_500);
+    expect(officialExitAddressAttemptTimeoutMs(200)).toBe(250);
   });
 
   it('keeps connect and post-connect idle budgets independent', () => {
@@ -772,6 +792,64 @@ describe('ProviderOfficialExitTunnelManager egress allowlist', () => {
 
     manager.closeAll('test_complete');
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  });
+
+  it('delivers credit-blocked upstream tail bytes before reporting remote close', async () => {
+    // The final chunk straddles the 256 KiB initial window: part of it is sent,
+    // the rest waits for credit while FIN has already been read.
+    const response = Buffer.alloc(256 * 1024 + 20 * 1024);
+    for (let index = 0; index < response.byteLength; index += 1) response[index] = index % 251;
+    const firstPartBytes = 250 * 1024;
+    const upstream = createServer((socket) => {
+      socket.write(response.subarray(0, firstPartBytes));
+      setTimeout(() => socket.end(response.subarray(firstPartBytes)), 20);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const address = upstream.address();
+    if (!address || typeof address === 'string') throw new Error('missing test server address');
+    const sent: Array<{ message: Record<string, unknown> | Buffer; options?: ProviderOfficialExitSendOptions }> = [];
+    const manager = new ProviderOfficialExitTunnelManager(
+      () => config,
+      (message, options) => {
+        sent.push({ message, options });
+      },
+      ['127.0.0.1'],
+    );
+    manager.setNegotiatedDataProtocol('binary_v1');
+
+    await manager.handleMessage({
+      ...openRequest('127.0.0.1', address.port),
+      dataProtocol: 'binary_v1',
+    });
+    // Upstream has sent everything plus FIN while only the initial 256 KiB window is open.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const closeBeforeCredit = sent.find((entry) => !Buffer.isBuffer(entry.message) && entry.message.type === 'official_exit.close');
+    expect(closeBeforeCredit).toBeUndefined();
+    expect(manager.activeSessionCount()).toBe(1);
+
+    const credit = encodeOfficialExitBinaryWindowUpdate('sess_1', 1024 * 1024);
+    manager.handleBinaryFrame(decodeOfficialExitBinaryFrame(credit), credit.byteLength);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+
+    const received = Buffer.concat(sent
+      .filter((entry): entry is { message: Buffer; options?: ProviderOfficialExitSendOptions } => Buffer.isBuffer(entry.message))
+      .map((entry) => decodeOfficialExitBinaryFrame(entry.message))
+      .flatMap((frame) => frame.kind === 'data' ? [frame.payload] : []));
+    expect(received.equals(response)).toBe(true);
+    const closeIndex = sent.findIndex((entry) => !Buffer.isBuffer(entry.message) && entry.message.type === 'official_exit.close');
+    const lastDataIndex = sent.findLastIndex((entry) => Buffer.isBuffer(entry.message));
+    expect(closeIndex).toBeGreaterThan(lastDataIndex);
+    expect(sent[closeIndex]).toMatchObject({
+      message: {
+        reasonCode: 'official_exit_remote_closed',
+        transportDiagnostic: { bytesFromUpstream: response.byteLength },
+      },
+      // Same lane and session as the data frames, so the scheduler cannot let the
+      // close overtake bytes it has not written to the WebSocket yet.
+      options: { lane: 'interactive', sessionId: 'sess_1' },
+    });
+    expect(manager.activeSessionCount()).toBe(0);
   });
 
   it('requires binary_v1 plus buffered_v1 for persistent lifecycle', async () => {

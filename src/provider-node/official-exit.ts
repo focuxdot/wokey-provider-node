@@ -37,6 +37,9 @@ export const OFFICIAL_EXIT_PERSISTENT_TRANSPORT_INACTIVITY_TIMEOUT_MS = 1_860_00
 const OFFICIAL_EXIT_LEGACY_PLATFORM_OPEN_TIMEOUT_MS = 15_000;
 /** Time reserved for a failed open_response to reach Platform before it gives up. */
 const OFFICIAL_EXIT_OPEN_RESPONSE_MARGIN_MS = 3_000;
+const OFFICIAL_EXIT_ADDRESS_ATTEMPT_TIMEOUT_MS = 2_000;
+/** Node's own happy-eyeballs default. */
+const OFFICIAL_EXIT_MIN_ADDRESS_ATTEMPT_TIMEOUT_MS = 250;
 
 // Operator-controlled egress allowlist for the official-exit tunnel. The node
 // trusts its bound Platform to only dial real vendor hosts, but an operator who
@@ -106,6 +109,8 @@ interface OfficialExitSession {
   outboundCredit: number;
   pendingFromUpstream: Buffer[];
   pendingFromUpstreamOffset: number;
+  /** Upstream closed while bytes still waited for Platform credit; close once they drain. */
+  upstreamClosed: boolean;
   webSocketBytesIn: number;
   webSocketBytesOut: number;
   backpressureCount: number;
@@ -249,9 +254,12 @@ export class ProviderOfficialExitTunnelManager {
 
     await new Promise<void>((resolve) => {
       const connectStartedAt = Date.now();
+      const connectTimeoutMs = officialExitConnectTimeoutMs(request.deadlineMs, request.openTimeoutMs);
       const socket = connect({
         host: request.targetHost,
         port: request.targetPort,
+        autoSelectFamily: true,
+        autoSelectFamilyAttemptTimeout: officialExitAddressAttemptTimeoutMs(connectTimeoutMs),
       });
       const lifecycleProtocol = request.lifecycleProtocol ?? 'request_v1';
       const persistent = lifecycleProtocol === 'persistent_tunnel_v1';
@@ -268,7 +276,7 @@ export class ProviderOfficialExitTunnelManager {
         lifecycleProtocol,
         connectedAt: connectStartedAt,
         connectMs: 0,
-        connectTimeoutMs: officialExitConnectTimeoutMs(request.deadlineMs, request.openTimeoutMs),
+        connectTimeoutMs,
         connectAttempts: 0,
         dataProtocol: request.dataProtocol ?? 'json_base64_v1',
         earlyDataProtocol: request.earlyDataProtocol,
@@ -281,6 +289,7 @@ export class ProviderOfficialExitTunnelManager {
         outboundCredit: request.initialWindowBytes ?? OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES,
         pendingFromUpstream: [],
         pendingFromUpstreamOffset: 0,
+        upstreamClosed: false,
         webSocketBytesIn: 0,
         webSocketBytesOut: 0,
         backpressureCount: 0,
@@ -470,6 +479,14 @@ export class ProviderOfficialExitTunnelManager {
     });
     session.socket.once('close', () => {
       if (this.sessions.get(sessionId) !== session) return;
+      // A FIN is read (and 'close' follows) even while the socket is paused, so the
+      // response tail may still be waiting for Platform credit. Reporting the close
+      // now would drop it; the upstream backpressure timer still bounds the wait.
+      if (session.dataProtocol === 'binary_v1' && session.pendingFromUpstream.length > 0) {
+        session.upstreamClosed = true;
+        this.clearUpstreamDrain(session);
+        return;
+      }
       this.closeSession(sessionId, session, 'official_exit_remote_closed', true);
     });
   }
@@ -574,6 +591,8 @@ export class ProviderOfficialExitTunnelManager {
     payload: Buffer,
     creditBytes: number,
   ): void {
+    // Upstream is gone; the close follows once its tail reaches Platform.
+    if (session.upstreamClosed) return;
     session.bytesOut += payload.byteLength;
     const writable = session.socket.write(payload, () => {
       if (session.closed) return;
@@ -619,7 +638,9 @@ export class ProviderOfficialExitTunnelManager {
       }
       if (!this.sendSessionFrame(sessionId, session, encoded, session.trafficClass)) return;
     }
-    if (session.pendingFromUpstream.length === 0 && session.outboundCredit > 0) {
+    if (session.upstreamClosed && session.pendingFromUpstream.length === 0) {
+      this.closeSession(sessionId, session, 'official_exit_remote_closed', true);
+    } else if (session.pendingFromUpstream.length === 0 && session.outboundCredit > 0) {
       this.clearUpstreamBackpressureTimeout(session);
       session.socket.resume();
     } else {
@@ -786,14 +807,21 @@ export class ProviderOfficialExitTunnelManager {
     }
     this.sessions.delete(sessionId);
     session.socket.destroy();
-    if (notifyPlatform) {
-      this.sendControl({
-        type: 'official_exit.close',
-        sessionId,
-        reasonCode,
-        transportDiagnostic: this.transportDiagnostic(session, 'closed', reasonCode),
-      });
+    if (!notifyPlatform) return;
+    const close: OfficialExitClose = {
+      type: 'official_exit.close',
+      sessionId,
+      reasonCode,
+      transportDiagnostic: this.transportDiagnostic(session, 'closed', reasonCode),
+    };
+    if (reasonCode !== 'official_exit_remote_closed') {
+      this.sendControl(close);
+      return;
     }
+    // Control frames jump ahead of queued data. A normal upstream close rides the
+    // session's own data lane so Platform sees it only after every response byte.
+    const result = this.send(close, { lane: session.trafficClass, sessionId });
+    if (result && typeof result === 'object' && result.accepted === false) this.sendControl(close);
   }
 
   private transportDiagnostic(
@@ -864,6 +892,20 @@ export function officialExitConnectTimeoutMs(deadlineMs: number, openTimeoutMs?:
   return Math.max(1, platformWaitMs - marginMs);
 }
 
+/**
+ * Per-address budget for Node's happy-eyeballs connect. Node abandons an
+ * attempt when this expires instead of racing it against the next address, so
+ * the 250 ms default drops an IPv4 connect whose first SYN was lost (Linux
+ * retransmits after 1 s) and then fails on an unreachable IPv6 address. Allow
+ * one SYN retransmit while leaving room for the other family in the budget.
+ */
+export function officialExitAddressAttemptTimeoutMs(connectTimeoutMs: number): number {
+  return Math.min(
+    OFFICIAL_EXIT_ADDRESS_ATTEMPT_TIMEOUT_MS,
+    Math.max(OFFICIAL_EXIT_MIN_ADDRESS_ATTEMPT_TIMEOUT_MS, Math.floor(connectTimeoutMs / 3)),
+  );
+}
+
 function positiveFiniteMs(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) && value > 0 ? Math.max(1, Math.floor(value)) : undefined;
 }
@@ -882,10 +924,15 @@ export function officialExitSocketIdleTimeoutMs(
 }
 
 export function classifyConnectError(error: Error): string {
-  const code = (error as NodeJS.ErrnoException).code;
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'official_exit_dns_failed';
-  if (code === 'ECONNREFUSED') return 'official_exit_connect_refused';
-  if (code === 'ETIMEDOUT') return 'official_exit_connect_timeout';
+  // When every happy-eyeballs address fails, Node throws an AggregateError whose
+  // own code is just the first attempt's. Classify by the most telling attempt.
+  const attempts: unknown[] = Array.isArray((error as { errors?: unknown }).errors)
+    ? (error as AggregateError).errors
+    : [error];
+  const codes = new Set(attempts.map((attempt) => (attempt as NodeJS.ErrnoException | undefined)?.code));
+  if (codes.has('ENOTFOUND') || codes.has('EAI_AGAIN')) return 'official_exit_dns_failed';
+  if (codes.has('ECONNREFUSED')) return 'official_exit_connect_refused';
+  if (codes.has('ETIMEDOUT')) return 'official_exit_connect_timeout';
   return 'official_exit_connect_failed';
 }
 

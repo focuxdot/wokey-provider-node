@@ -14,6 +14,11 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   connects also carry the last attempted address.
 
 ### Fixed
+- Preserve the final upstream response bytes when an official-exit socket closes
+  while Platform flow-control credit is exhausted, and report the remote close
+  only after the buffered tail drains.
+- Use bounded happy-eyeballs address attempts for official-exit connects and
+  classify aggregate connection failures from all attempted address errors.
 - Rewrite leftover public-site bind URLs (`https://wokey.ai/internal/provider/bind`)
   onto the primary control endpoint before the nodey fallback runs, so one-click
   bind from the Provider page actually tries both dedicated endpoints.
