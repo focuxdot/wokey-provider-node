@@ -1721,17 +1721,32 @@ export async function parseJsonResponse<T>(response: Response): Promise<T> {
         : typeof error === 'string'
           ? error
           : `request_failed:${response.status}`;
-    throw new PlatformHttpError(response.status, errorCode, message);
+    const upstream = platformUpstreamVendorError(error);
+    throw new PlatformHttpError(response.status, errorCode, message, upstream ? { upstream } : undefined);
   }
   return data;
 }
 
+// Platform returns the vendor's own error (status, code, message) for failed
+// authorizations; keep only those fields so the console can show them.
+function platformUpstreamVendorError(error: unknown): { status: number; code?: string; message?: string } | undefined {
+  const details = asObject(asObject(error).details);
+  const upstream = asObject(details.upstream);
+  if (typeof upstream.status !== 'number') return undefined;
+  return {
+    status: upstream.status,
+    ...(typeof upstream.code === 'string' ? { code: upstream.code } : {}),
+    ...(typeof upstream.message === 'string' ? { message: upstream.message } : {}),
+  };
+}
+
 export class PlatformHttpError extends ProviderNodeError {
-  constructor(statusCode: number, errorCode: string, message: string) {
+  constructor(statusCode: number, errorCode: string, message: string, details?: Record<string, unknown>) {
     super(errorCode, message, {
       statusCode,
       retryable: statusCode === 429 || statusCode >= 500,
       upstreamStatus: statusCode,
+      details,
     });
     this.name = 'PlatformHttpError';
   }

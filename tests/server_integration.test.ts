@@ -200,7 +200,7 @@ describe('console routes', () => {
   it('maps structured error codes to actionable bilingual console messages', () => {
     const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
 
-    expect(script).toContain("unsupported_country_region_territory: 'oauthUnsupportedRegion'");
+    expect(script).toContain("unsupported_country_region_territory: 'vendorRegionUnsupported'");
     expect(script).toContain("oauth_connect_timeout: 'oauthConnectTimeout'");
     expect(script).toContain("platform_network_error: 'platformNetworkError'");
     expect(script).toContain("provider_node_internal_error: 'providerNodeUnexpectedError'");
@@ -330,6 +330,41 @@ describe('error envelope', () => {
       statusCode: 503,
       errorCode: 'official_exit_node_offline',
       message: 'Provider node is not online',
+    });
+  });
+
+  it('carries only the whitelisted vendor error Platform forwards for a failed authorization', async () => {
+    const response = new Response(
+      JSON.stringify({
+        error: {
+          code: 'unsupported_country_region_territory',
+          message: 'Vendor rejected this region. Vendor response: HTTP 403 · unsupported_country_region_territory',
+          type: 'invalid_request_error',
+          details: {
+            upstream: {
+              status: 403,
+              code: 'unsupported_country_region_territory',
+              message: 'Country, region, or territory not supported',
+              extra: 'dropped',
+            },
+          },
+        },
+      }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    );
+
+    const error = await parseJsonResponse(response).catch((err: unknown) => err);
+    expect(error).toMatchObject({
+      name: 'PlatformHttpError',
+      statusCode: 403,
+      errorCode: 'unsupported_country_region_territory',
+    });
+    expect((error as { details?: unknown }).details).toEqual({
+      upstream: {
+        status: 403,
+        code: 'unsupported_country_region_territory',
+        message: 'Country, region, or territory not supported',
+      },
     });
   });
 

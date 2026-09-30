@@ -14,6 +14,9 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   connects also carry the last attempted address.
 
 ### Fixed
+- Preserve the vendor's whitelisted status, code, and message when Platform
+  forwards a failed authorization response, and show the vendor region error
+  with the raw response details in the local console.
 - Preserve the final upstream response bytes when an official-exit socket closes
   while Platform flow-control credit is exhausted, and report the remote close
   only after the buffered tail drains.

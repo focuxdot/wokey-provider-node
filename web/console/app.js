@@ -59,6 +59,7 @@ const messages = {
       'Provider Node encountered an unexpected error. Retry once, then check “wokey-node logs” and include the error ID when asking for support.',
     requestFailed: 'The operation failed.',
     errorIdLabel: 'Error ID:',
+    vendorResponseLabel: 'Vendor response:',
     credentialsTitle: 'Local credentials',
     credentialsBody:
       'Only credentials authorized or imported on this node are shown. Provider-assigned routing credentials stay private.',
@@ -275,6 +276,8 @@ const messages = {
       'The selected Provider Node is offline or not ready. Start or reconnect the node, then retry.',
     credentialHostNotAllowed:
       'This Provider Node version does not allow the required vendor host. Update the node and retry.',
+    vendorRegionUnsupported:
+      'The vendor does not support this Provider Node\'s network region (for example mainland China). Run the node on a network in a supported region, or configure a proxy egress, then retry.',
     jimengAuthNotSupported: 'Platform or this Provider Node version does not support local Jimeng authorization yet.',
     jimengAuthNodeOffline: 'This Provider Node is not connected to Platform. Reconnect it and retry.',
     jimengAuthStartTimeout: 'Jimeng CLI did not start authorization in time. Retry once, then check the node logs.',
@@ -331,6 +334,7 @@ const messages = {
       'Provider Node 遇到未预期错误。请重试一次；如果仍失败，运行“wokey-node logs”查看日志，并在求助时提供错误 ID。',
     requestFailed: '操作失败。',
     errorIdLabel: '错误 ID：',
+    vendorResponseLabel: '厂商返回：',
     credentialsTitle: '本机授权凭证',
     credentialsBody: '仅显示在当前节点授权或导入的凭证；Provider 分配给本节点的路由凭证不会在这里暴露。',
     credentialsScanDisabledBody: '通过浏览器 OAuth、设备码或粘贴 Token 为当前节点添加本机授权凭证。',
@@ -523,6 +527,7 @@ const messages = {
     credentialSubscriptionUnsupported: '该账号的订阅类型暂不支持参与 Provider 供给。',
     credentialNodeUnavailable: '所选 Provider Node 离线或尚未就绪。请启动或重新连接节点后重试。',
     credentialHostNotAllowed: '当前 Provider Node 版本未放行厂商所需域名，请更新节点后重试。',
+    vendorRegionUnsupported: '厂商不支持当前 Provider Node 所在网络的地区（如中国大陆）。请把节点部署到受支持地区的网络，或配置代理出口后重试。',
     jimengAuthNotSupported: 'Platform 或当前 Provider Node 版本尚不支持本地即梦授权。',
     jimengAuthNodeOffline: '当前 Provider Node 未连接 Platform，请恢复连接后重试。',
     jimengAuthStartTimeout: '即梦 CLI 未能及时启动授权。请重试一次；仍失败时检查节点日志。',
@@ -1754,7 +1759,7 @@ const API_ERROR_MESSAGE_KEYS = {
   device_code_required: 'deviceCodeStartFirst',
   codex_device_missing_user_code: 'oauthInvalidResponse',
   xai_device_missing_fields: 'oauthInvalidResponse',
-  unsupported_country_region_territory: 'oauthUnsupportedRegion',
+  unsupported_country_region_territory: 'vendorRegionUnsupported',
   oauth_dns_failed: 'oauthDnsFailed',
   oauth_connect_timeout: 'oauthConnectTimeout',
   oauth_tls_failed: 'oauthTlsFailed',
@@ -1835,10 +1840,24 @@ function formatApiError(error) {
       message = t('requestFailed');
     }
   }
+  const upstream = upstreamVendorErrorText(error?.body?.details?.upstream);
+  if (upstream && !message.includes(upstream)) {
+    message += ` ${t('vendorResponseLabel')} ${upstream}`;
+  }
   if (code === 'provider_node_internal_error' && requestId) {
     message += ` ${t('errorIdLabel')} ${requestId}`;
   }
   return message;
+}
+
+// The vendor's own error forwarded by Platform, as `HTTP 403 · code · message`.
+function upstreamVendorErrorText(upstream) {
+  if (!upstream || typeof upstream !== 'object' || typeof upstream.status !== 'number') return '';
+  return [
+    `HTTP ${upstream.status}`,
+    typeof upstream.code === 'string' ? upstream.code : '',
+    typeof upstream.message === 'string' ? upstream.message : '',
+  ].filter(Boolean).join(' · ');
 }
 
 function showClaudeAuthorizationError(error) {
