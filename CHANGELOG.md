@@ -14,6 +14,8 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   connects also carry the last attempted address.
 
 ### Fixed
+- Pin vulnerable transitive runtime dependencies to patched releases so the
+  tagged release can pass the dependency audit.
 - Preserve the vendor's whitelisted status, code, and message when Platform
   forwards a failed authorization response, and show the vendor region error
   with the raw response details in the local console.
