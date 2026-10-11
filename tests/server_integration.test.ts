@@ -201,6 +201,8 @@ describe('console routes', () => {
     const script = readFileSync(new URL('../web/console/app.js', import.meta.url), 'utf8');
 
     expect(script).toContain("unsupported_country_region_territory: 'vendorRegionUnsupported'");
+    expect(script).toContain("official_exit_tls_non_tls_response: 'nodeNetworkIntercepted'");
+    expect(script).toContain("official_exit_tls_certificate_verify_failed: 'nodeNetworkIntercepted'");
     expect(script).toContain("oauth_connect_timeout: 'oauthConnectTimeout'");
     expect(script).toContain("platform_network_error: 'platformNetworkError'");
     expect(script).toContain("provider_node_internal_error: 'providerNodeUnexpectedError'");

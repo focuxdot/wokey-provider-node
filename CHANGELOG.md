@@ -14,6 +14,9 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   connects also carry the last attempted address.
 
 ### Fixed
+- Show a network-interception hint in the local console when the node's
+  network answers the vendor TLS handshake itself (non-TLS reply or an
+  untrusted certificate) during authorization.
 - Pin vulnerable transitive runtime dependencies to patched releases so the
   tagged release can pass the dependency audit.
 - Preserve the vendor's whitelisted status, code, and message when Platform

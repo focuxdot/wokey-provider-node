@@ -278,6 +278,8 @@ const messages = {
       'This Provider Node version does not allow the required vendor host. Update the node and retry.',
     vendorRegionUnsupported:
       'The vendor does not support this Provider Node\'s network region (for example mainland China). Run the node on a network in a supported region, or configure a proxy egress, then retry.',
+    nodeNetworkIntercepted:
+      'This Provider Node\'s network intercepted the secure connection to the vendor (commonly a firewall, web filter, proxy, or security software). Allow the vendor domains on this network, or run the node on a different network, then restart authorization.',
     jimengAuthNotSupported: 'Platform or this Provider Node version does not support local Jimeng authorization yet.',
     jimengAuthNodeOffline: 'This Provider Node is not connected to Platform. Reconnect it and retry.',
     jimengAuthStartTimeout: 'Jimeng CLI did not start authorization in time. Retry once, then check the node logs.',
@@ -528,6 +530,7 @@ const messages = {
     credentialNodeUnavailable: '所选 Provider Node 离线或尚未就绪。请启动或重新连接节点后重试。',
     credentialHostNotAllowed: '当前 Provider Node 版本未放行厂商所需域名，请更新节点后重试。',
     vendorRegionUnsupported: '厂商不支持当前 Provider Node 所在网络的地区（如中国大陆）。请把节点部署到受支持地区的网络，或配置代理出口后重试。',
+    nodeNetworkIntercepted: '当前 Provider Node 所在网络拦截了到厂商的安全连接（常见于防火墙、上网过滤、代理或安全软件）。请在该网络放行厂商相关域名，或把节点换到其他网络后重新授权。',
     jimengAuthNotSupported: 'Platform 或当前 Provider Node 版本尚不支持本地即梦授权。',
     jimengAuthNodeOffline: '当前 Provider Node 未连接 Platform，请恢复连接后重试。',
     jimengAuthStartTimeout: '即梦 CLI 未能及时启动授权。请重试一次；仍失败时检查节点日志。',
@@ -1760,6 +1763,8 @@ const API_ERROR_MESSAGE_KEYS = {
   codex_device_missing_user_code: 'oauthInvalidResponse',
   xai_device_missing_fields: 'oauthInvalidResponse',
   unsupported_country_region_territory: 'vendorRegionUnsupported',
+  official_exit_tls_non_tls_response: 'nodeNetworkIntercepted',
+  official_exit_tls_certificate_verify_failed: 'nodeNetworkIntercepted',
   oauth_dns_failed: 'oauthDnsFailed',
   oauth_connect_timeout: 'oauthConnectTimeout',
   oauth_tls_failed: 'oauthTlsFailed',
