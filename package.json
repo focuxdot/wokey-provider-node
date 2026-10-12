@@ -46,7 +46,7 @@
   "dependencies": {
     "fastify": "^5.12.5",
     "nanoid": "^5.1.16",
-    "pino": "^10.1.0",
+    "pino": "^10.4.0",
     "ws": "^8.21.1"
   },
   "devDependencies": {
