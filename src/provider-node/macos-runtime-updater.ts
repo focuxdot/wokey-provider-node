@@ -14,7 +14,6 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { verify, type Bundle } from 'sigstore';
 import {
   assertRuntimeVersion,
   currentRuntimePath,
@@ -28,7 +27,6 @@ import { readUpgradeState, writeUpgradeState } from './upgrade-state.js';
 
 const REPOSITORY = 'focuxdot/wokey-provider-node';
 const GITHUB_API = `https://api.github.com/repos/${REPOSITORY}`;
-const OFFICIAL_ISSUER = 'https://token.actions.githubusercontent.com';
 const LOCK_STALE_MS = 15 * 60_000;
 const DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
 const RETRY_DELAY_MS = 5 * 60_000;
@@ -53,7 +51,7 @@ function updateErrorDetail(error: unknown): string {
 
 function updateErrorIsRetryable(error: unknown): boolean {
   const detail = updateErrorDetail(error);
-  if (/SHA-256|signed checksums|signature|certificate|identity|transparency|invalid checksums|version does not match|unsafe runtime/i.test(detail)) {
+  if (/SHA-256|release checksums|invalid checksums|version does not match|unsafe runtime/i.test(detail)) {
     return false;
   }
   return /download failed \((?:408|429|5\d\d)\)|fetch failed|timeout|timed out|ECONN|ENET|EAI_AGAIN|socket|TUF/i.test(detail);
@@ -143,26 +141,19 @@ export async function installMacosRuntime(options: UpdateOptions): Promise<{ pre
   const releaseBase = (customBase ?? `https://github.com/${REPOSITORY}/releases/download/v${targetVersion}`).replace(/\/$/, '');
   const assetName = `WokeyProviderNode-macos-runtime-${architecture}-${targetVersion}.tar.gz`;
   const manifestUrl = `${releaseBase}/checksums.txt`;
-  const bundleUrl = `${releaseBase}/checksums.txt.sigstore.json`;
   const layout = macosRuntimeLayout(options.configPath);
   const release = acquireUpdateLock(layout.lock);
   const temporaryDirectory = mkdtempSync(join(tmpdir(), 'wokey-runtime-update-'));
   try {
-    const [manifest, bundleBytes] = await Promise.all([download(manifestUrl), download(bundleUrl)]);
-    const bundle = JSON.parse(bundleBytes.toString('utf8')) as Bundle;
-    await verify(bundle, manifest, {
-      certificateIssuer: OFFICIAL_ISSUER,
-      certificateIdentityURI: `https://github.com/${REPOSITORY}/.github/workflows/release.yml@refs/tags/v${targetVersion}`,
-      ctLogThreshold: 1,
-      tlogThreshold: 1,
-    });
-    const signedHash = parseChecksums(manifest).get(assetName);
-    if (!signedHash) throw new Error(`signed checksums do not include ${assetName}`);
-    if (options.expectedSha256 && options.expectedSha256.toLowerCase() !== signedHash) {
-      throw new Error('Platform artifact hash does not match the signed release manifest');
+    // Integrity comes from the HTTPS GitHub release checksums plus, for
+    // Platform-driven upgrades, the Platform's independently supplied hash.
+    const releaseHash = parseChecksums(await download(manifestUrl)).get(assetName);
+    if (!releaseHash) throw new Error(`release checksums do not include ${assetName}`);
+    if (options.expectedSha256 && options.expectedSha256.toLowerCase() !== releaseHash) {
+      throw new Error('Platform artifact hash does not match the release checksums');
     }
     const archive = await download(`${releaseBase}/${assetName}`);
-    if (sha256(archive) !== signedHash) throw new Error('downloaded runtime archive SHA-256 mismatch');
+    if (sha256(archive) !== releaseHash) throw new Error('downloaded runtime archive SHA-256 mismatch');
 
     const archivePath = join(temporaryDirectory, basename(assetName));
     writeFileSync(archivePath, archive, { mode: 0o600 });

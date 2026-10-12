@@ -47,7 +47,11 @@ elif { [ "${WOKEY_PROVIDER_NODE_COSIGN_KEYLESS:-}" = "1" ] || [ -n "${COSIGN_EXP
   # Keyless (OIDC) signing. In CI the workflow's own OIDC identity is the
   # signer, so there is no long-lived private key. Emits a detached signature
   # plus the short-lived Fulcio certificate that installers verify against.
+  # --new-bundle-format writes the Sigstore protobuf bundle the macOS runtime
+  # updater verifies; cosign 2.x otherwise writes its legacy bundle, which
+  # sigstore-js rejects as "invalid bundle".
   cosign sign-blob --yes \
+    --new-bundle-format \
     --bundle "${CHECKSUMS}.sigstore.json" \
     --output-signature "${CHECKSUMS}.sig" \
     --output-certificate "${CHECKSUMS}.pem" \

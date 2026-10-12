@@ -89,6 +89,11 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - uses: sigstore/cosign-installer@v3
       - uses: actions/download-artifact@v8
         with:
@@ -112,6 +117,9 @@ jobs:
           test -f release/checksums.txt.sig || { echo "missing checksums.txt.sig — signing did not run" >&2; exit 1; }
           test -f release/checksums.txt.pem || { echo "missing checksums.txt.pem — signing did not run" >&2; exit 1; }
           test -f release/checksums.txt.sigstore.json || { echo "missing checksums.txt.sigstore.json — bundle signing did not run" >&2; exit 1; }
+      # v0.1.101 and older macOS updaters still require this Sigstore bundle.
+      - name: Verify the bundle as older macOS updaters do
+        run: npx tsx scripts/verify-release-signature.ts release/checksums.txt release/checksums.txt.sigstore.json "${GITHUB_REF}"
       - name: Prepare release assets
         run: |
           mkdir -p release-assets

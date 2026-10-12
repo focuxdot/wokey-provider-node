@@ -14,6 +14,10 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   connects also carry the last attempted address.
 
 ### Fixed
+- Fix `wokey-node update` on macOS failing with `invalid bundle`. Releases
+  now publish a Sigstore protobuf bundle (older updaters still require it), and
+  the macOS runtime updater verifies the HTTPS release checksums plus the
+  Platform-supplied artifact hash instead of the Sigstore bundle.
 - Show a network-interception hint in the local console when the node's
   network answers the vendor TLS handshake itself (non-TLS reply or an
   untrusted certificate) during authorization.

@@ -7,15 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { currentRuntimePath, runtimeVersionPath, switchCurrentRuntime } from '../src/provider-node/macos-runtime-layout.js';
 import { readUpgradeState, writeUpgradeState } from '../src/provider-node/upgrade-state.js';
 
-const mocks = vi.hoisted(() => ({ verify: vi.fn(async () => undefined) }));
-vi.mock('sigstore', () => ({ verify: mocks.verify }));
-
 const { installMacosRuntime } = await import('../src/provider-node/macos-runtime-updater.js');
 const directories: string[] = [];
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  mocks.verify.mockClear();
   for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -75,7 +71,6 @@ describe('macOS runtime updater verification', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
       if (url.endsWith('/checksums.txt')) return new Response(`${archiveHash}  ${assetName}\n`, { status: 200 });
-      if (url.endsWith('/checksums.txt.sigstore.json')) return new Response('{}', { status: 200 });
       if (url.endsWith(`/${assetName}`)) return new Response(archive, { status: 200 });
       throw new Error(`unexpected download: ${url}`);
     }));
@@ -99,7 +94,7 @@ describe('macOS runtime updater verification', () => {
     });
   });
 
-  it('does not switch current when the Platform hash disagrees with the signed manifest', async () => {
+  it('does not switch current when the Platform hash disagrees with the release checksums', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wokey-runtime-updater-'));
     directories.push(dir);
     const configPath = join(dir, 'provider-node.json');
@@ -120,7 +115,6 @@ describe('macOS runtime updater verification', () => {
       if (url.endsWith('/checksums.txt')) {
         return new Response(`${'a'.repeat(64)}  ${assetName}\n`, { status: 200 });
       }
-      if (url.endsWith('/checksums.txt.sigstore.json')) return new Response('{}', { status: 200 });
       throw new Error(`unexpected download: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -132,10 +126,9 @@ describe('macOS runtime updater verification', () => {
       architecture: 'x64',
       releaseBaseUrl: 'https://example.test/release',
       allowTestReleaseBaseUrl: true,
-    })).rejects.toThrow('Platform artifact hash does not match the signed release manifest');
+    })).rejects.toThrow('Platform artifact hash does not match the release checksums');
 
-    expect(mocks.verify).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(currentRuntimePath(configPath)).toBe(current);
     expect(readUpgradeState(configPath)).toMatchObject({
       status: 'failed',
