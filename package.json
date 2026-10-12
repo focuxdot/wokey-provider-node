@@ -47,12 +47,12 @@
     "fastify": "^5.12.5",
     "nanoid": "^5.1.16",
     "pino": "^10.1.0",
-    "ws": "^8.21.1"
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
     "@types/node": "^26.1.1",
-    "@types/ws": "^8.18.1",
+    "@types/ws": "^8.18.2",
     "esbuild": "^0.28.1",
     "sigstore": "5.0.0",
     "tsx": "^4.23.1",
