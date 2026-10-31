@@ -129,6 +129,7 @@ const messages = {
     chooseProvider: 'Choose account type',
     claudeOAuth: 'Sign in with Claude OAuth',
     codexOAuth: 'Use device code authorization',
+    antigravityOAuth: 'Use Google AI Pro OAuth',
     claudeOAuthTitle: 'Claude OAuth authorization',
     claudeOAuthBody: 'Authorize in Claude, then paste the returned URL or code here.',
     openClaudeAuthorize: 'Authorize on Claude.ai',
@@ -193,6 +194,19 @@ const messages = {
     jimengAuthorizationWaiting: 'Waiting for Jimeng browser confirmation…',
     jimengAuthorizationSucceeded: 'Jimeng authorization succeeded. Credential encrypted and saved on Platform.',
     jimengAuthorizationCancelled: 'Jimeng authorization was cancelled.',
+    antigravityOAuthTitle: 'Google Antigravity OAuth',
+    antigravityOAuthBody:
+      'Authorize a paid Google AI Pro account. Wokey verifies the Cloud Code project and disables prompt data collection before saving.',
+    antigravityRiskBodyPrefix: 'Platform risk confirmation is required before authorization. Review it at ',
+    antigravityRiskLink: 'the Wokey provider page',
+    antigravityRiskBodySuffix: '; Google may suspend accounts that violate Antigravity terms.',
+    antigravityAuthorize: 'Authorize with Google',
+    antigravityCopyLink: 'Copy link',
+    antigravityAuthorizationCodePlaceholder: 'Paste callback URL or code...',
+    antigravitySubmit: 'Submit',
+    antigravityAuthorizationCodeRequired: 'Paste the callback URL or code first.',
+    antigravityCredentialAuthorized: 'Antigravity credential authorized and saved.',
+    antigravityCredentialAuthorizedToast: 'Google Antigravity credential authorized.',
     copyDeviceCode: 'Copy device code',
     deviceCodeStartFirst: 'Generate a device code first.',
     deviceCodeOpened:
@@ -407,6 +421,7 @@ const messages = {
     chooseProvider: '选择账号类型',
     claudeOAuth: '使用 Claude OAuth 登录',
     codexOAuth: '使用设备码授权',
+    antigravityOAuth: '使用 Google AI Pro OAuth',
     claudeOAuthTitle: 'Claude OAuth 授权',
     claudeOAuthBody: '在 Claude 完成授权后，把返回的 URL 或授权码粘贴到这里提交。',
     openClaudeAuthorize: '在 Claude.ai 授权',
@@ -467,6 +482,18 @@ const messages = {
     jimengAuthorizationWaiting: '正在等待即梦浏览器确认…',
     jimengAuthorizationSucceeded: '即梦授权成功，凭证已加密保存到 Platform。',
     jimengAuthorizationCancelled: '即梦授权已取消。',
+    antigravityOAuthTitle: 'Google Antigravity OAuth 授权',
+    antigravityOAuthBody: '授权付费 Google AI Pro 账号。Wokey 会验证 Cloud Code 项目，并在保存前关闭提示词数据收集。',
+    antigravityRiskBodyPrefix: '授权前需要在 Platform 确认风险条款，请先查看',
+    antigravityRiskLink: 'Wokey Provider 页面',
+    antigravityRiskBodySuffix: '；违反 Antigravity 条款可能导致 Google 暂停账号。',
+    antigravityAuthorize: '使用 Google 授权',
+    antigravityCopyLink: '复制链接',
+    antigravityAuthorizationCodePlaceholder: '粘贴回调 URL 或授权码...',
+    antigravitySubmit: '提交',
+    antigravityAuthorizationCodeRequired: '请先粘贴回调 URL 或授权码。',
+    antigravityCredentialAuthorized: 'Antigravity 凭证已授权并保存。',
+    antigravityCredentialAuthorizedToast: 'Google Antigravity 凭证已授权。',
     copyDeviceCode: '复制设备码',
     deviceCodeStartFirst: '请先点击上方按钮生成设备码。',
     deviceCodeOpened:
@@ -1946,14 +1973,14 @@ async function copyAntigravityAuthorizationLink() {
 async function submitAntigravityAuthorizationCode() {
   const input = document.getElementById('antigravityAuthorizationCodeInput');
   const parsed = parseAuthorizationCodeInput(input?.value);
-  if (!parsed?.code) return setToast('antigravityAuthorizationCodeResult', 'Paste the callback URL or code first.', 'error');
+  if (!parsed?.code) return setToast('antigravityAuthorizationCodeResult', t('antigravityAuthorizationCodeRequired'), 'error');
   try {
     const result = await api('/api/oauth/antigravity/exchange', {
       method: 'POST',
       body: JSON.stringify({ code: parsed.code, state: parsed.state || activeAntigravityOAuth?.state }),
     });
-    setToast('antigravityAuthorizationCodeResult', result?.authorization?.message || 'Antigravity credential authorized and saved.', 'success');
-    setToast('oauthResult', 'Google Antigravity credential authorized.', 'success');
+    setToast('antigravityAuthorizationCodeResult', result?.authorization?.message || t('antigravityCredentialAuthorized'), 'success');
+    setToast('oauthResult', t('antigravityCredentialAuthorizedToast'), 'success');
   } catch (error) {
     setToast('antigravityAuthorizationCodeResult', formatApiError(error), 'error');
   }
