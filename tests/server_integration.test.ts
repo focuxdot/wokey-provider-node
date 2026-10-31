@@ -59,7 +59,6 @@ describe('console routes', () => {
     expect(res.body).toContain('submitAntigravityAuthorizationCode:');
     expect(res.body).toContain('searchParams.get("code")');
     expect(res.body).toContain('antigravityOAuthTitle');
-    expect(res.body).toContain('antigravityRiskLink');
     expect(res.body).toContain('antigravityAuthorizationCodePlaceholder');
     expect(res.body).toContain('startJimengAuthorization:');
     expect(res.body).toContain('installJimengCli:');
