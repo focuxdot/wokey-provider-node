@@ -11,6 +11,11 @@ on:
         options:
           - 'true'
           - 'false'
+      tag:
+        description: Existing vX.Y.Z tag to publish during manual recovery
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - 'v*.*.*'
@@ -32,7 +37,7 @@ jobs:
 
   build-macos:
     needs: verify
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -146,11 +151,15 @@ jobs:
       - uses: sigstore/cosign-installer@v3
       - name: Resolve image metadata
         id: meta
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag || '' }}
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${RELEASE_TAG_INPUT}" ]]; then
+            TAG="${RELEASE_TAG_INPUT}"
           else
             TAG="v${VERSION}"
           fi
@@ -189,13 +198,13 @@ jobs:
           docker exec wokey-provider-node-release-smoke wokey-node status
           docker exec wokey-provider-node-release-smoke wokey-node restart | grep -q "Docker mode"
       - uses: docker/login-action@v4
-        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.draft == 'false' && inputs.tag != '') }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Build and push Docker image
-        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.draft == 'false' && inputs.tag != '') }}
         id: build
         uses: docker/build-push-action@v7
         with:
@@ -212,7 +221,7 @@ jobs:
             PROVIDER_NODE_GIT_DIRTY=0
             PROVIDER_NODE_BUILD_AT=${{ steps.meta.outputs.built_at }}
       - name: Sign Docker image
-        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.draft == 'false' && inputs.tag != '') }}
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -235,16 +244,24 @@ jobs:
           path: release-assets
       - name: Resolve release metadata
         id: meta
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.tag || '' }}
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
+          elif [[ -n "${RELEASE_TAG_INPUT}" ]]; then
+            TAG="${RELEASE_TAG_INPUT}"
           else
             TAG="v${VERSION}"
           fi
           DRAFT="${{ inputs.draft || 'false' }}"
-          if [[ "${GITHUB_REF}" != refs/tags/v* && "${DRAFT}" != "true" ]]; then
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must match vX.Y.Z: ${TAG}" >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" != refs/tags/v* && "${DRAFT}" != "true" && -z "${RELEASE_TAG_INPUT}" ]]; then
             echo "Ready releases must be created from a v*.*.* tag push. Use draft=true for manual dry runs." >&2
             exit 1
           fi
