@@ -158,6 +158,12 @@ const messages = {
     useDeviceCode: 'Use device code',
     deviceCodeBody: 'Click to generate a device code and open the ChatGPT authorization page.',
     startDeviceCode: 'Authorize in ChatGPT',
+    deviceCodeOpening: 'Opening ChatGPT authorization',
+    deviceCodeGenerating: 'Generating a device code. Please wait…',
+    deviceCodeStartFailed: 'Could not start ChatGPT authorization',
+    deviceCodeRetryHint: 'Check that the node is running and its network connection is working, then retry. Keep the node management page open.',
+    deviceCodeRetry: 'Retry',
+    deviceCodePopupBlocked: 'The authorization window could not open. Allow pop-ups and click Authorize in ChatGPT again.',
     deviceCodeLabel: 'Code to enter on the ChatGPT page',
     deviceCodeHint: 'When ChatGPT asks for the code shown in your terminal, use this code.',
     grokOAuth: 'Use device code authorization',
@@ -427,6 +433,12 @@ const messages = {
     useDeviceCode: '使用设备码',
     deviceCodeBody: '点击后会生成设备码并打开 ChatGPT 授权页。',
     startDeviceCode: '去 ChatGPT 授权',
+    deviceCodeOpening: '正在打开 ChatGPT 授权页',
+    deviceCodeGenerating: '正在生成设备码，请稍候…',
+    deviceCodeStartFailed: '无法发起 ChatGPT 授权',
+    deviceCodeRetryHint: '请检查节点是否正在运行、节点网络是否正常，再点击重试。请保持节点管理页面打开。',
+    deviceCodeRetry: '重试',
+    deviceCodePopupBlocked: '未能打开授权窗口。请允许浏览器弹出窗口，再点击「去 ChatGPT 授权」。',
     deviceCodeLabel: 'ChatGPT 页面要输入的 9 位代码',
     deviceCodeHint: 'ChatGPT 页面提示“终端上显示的代码”时，请使用这里的代码。',
     grokOAuth: '使用设备码授权',
@@ -556,6 +568,7 @@ if (!LOCAL_AUTH_SCAN_ENABLED) {
 let statusState = null;
 let activeDeviceAuthId = null;
 let activeCodexDeviceCode = null;
+let codexDeviceStartInFlight = false;
 let activeXaiDeviceCode = null;
 let activeJimengFlow = null;
 let jimengInstallInFlight = false;
@@ -567,6 +580,7 @@ let devicePollTimer = null;
 let devicePollRunId = 0;
 let xaiStatusWatchTimer = null;
 let xaiStatusWatchRunId = 0;
+let activeAntigravityOAuth = null;
 let jimengPollTimer = null;
 let jimengPollRunId = 0;
 let lastCredentialScanAt = null;
@@ -1890,7 +1904,7 @@ function vendorLabel(vendor) {
 
 function selectProvider(provider) {
   activeProvider = provider;
-  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3 };
+  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3, antigravity: 4 };
   document.querySelectorAll('.provider-option').forEach((item, index) => {
     const selected = index === (labels[provider] || 0);
     item.classList.toggle('selected', selected);
@@ -1900,6 +1914,7 @@ function selectProvider(provider) {
   document.getElementById('codexAuthPanel')?.classList.toggle('hidden', provider !== 'codex');
   document.getElementById('xaiAuthPanel')?.classList.toggle('hidden', provider !== 'grok');
   document.getElementById('jimengAuthPanel')?.classList.toggle('hidden', provider !== 'jimeng');
+  document.getElementById('antigravityAuthPanel')?.classList.toggle('hidden', provider !== 'antigravity');
   document.getElementById('advancedOAuthOptions')?.classList.toggle('hidden', provider === 'jimeng');
   const advanced = document.getElementById('advancedOAuthOptions');
   if (advanced) advanced.style.display = provider === 'jimeng' ? 'none' : '';
@@ -1908,30 +1923,77 @@ function selectProvider(provider) {
   if (provider === 'jimeng') renderJimengAvailability();
 }
 
-async function startCodexDevice() {
-  const currentDeviceCode =
-    activeCodexDeviceCode && Date.now() < activeCodexDeviceCode.expiresAt ? activeCodexDeviceCode : null;
-  if (currentDeviceCode?.userCode && activeDeviceAuthId) {
-    const authWindow = openCodexDeviceAuthPlaceholder();
-    openCodexDeviceAuthWindow(currentDeviceCode, authWindow);
-    setToast('oauthResult', t('deviceCodeOpened'));
-    startDevicePolling(currentDeviceCode.interval || 5, { keepCurrentToast: true });
-    return;
-  }
-
-  stopDevicePolling();
-  const authWindow = openCodexDeviceAuthPlaceholder();
+async function startAntigravityOAuth() {
   try {
-    const data = await api('/api/oauth/codex/device/start', { method: 'POST', body: '{}' });
-    activeDeviceAuthId = data.deviceAuthId;
-    activeCodexDeviceCode = data;
-    document.getElementById('codexDeviceUserCodeLabel').textContent = data.userCode;
-    openCodexDeviceAuthWindow(data, authWindow);
-    setToast('oauthResult', t('deviceCodeOpened'));
+    const flow = await api('/api/oauth/antigravity/start', { method: 'POST', body: '{}' });
+    activeAntigravityOAuth = flow;
+    const link = flow.authorizationUrl;
+    window.open(link, 'wokeyAntigravityOAuth');
+    setToast('oauthResult', 'Google authorization link opened. Return here and paste the callback URL.', 'success');
+  } catch (error) {
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+async function copyAntigravityAuthorizationLink() {
+  if (!activeAntigravityOAuth?.authorizationUrl) await startAntigravityOAuth();
+  if (activeAntigravityOAuth?.authorizationUrl) {
+    const copied = await copyTextToClipboard(activeAntigravityOAuth.authorizationUrl);
+    setToast('oauthResult', copied ? 'Authorization link copied.' : 'Copy failed; use the opened Google window.', copied ? 'success' : 'error');
+  }
+}
+
+async function submitAntigravityAuthorizationCode() {
+  const input = document.getElementById('antigravityAuthorizationCodeInput');
+  const parsed = parseAuthorizationCodeInput(input?.value);
+  if (!parsed?.code) return setToast('antigravityAuthorizationCodeResult', 'Paste the callback URL or code first.', 'error');
+  try {
+    const result = await api('/api/oauth/antigravity/exchange', {
+      method: 'POST',
+      body: JSON.stringify({ code: parsed.code, state: parsed.state || activeAntigravityOAuth?.state }),
+    });
+    setToast('antigravityAuthorizationCodeResult', result?.authorization?.message || 'Antigravity credential authorized and saved.', 'success');
+    setToast('oauthResult', 'Google Antigravity credential authorized.', 'success');
+  } catch (error) {
+    setToast('antigravityAuthorizationCodeResult', formatApiError(error), 'error');
+  }
+}
+
+async function startCodexDevice(retryWindow = null) {
+  if (codexDeviceStartInFlight) return;
+  codexDeviceStartInFlight = true;
+  let authWindow = retryWindow;
+  try {
+    if (!authWindow || authWindow.closed) authWindow = openCodexDeviceAuthPlaceholder();
+    else renderCodexDeviceAuthWindow(authWindow);
+    const currentDeviceCode =
+      activeCodexDeviceCode && Date.now() < activeCodexDeviceCode.expiresAt ? activeCodexDeviceCode : null;
+    let data = currentDeviceCode;
+    if (!data?.userCode || !activeDeviceAuthId) {
+      stopDevicePolling();
+      data = await api('/api/oauth/codex/device/start', { method: 'POST', body: '{}' });
+      activeDeviceAuthId = data.deviceAuthId;
+      activeCodexDeviceCode = data;
+      document.getElementById('codexDeviceUserCodeLabel').textContent = data.userCode;
+    }
+    if (openCodexDeviceAuthWindow(data, authWindow)) {
+      setToast('oauthResult', t('deviceCodeOpened'));
+    } else {
+      setToast('oauthResult', t('deviceCodePopupBlocked'), 'error');
+      document.getElementById('oauthResult')?.scrollIntoView({ block: 'nearest' });
+    }
     startDevicePolling(data.interval || 5, { keepCurrentToast: true });
   } catch (error) {
-    if (authWindow && !authWindow.closed) authWindow.close();
-    setToast('oauthResult', formatApiError(error), 'error');
+    let message = formatApiError(error);
+    const detail = error?.body?.error?.message || error?.body?.message;
+    const code = apiErrorCode(error);
+    if (typeof detail === 'string' && !message.includes(detail)) message += `\n${detail}`;
+    if (code && !message.includes(code)) message += `\n${code}`;
+    renderCodexDeviceAuthWindow(authWindow, message);
+    setToast('oauthResult', message, 'error');
+    document.getElementById('oauthResult')?.scrollIntoView({ block: 'nearest' });
+  } finally {
+    codexDeviceStartInFlight = false;
   }
 }
 
@@ -2001,26 +2063,72 @@ function selectCodexDeviceCode() {
 
 function openCodexDeviceAuthPlaceholder() {
   const authWindow = window.open('about:blank', 'wokeyCodexDeviceAuth');
-  if (!authWindow) return null;
-  try {
-    const title = locale === 'zh' ? '正在打开 ChatGPT 授权页' : 'Opening ChatGPT authorization';
-    const body = locale === 'zh' ? '正在生成设备码，请稍候…' : 'Generating a device code. Please wait...';
-    authWindow.document.title = title;
-    authWindow.document.body.innerHTML =
-      '<main style="font:16px system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;min-height:100vh;display:grid;place-items:center;margin:0;background:#fff;color:#0b1c30"><div style="text-align:center"><h1 style="font-size:20px;margin:0 0 8px">' +
-      title +
-      '</h1><p style="margin:0;color:#5f6f7f">' +
-      body +
-      '</p></div></main>';
-  } catch (_error) {
-    // Some browsers restrict about:blank document writes; navigation below will still work.
-  }
+  renderCodexDeviceAuthWindow(authWindow);
   return authWindow;
+}
+
+function renderCodexDeviceAuthWindow(authWindow, errorMessage = '') {
+  if (!authWindow || authWindow.closed) return;
+  try {
+    const doc = authWindow.document;
+    doc.documentElement.lang = locale;
+    doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
+    doc.title = t(errorMessage ? 'deviceCodeStartFailed' : 'deviceCodeOpening');
+    // Copy the already-loaded styles/fonts: errors must remain readable even if
+    // the local node is unreachable. The production console inlines all assets.
+    if (!doc.getElementById('codexDeviceAuthStyles')) {
+      const styles = doc.createElement('style');
+      styles.id = 'codexDeviceAuthStyles';
+      styles.textContent = Array.from(document.querySelectorAll('style'), (style) => style.textContent).join('\n');
+      doc.head.appendChild(styles);
+      for (const link of document.querySelectorAll('link[rel="stylesheet"]')) {
+        doc.head.appendChild(link.cloneNode(true));
+      }
+      const viewport = doc.createElement('meta');
+      viewport.name = 'viewport';
+      viewport.content = 'width=device-width, initial-scale=1';
+      doc.head.appendChild(viewport);
+    }
+    doc.body.className = 'device-auth-window';
+    const main = doc.createElement('main');
+    main.className = 'device-auth-status';
+    const title = doc.createElement('h1');
+    title.textContent = doc.title;
+    main.appendChild(title);
+    const message = doc.createElement('p');
+    message.className = errorMessage ? 'toast visible error' : 'muted';
+    message.setAttribute('role', errorMessage ? 'alert' : 'status');
+    // Upstream error messages are untrusted text, never HTML.
+    message.textContent = errorMessage || t('deviceCodeGenerating');
+    main.appendChild(message);
+    if (errorMessage) {
+      const hint = doc.createElement('p');
+      hint.className = 'muted';
+      hint.textContent = t('deviceCodeRetryHint');
+      main.appendChild(hint);
+      const retry = doc.createElement('button');
+      retry.type = 'button';
+      retry.className = 'primary-btn';
+      retry.textContent = t('deviceCodeRetry');
+      retry.addEventListener('click', () => {
+        retry.disabled = true;
+        void startCodexDevice(authWindow);
+      });
+      main.appendChild(retry);
+      doc.body.replaceChildren(main);
+      retry.focus();
+    } else {
+      doc.body.replaceChildren(main);
+    }
+  } catch (_error) {
+    // A closed/navigated window may no longer be writable; the original page
+    // also displays the error and keeps its authorization button available.
+  }
 }
 
 function openCodexDeviceAuthWindow(deviceCode, authWindow) {
   const target = authWindow || window.open('about:blank', 'wokeyCodexDeviceAuth');
-  if (!target) return false;
+  if (!target || target.closed) return false;
   target.location.href = deviceCode.verificationUrl;
   target.focus();
   return true;
@@ -2473,7 +2581,7 @@ async function submitManualOAuthToken() {
       setToast('oauthResult', t('oauthAccessTokenRequired'), 'error');
       return;
     }
-    if (activeProvider === 'codex' && !parsed.refreshToken) {
+    if ((activeProvider === 'codex' || activeProvider === 'antigravity') && !parsed.refreshToken) {
       setToast('oauthResult', t('oauthRefreshTokenRequired'), 'error');
       return;
     }
@@ -2481,7 +2589,7 @@ async function submitManualOAuthToken() {
       method: 'POST',
       body: JSON.stringify({
         ...parsed,
-        vendor: activeProvider === 'claude' ? 'anthropic' : 'openai',
+        vendor: activeProvider === 'claude' ? 'anthropic' : activeProvider === 'antigravity' ? 'antigravity' : 'openai',
       }),
     });
     document.getElementById('manualOAuthTokenInput').value = '';
@@ -2539,6 +2647,7 @@ Object.assign(window, {
   authorizeDetectedCredential,
   bindNode,
   copyClaudeAuthorizationLink,
+  copyAntigravityAuthorizationLink,
   copyCodexDeviceCode,
   copyJimengUserCode,
   copyXaiDeviceCode,
@@ -2552,10 +2661,12 @@ Object.assign(window, {
   setLocale,
   showBindingHelp,
   startClaudeOAuth,
+  startAntigravityOAuth,
   startCodexDevice,
   startJimengAuthorization,
   startXaiDevice,
   submitClaudeAuthorizationCode,
+  submitAntigravityAuthorizationCode,
   submitManualOAuthToken,
   toggleSettingsMenu,
   toggleLanguageMenu,

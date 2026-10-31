@@ -235,7 +235,7 @@ export interface ProviderCredentialMirrorUpdate {
   type: 'provider.credential_mirror_update';
   requestId: string;
   credentialBindingId: string;
-  vendor: 'openai' | 'anthropic';
+  vendor: 'openai' | 'anthropic' | 'antigravity';
   accessToken: string;
   refreshToken?: string;
   expiresAt?: number;
@@ -245,6 +245,10 @@ export interface ProviderCredentialMirrorUpdate {
   accountEmail?: string;
   subscriptionType?: string;
   subscriptionDisplayName?: string;
+  antigravityProject?: string;
+  antigravityTierId?: string;
+  antigravityTierName?: string;
+  antigravityClientId?: string;
   accessTokenReceivedAt?: string;
   accessTokenSource?: string;
   lastRefreshAt?: string;
@@ -317,8 +321,17 @@ export interface ProviderCredentialDataChannelIdle {
   epochId: string;
 }
 
+// Sent on the credential socket; the node keeps serving until Platform closes it.
+export interface ProviderCredentialDataChannelIdleRequest {
+  type: 'provider.credential_data_channel_idle_request';
+  nodeId: string;
+  credentialBindingId: string;
+  epochId: string;
+}
+
 export interface PlatformCredentialDataChannelReady {
   type: 'platform.credential_data_channel_ready';
+  supportsIdleRetirement?: boolean;
   protocolVersion: 1;
   nodeId: string;
   credentialBindingId: string;
@@ -676,6 +689,7 @@ export type ProviderToPlatformMessage =
   | ProviderDrainNotice
   | ProviderCredentialMirrorUpdate
   | ProviderCredentialDataChannelIdle
+  | ProviderCredentialDataChannelIdleRequest
   | ProviderJimengAuthStarted
   | ProviderJimengAuthCompleted
   | ProviderJimengAuthFailed

@@ -211,6 +211,7 @@ interface PlatformOAuthPollResult extends Record<string, unknown> {
 }
 const pendingCodexOAuth = new Map<string, PlatformOAuthStart>();
 const pendingAnthropicOAuth = new Map<string, PlatformOAuthStart>();
+const pendingAntigravityOAuth = new Map<string, PlatformOAuthStart>();
 let codexBrowserAttempt: {
   flow: PlatformOAuthStart;
   port: number;
@@ -847,8 +848,8 @@ app.post('/api/platform/credentials/authorize-token', async (request, reply) => 
   }
   await assertPlatformBindingIsUsable();
   const body = request.body as Record<string, unknown>;
-  const vendor: 'openai' | 'anthropic' | 'xai' =
-    body.vendor === 'anthropic' ? 'anthropic' : body.vendor === 'xai' ? 'xai' : 'openai';
+  const vendor: 'openai' | 'anthropic' | 'xai' | 'antigravity' =
+    body.vendor === 'anthropic' ? 'anthropic' : body.vendor === 'xai' ? 'xai' : body.vendor === 'antigravity' ? 'antigravity' : 'openai';
   const oauth = providerOAuthConfigFromManualTokenBody(body, vendor);
   oauth.accessTokenSource = 'manual_token';
   try {
@@ -858,7 +859,7 @@ app.post('/api/platform/credentials/authorize-token', async (request, reply) => 
     return { ok: false, error: error instanceof Error ? error.message : 'invalid_oauth_token' };
   }
   const authorization = await authorizeOAuthCredential(oauth, vendor, body);
-  const mode = vendor === 'anthropic' ? 'anthropic-oauth' : vendor === 'xai' ? 'xai-oauth' : 'codex-oauth';
+  const mode = vendor === 'anthropic' ? 'anthropic-oauth' : vendor === 'xai' ? 'xai-oauth' : vendor === 'antigravity' ? 'antigravity-oauth' : 'codex-oauth';
   config.upstream = { ...config.upstream, mode, oauth };
   persistConfig();
   return authorization;
@@ -1038,6 +1039,35 @@ app.post('/api/oauth/anthropic/exchange', async (request, reply) => {
   return { ok: true, ...authorization };
 });
 
+app.post('/api/oauth/antigravity/start', async (request) => {
+  const body = request.body as { redirectUri?: string };
+  const flow = await startPlatformOAuth<PlatformOAuthStart>('antigravity', {
+    flow: 'authorization_code',
+    redirectUri: body.redirectUri,
+  });
+  pendingAntigravityOAuth.set(flow.state, flow);
+  trimPendingOAuthFlows(pendingAntigravityOAuth);
+  return publicOAuthStart(flow);
+});
+
+app.post('/api/oauth/antigravity/exchange', async (request) => {
+  const body = request.body as { code?: string; state?: string; redirectUri?: string };
+  if (!body.code) throw new Error('code_required');
+  const embeddedState = body.code.includes('#') ? body.code.slice(body.code.lastIndexOf('#') + 1) : undefined;
+  const state = embeddedState || body.state;
+  const flow = state ? pendingAntigravityOAuth.get(state) : pendingAntigravityOAuth.size === 1 ? Array.from(pendingAntigravityOAuth.values())[0] : undefined;
+  if (!flow) throw new Error('antigravity_oauth_start_required');
+  if (state && !verifyOpaqueState(state, flow.state)) throw new Error('invalid_state');
+  const code = embeddedState ? body.code.slice(0, body.code.lastIndexOf('#')) : body.code;
+  const authorization = await exchangePlatformOAuth('antigravity', flow.flowId, {
+    code,
+    state: flow.state,
+    redirectUri: body.redirectUri || flow.redirectUri,
+  });
+  pendingAntigravityOAuth.delete(flow.state);
+  return { ok: true, ...authorization };
+});
+
 let cachedConsoleHtml: string | undefined;
 
 // The console is built into dist/console/index.html by scripts/build-console.mjs.
@@ -1195,7 +1225,11 @@ function localCredentialBindingReference(detection: LocalCredentialDetection) {
 function currentOAuthCredentialBody(body: Record<string, unknown>): Record<string, unknown> {
   const oauth = config.upstream.oauth;
   if (!oauth?.accessToken) throw new Error('oauth_access_token_missing');
-  const vendor = body.vendor === 'anthropic' || config.upstream.mode === 'anthropic-oauth' ? 'anthropic' : 'openai';
+  const vendor = body.vendor === 'anthropic' || config.upstream.mode === 'anthropic-oauth'
+    ? 'anthropic'
+    : body.vendor === 'antigravity' || config.upstream.mode === 'antigravity-oauth'
+      ? 'antigravity'
+      : 'openai';
   if (vendor === 'anthropic') {
     const before = JSON.stringify({
       subscriptionType: oauth.subscriptionType,
@@ -1217,7 +1251,7 @@ function currentOAuthCredentialBody(body: Record<string, unknown>): Record<strin
 
 function oAuthCredentialBody(
   oauth: ProviderOAuthConfig,
-  vendor: 'openai' | 'anthropic' | 'xai',
+  vendor: 'openai' | 'anthropic' | 'xai' | 'antigravity',
   body: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!oauth.accessToken) throw new Error('oauth_access_token_missing');
@@ -1243,6 +1277,10 @@ function oAuthCredentialBody(
     accountEmail: derived.accountEmail || oauth.accountEmail,
     subscriptionType: derived.subscriptionType || oauth.subscriptionType,
     subscriptionDisplayName: derived.subscriptionDisplayName || oauth.subscriptionDisplayName,
+    antigravityProject: typeof body.antigravityProject === 'string' ? body.antigravityProject : oauth.antigravityProject,
+    antigravityTierId: typeof body.antigravityTierId === 'string' ? body.antigravityTierId : oauth.antigravityTierId,
+    antigravityTierName: typeof body.antigravityTierName === 'string' ? body.antigravityTierName : oauth.antigravityTierName,
+    antigravityClientId: typeof body.antigravityClientId === 'string' ? body.antigravityClientId : oauth.antigravityClientId,
     claudeCodeUserId: oauth.claudeCodeUserId || derived.claudeCodeUserId,
     claudeCodeAccountUuid: oauth.claudeCodeAccountUuid || derived.claudeCodeAccountUuid,
     accessTokenReceivedAt: oauth.accessTokenReceivedAt,
@@ -1255,7 +1293,7 @@ function oAuthCredentialBody(
 
 async function authorizeOAuthCredential(
   oauth: ProviderOAuthConfig,
-  vendor: 'openai' | 'anthropic' | 'xai',
+  vendor: 'openai' | 'anthropic' | 'xai' | 'antigravity',
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
@@ -1632,7 +1670,7 @@ function platformHttpUrl(wsUrl: string, path: string): string {
   return url.toString();
 }
 
-type PlatformOAuthVendor = 'openai' | 'anthropic' | 'xai' | 'moonshot' | 'cursor';
+type PlatformOAuthVendor = 'openai' | 'anthropic' | 'xai' | 'moonshot' | 'cursor' | 'antigravity' | 'workbuddy';
 
 async function startPlatformOAuth<T = Record<string, unknown>>(
   vendor: PlatformOAuthVendor,
@@ -1654,7 +1692,7 @@ async function startPlatformOAuth<T = Record<string, unknown>>(
 }
 
 async function exchangePlatformOAuth<T = Record<string, unknown>>(
-  vendor: 'openai' | 'anthropic',
+  vendor: 'openai' | 'anthropic' | 'antigravity',
   flowId: string,
   body: Record<string, unknown>,
 ): Promise<T> {

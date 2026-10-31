@@ -13,7 +13,9 @@ export type OfficialExitVendorId =
   | 'jimeng'
   | 'cursor'
   | 'volcengine'
-  | 'opencode';
+  | 'opencode'
+  | 'antigravity'
+  | 'workbuddy';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -71,6 +73,19 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     id: 'google',
     displayName: 'Google Gemini',
     allowedHosts: ['generativelanguage.googleapis.com'],
+  },
+  {
+    id: 'antigravity',
+    displayName: 'Google Antigravity',
+    // OAuth profile verification uses Google's standard userinfo endpoint in
+    // addition to the token and Cloud Code hosts. Keep this exact host narrow;
+    // do not widen the vendor to all of googleapis.com.
+    allowedHosts: ['oauth2.googleapis.com', 'www.googleapis.com', 'cloudcode-pa.googleapis.com', 'daily-cloudcode-pa.googleapis.com', 'antigravity-hub-auto-updater-974169037036.us-central1.run.app'],
+  },
+  {
+    id: 'workbuddy',
+    displayName: 'WorkBuddy',
+    allowedHosts: ['www.workbuddy.cn'],
   },
   {
     id: 'xai',

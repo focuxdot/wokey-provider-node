@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { createHash, randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ProviderNodeConfig } from '../src/provider-node/config.js';
 
@@ -53,6 +54,10 @@ describe('console routes', () => {
     expect(res.body).toContain('Object.assign(window');
     expect(res.body).toContain('selectProvider:');
     expect(res.body).toContain('startCodexDevice:');
+    expect(res.body).toContain('startAntigravityOAuth:');
+    expect(res.body).toContain('copyAntigravityAuthorizationLink:');
+    expect(res.body).toContain('submitAntigravityAuthorizationCode:');
+    expect(res.body).toContain('searchParams.get("code")');
     expect(res.body).toContain('startJimengAuthorization:');
     expect(res.body).toContain('installJimengCli:');
     expect(res.body).toContain('cancelJimengAuthorization:');
@@ -262,6 +267,15 @@ describe('console security hook', () => {
     // Passed the security hook; the Platform-owned flow then rejects this unbound test node.
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body).error).toBe('node_binding_invalid');
+
+    const antigravity = await app.inject({
+      method: 'POST',
+      url: '/api/oauth/antigravity/start',
+      headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': token },
+      payload: {},
+    });
+    expect(antigravity.statusCode).toBe(401);
+    expect(JSON.parse(antigravity.body).error).toBe('node_binding_invalid');
   });
 
   it('rejects plaintext Platform bind URLs for non-loopback hosts', async () => {
@@ -421,5 +435,193 @@ describe('mergeConfigPatch secret-sentinel', () => {
     });
     expect(merged.providerNodeSecret).toBe('new-secret');
     expect(merged.upstream.apiKey).toBe('new-key');
+  });
+});
+
+describe('local Platform + OAuth stub Antigravity flow', () => {
+  it('runs risk gate, PKCE callback, token exchange, and credential bind without production services', async () => {
+    const platform = Fastify({ logger: false });
+    platform.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_request, body, done) => done(null, body));
+
+    const oauth = {
+      riskAccepted: false,
+      flow: undefined as undefined | { flowId: string; state: string; codeVerifier: string; redirectUri: string; authorizationUrl: string },
+      code: undefined as undefined | { value: string; state: string; redirectUri: string; codeChallenge: string },
+      tokenRequests: 0,
+      boundCredential: undefined as undefined | Record<string, unknown>,
+    };
+    const nodeId = 'e2e-antigravity-node';
+    const providerId = 'e2e-antigravity-provider';
+    const providerSecret = 'e2e-antigravity-secret';
+
+    let platformPort = 0;
+    let oauthBaseUrl = '';
+
+    platform.get('/internal/provider/status', async (request, reply) => {
+      if (request.headers['x-provider-node-id'] !== nodeId || request.headers['x-provider-node-secret'] !== providerSecret) {
+        reply.code(401);
+        return { error: { code: 'invalid_provider_secret', message: 'Invalid provider node credentials' } };
+      }
+      return { binding: { status: 'bound', providerId, nodeId, nodeStatus: 'active', nodeVersion: '0.1.104', versionStatus: 'verified' } };
+    });
+
+    platform.get('/authorize', async (request, reply) => {
+      const query = request.query as Record<string, string | undefined>;
+      const redirectUri = query.redirect_uri ?? '';
+      const state = query.state ?? '';
+      const codeChallenge = query.code_challenge ?? '';
+      if (!redirectUri || !state || !codeChallenge) {
+        reply.code(400);
+        return { error: 'invalid_authorization_request' };
+      }
+      const value = `stub-code-${randomBytes(8).toString('hex')}`;
+      oauth.code = { value, state, redirectUri, codeChallenge };
+      reply.code(302).header('location', `${redirectUri}?code=${encodeURIComponent(value)}&state=${encodeURIComponent(state)}`).send();
+    });
+
+    platform.post('/token', async (request, reply) => {
+      oauth.tokenRequests += 1;
+      const params = new URLSearchParams(String(request.body ?? ''));
+      const code = oauth.code;
+      if (!code
+        || params.get('grant_type') !== 'authorization_code'
+        || params.get('code') !== code.value
+        || params.get('redirect_uri') !== code.redirectUri
+        || !params.get('code_verifier')) {
+        reply.code(400);
+        return { error: 'invalid_grant' };
+      }
+      const verifier = params.get('code_verifier');
+      if (!verifier) {
+        reply.code(400);
+        return { error: 'invalid_code_verifier' };
+      }
+      const challenge = createHash('sha256').update(verifier).digest('base64url');
+      if (challenge !== code.codeChallenge) {
+        reply.code(400);
+        return { error: 'invalid_code_verifier' };
+      }
+      return {
+        access_token: 'stub-antigravity-access-token',
+        refresh_token: 'stub-antigravity-refresh-token',
+        token_type: 'Bearer',
+        expires_in: 3600,
+        scope: 'openid profile email aicode',
+      };
+    });
+
+    platform.post('/internal/provider/oauth/antigravity/start', async (request, reply) => {
+      if (request.headers['x-provider-node-id'] !== nodeId || request.headers['x-provider-node-secret'] !== providerSecret) {
+        reply.code(401);
+        return { error: { code: 'invalid_provider_secret', message: 'Invalid provider node credentials' } };
+      }
+      if (!oauth.riskAccepted) {
+        reply.code(400);
+        return { error: { code: 'antigravity_risk_terms_required', message: 'Risk confirmation required' } };
+      }
+      const body = request.body as Record<string, unknown>;
+      expect(body.protocolVersion).toBe(1);
+      expect(body.flow).toBe('authorization_code');
+      const flowId = `e2e-flow-${randomBytes(8).toString('hex')}`;
+      const state = randomBytes(24).toString('base64url');
+      const codeVerifier = randomBytes(48).toString('base64url');
+      const redirectUri = typeof body.redirectUri === 'string' && body.redirectUri ? body.redirectUri : 'http://localhost:1455/auth/callback';
+      const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+      const query = new URLSearchParams({
+        response_type: 'code',
+        client_id: 'stub-google-client',
+        redirect_uri: redirectUri,
+        state,
+        code_challenge: codeChallenge,
+        code_challenge_method: 'S256',
+        access_type: 'offline',
+        prompt: 'consent',
+      });
+      const authorizationUrl = `${oauthBaseUrl}/authorize?${query.toString()}`;
+      oauth.flow = { flowId, state, codeVerifier, redirectUri, authorizationUrl };
+      return { protocolVersion: 1, flowId, state, redirectUri, authorizationUrl, expiresAt: Date.now() + 600_000 };
+    });
+
+    platform.post('/internal/provider/oauth/antigravity/:flowId/exchange', async (request, reply) => {
+      if (request.headers['x-provider-node-id'] !== nodeId || request.headers['x-provider-node-secret'] !== providerSecret) {
+        reply.code(401);
+        return { error: { code: 'invalid_provider_secret', message: 'Invalid provider node credentials' } };
+      }
+      const flow = oauth.flow;
+      const body = request.body as Record<string, unknown>;
+      if (!flow || request.params && (request.params as { flowId?: string }).flowId !== flow.flowId || body.protocolVersion !== 1 || body.state !== flow.state) {
+        reply.code(400);
+        return { error: { code: 'invalid_state', message: 'OAuth state mismatch' } };
+      }
+      const tokenResponse = await fetch(`${oauthBaseUrl}/token`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: String(body.code ?? ''),
+          redirect_uri: flow.redirectUri,
+          code_verifier: flow.codeVerifier,
+        }).toString(),
+      });
+      const token = await tokenResponse.json() as Record<string, unknown>;
+      if (!tokenResponse.ok) {
+        reply.code(tokenResponse.status);
+        return { error: token };
+      }
+      oauth.boundCredential = {
+        credentialBindingId: 'e2e-antigravity-credential',
+        vendor: 'antigravity',
+        credentialType: 'oauth',
+        status: 'active',
+        accountEmail: 'stub@example.test',
+        accessTokenSource: 'antigravity_oauth_code',
+      };
+      return { protocolVersion: 1, flowId: flow.flowId, status: 'succeeded', credential: oauth.boundCredential };
+    });
+
+    const serverAddress = await platform.listen({ host: '127.0.0.1', port: 0 });
+    platformPort = Number(new URL(serverAddress).port);
+    oauthBaseUrl = `http://127.0.0.1:${platformPort}`;
+
+    try {
+      const csrf = await csrfToken();
+      const config = await app.inject({ method: 'POST', url: '/api/config', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {
+        nodeId,
+        providerId,
+        providerNodeSecret: providerSecret,
+        platformWsUrl: `ws://127.0.0.1:${platformPort}`,
+        runtimeMode: 'official_exit',
+        officialExit: { enabled: true },
+        capability: { model: 'gemini-4-argon', vendor: 'antigravity', routeMode: 'official_exit', supportsStreaming: true, supportsTools: true },
+      } });
+      expect(config.statusCode).toBe(200);
+
+      const blocked = await app.inject({ method: 'POST', url: '/api/oauth/antigravity/start', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {} });
+      expect(blocked.statusCode).toBe(400);
+      expect(JSON.parse(blocked.body).error).toBe('antigravity_risk_terms_required');
+
+      oauth.riskAccepted = true;
+      const started = await app.inject({ method: 'POST', url: '/api/oauth/antigravity/start', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {} });
+      expect(started.statusCode).toBe(200);
+      const startBody = JSON.parse(started.body) as { authorizationUrl: string; flowId: string; state: string };
+      expect(new URL(startBody.authorizationUrl).hostname).toBe('127.0.0.1');
+      expect(startBody.flowId).toBe(oauth.flow?.flowId);
+      expect(startBody.state).toBe(oauth.flow?.state);
+
+      const callback = await fetch(startBody.authorizationUrl, { redirect: 'manual' });
+      expect(callback.status).toBe(302);
+      const callbackUrl = new URL(callback.headers.get('location') ?? '');
+      expect(callbackUrl.searchParams.get('state')).toBe(startBody.state);
+      const code = callbackUrl.searchParams.get('code');
+      expect(code).toBeTruthy();
+
+      const exchanged = await app.inject({ method: 'POST', url: '/api/oauth/antigravity/exchange', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: { code, state: startBody.state } });
+      expect(exchanged.statusCode).toBe(200);
+      expect(JSON.parse(exchanged.body)).toMatchObject({ ok: true, credential: { vendor: 'antigravity', credentialBindingId: 'e2e-antigravity-credential' } });
+      expect(oauth.tokenRequests).toBe(1);
+      expect(oauth.boundCredential).toBeDefined();
+    } finally {
+      await platform.close();
+    }
   });
 });

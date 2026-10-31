@@ -577,7 +577,7 @@ describe('ProviderBridge endpoint failover', () => {
     }
   });
 
-  it('opens high-cardinality credential channels only on demand', async () => {
+  it.each([[false, false], [true, false], [true, true]])('retires lazy channels only with Platform agreement (supported=%s, reopen=%s)', async (supportsIdleRetirement, reopen) => {
     const bridge = await makeBridge(false, true);
     try {
       bridge.start();
@@ -610,6 +610,50 @@ describe('ProviderBridge endpoint failover', () => {
       await Promise.resolve();
       expect(fakeSockets).toHaveLength(2);
       expect(fakeSockets[1].options?.headers?.['x-provider-data-channel']).toBe('credential_b');
+      const channel = fakeSockets[1];
+      channel.readyState = FakeWebSocket.OPEN;
+      channel.emit('open');
+      channel.emit('message', Buffer.from(JSON.stringify({
+        type: 'platform.credential_data_channel_ready', protocolVersion: 1,
+        nodeId, credentialBindingId: 'credential_b', epochId: plan.epochId, revision: 1,
+        supportsIdleRetirement,
+      })), false);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(bridge.credentialDataChannelState()).toMatchObject({ ready: 1 });
+      const idleRequests = channel.sent.filter((m): m is string => typeof m === 'string')
+        .map((m) => JSON.parse(m)).filter((m) => m.type === 'provider.credential_data_channel_idle_request');
+      expect(idleRequests).toHaveLength(supportsIdleRetirement ? 1 : 0);
+      expect(control.sent.filter((m) => typeof m === 'string' && m.includes('provider.credential_data_channel_idle'))).toHaveLength(0);
+      const pool = (bridge as unknown as { credentialDataChannels: {
+        channels: Map<string, { tunnels: { handleMessage: (...args: unknown[]) => Promise<void>; activeSessionCount: () => number } }>;
+      } }).credentialDataChannels;
+      const tunnels = pool.channels.get('credential_b')?.tunnels;
+      if (!tunnels) throw new Error('expected ready credential channel');
+      const receiveOpen = vi.spyOn(tunnels, 'handleMessage').mockResolvedValue(undefined);
+      // The channel remains usable while its idle proposal is pending/denied.
+      channel.emit('message', Buffer.from(JSON.stringify({
+        type: 'official_exit.open', credentialBindingId: 'credential_b', sessionId: 'racing_open',
+      })), false);
+      await Promise.resolve();
+      expect(receiveOpen).toHaveBeenCalled();
+      channel.emit('ping');
+      vi.spyOn(tunnels, 'activeSessionCount').mockReturnValue(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(channel.terminateCount).toBe(0);
+      expect(channel.sent.filter((m) => typeof m === 'string' && m.includes('idle_request'))).toHaveLength(supportsIdleRetirement ? 1 : 0);
+      if (supportsIdleRetirement) {
+        // Reopen demand can beat the old socket's retirement close frame.
+        if (reopen) control.emit('message', Buffer.from(JSON.stringify({
+          type: 'platform.credential_data_channel_open', nodeId,
+          credentialBindingId: 'credential_b', epochId: plan.epochId,
+        })), false);
+        await Promise.resolve();
+        channel.emit('close', 1000, Buffer.from('credential_data_channel_idle'));
+        expect(fakeSockets).toHaveLength(reopen ? 3 : 2);
+        if (reopen) expect(fakeSockets[2].options?.headers?.['x-provider-data-channel']).toBe('credential_b');
+        else expect(bridge.credentialDataChannelState()).toMatchObject({ ready: 0, reconnecting: 0 });
+      }
     } finally {
       bridge.stop();
     }

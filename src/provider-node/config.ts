@@ -5,7 +5,7 @@ import { generateNodeId } from '../shared/ids.js';
 import type { ProviderCapabilityVendor } from '../shared/protocol.js';
 import { getProviderNodeBuildInfo } from './build-info.js';
 
-export type ProviderUpstreamMode = 'mock' | 'openai-compatible' | 'anthropic-oauth' | 'codex-oauth' | 'xai-oauth';
+export type ProviderUpstreamMode = 'mock' | 'openai-compatible' | 'anthropic-oauth' | 'codex-oauth' | 'xai-oauth' | 'antigravity-oauth';
 export type ProviderNodeRuntimeMode = 'development' | 'official_exit';
 
 export interface ProviderOAuthConfig {
@@ -19,6 +19,10 @@ export interface ProviderOAuthConfig {
   accountEmail?: string;
   subscriptionType?: string;
   subscriptionDisplayName?: string;
+  antigravityProject?: string;
+  antigravityTierId?: string;
+  antigravityTierName?: string;
+  antigravityClientId?: string;
   claudeCodeUserId?: string;
   claudeCodeAccountUuid?: string;
   accessTokenReceivedAt?: string;

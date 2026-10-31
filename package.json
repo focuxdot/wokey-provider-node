@@ -1,6 +1,6 @@
 {
   "name": "wokey-provider-node",
-  "version": "0.1.102",
+  "version": "0.1.104",
   "description": "Wokey Provider Node runtime, local console, CLI, and installers.",
   "type": "module",
   "license": "Apache-2.0",
@@ -44,7 +44,7 @@
     "verify": "npm run lint && npm run build && npm test && npm run release:assert-installers && npm run audit:oss && npm audit --omit=dev"
   },
   "dependencies": {
-    "fastify": "^5.12.5",
+    "fastify": "^5.12.7",
     "nanoid": "^5.1.16",
     "pino": "^10.1.0",
     "ws": "^8.21.1"
@@ -61,7 +61,7 @@
   },
   "overrides": {
     "brace-expansion": "^5.0.12",
-    "fast-uri": "^3.1.8",
+    "fast-uri": "^3.1.9",
     "ip-address": "^10.7.2",
     "http-cache-semantics": "^4.3.0"
   }

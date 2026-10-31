@@ -35,7 +35,7 @@ import type {
   ProviderCredentialDataChannelReady,
   ProviderCredentialDataChannelsApplied,
   ProviderCredentialDataChannelsResyncRequested,
-  ProviderCredentialDataChannelIdle,
+  ProviderCredentialDataChannelIdleRequest,
   ProviderDrainNotice,
   ProviderHeartbeat,
   ProviderHello,
@@ -224,6 +224,8 @@ type ProviderCredentialDataChannel = {
   readyTimer?: NodeJS.Timeout;
   lastPlatformActivityAt: number;
   lastRequestActivityAt: number;
+  supportsIdleRetirement?: boolean;
+  reopenAfterIdle?: boolean;
   handshakeSlotHeld: boolean;
   finalized: boolean;
   finalize: (reason?: string) => void;
@@ -342,7 +344,15 @@ class ProviderCredentialDataChannelPool {
   requestChannel(credentialBindingId: string): boolean {
     const plan = this.plan;
     if (!plan?.credentialBindingIds.includes(credentialBindingId)) return false;
-    if (this.channels.has(credentialBindingId)) return true;
+    const existing = this.channels.get(credentialBindingId);
+    if (existing) {
+      // A new demand can arrive on control before the retirement close frame
+      // arrives on the data socket. Do not lose that demand when it closes.
+      if (existing.state === 'ready' && existing.supportsIdleRetirement) {
+        existing.reopenAfterIdle = true;
+      }
+      return true;
+    }
     if (this.channels.size + this.pendingConnections.size >= (plan.maxLiveChannels ?? PROVIDER_CREDENTIAL_DATA_CHANNEL_MAX_LIVE_CHANNELS)) return false;
     this.pendingConnections.add(credentialBindingId);
     this.pumpConnections();
@@ -497,6 +507,10 @@ class ProviderCredentialDataChannelPool {
       this.releaseHandshakeSlot(channel);
       if (this.channels.get(credentialBindingId) !== channel) return;
       this.channels.delete(credentialBindingId);
+      if (reason === 'credential_data_channel_idle' && channel.reopenAfterIdle) {
+        this.requestChannel(credentialBindingId);
+        return;
+      }
       if (this.nonRetryableCloseReason(reason)) {
         this.requestPlanResync(channel.epochId);
       }
@@ -592,6 +606,7 @@ class ProviderCredentialDataChannelPool {
       };
       const result = channel.scheduler.enqueue(JSON.stringify(acknowledged), { lane: 'control' });
       if (!result.accepted) throw result.error ?? new Error('credential_data_channel_ready_ack_failed');
+      channel.supportsIdleRetirement = ready.supportsIdleRetirement === true;
       channel.state = 'ready';
       if (channel.readyTimer) clearTimeout(channel.readyTimer);
       channel.readyTimer = undefined;
@@ -660,15 +675,16 @@ class ProviderCredentialDataChannelPool {
   }
 
   private releaseIdleChannel(channel: ProviderCredentialDataChannel): void {
-    const plan = this.plan;
-    if (plan?.mode !== 'on_demand') return;
-    this.sendControl({
-      type: 'provider.credential_data_channel_idle',
+    if (this.plan?.mode !== 'on_demand' || !channel.supportsIdleRetirement) return;
+    // Platform may already have queued an open which has not reached us yet.
+    // Keep this channel serving until Platform atomically withdraws and closes
+    // this exact socket. Older platforms keep bounded channels until reconnect.
+    channel.scheduler.enqueue(JSON.stringify({
+      type: 'provider.credential_data_channel_idle_request',
       nodeId: this.getConfig().nodeId,
       credentialBindingId: channel.credentialBindingId,
       epochId: channel.epochId,
-    } satisfies ProviderCredentialDataChannelIdle);
-    this.closeChannel(channel.credentialBindingId, 'credential_data_channel_idle');
+    } satisfies ProviderCredentialDataChannelIdleRequest), { lane: 'control' });
   }
 
   private scheduleReconnect(credentialBindingId: string, epochId: string): void {
@@ -724,7 +740,6 @@ class ProviderCredentialDataChannelPool {
         && channel.tunnels.activeSessionCount() === 0
         && now - channel.lastRequestActivityAt >= (plan.idleTimeoutMs ?? PROVIDER_CREDENTIAL_DATA_CHANNEL_IDLE_TIMEOUT_MS)) {
         this.releaseIdleChannel(channel);
-        continue;
       }
       if (now - channel.lastPlatformActivityAt < PROVIDER_CREDENTIAL_DATA_CHANNEL_LIVENESS_TIMEOUT_MS) {
         if (channel.socket.readyState === WebSocket.OPEN) {

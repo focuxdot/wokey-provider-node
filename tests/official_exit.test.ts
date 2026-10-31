@@ -120,6 +120,8 @@ describe('official-exit vendor defaults', () => {
       'deepseek',
       'ollama',
       'google',
+      'antigravity',
+      'workbuddy',
       'xai',
       'jimeng',
       'cursor',
@@ -131,6 +133,8 @@ describe('official-exit vendor defaults', () => {
   it('derives the default allowlist from supported official vendor hosts', () => {
     const configuredHosts = OFFICIAL_EXIT_VENDOR_CONFIGS.flatMap((vendor) => vendor.allowedHosts);
     expect(DEFAULT_OFFICIAL_EXIT_ALLOWED_HOSTS).toEqual([...new Set(configuredHosts)]);
+    const antigravity = OFFICIAL_EXIT_VENDOR_CONFIGS.find((vendor) => vendor.id === 'antigravity');
+    expect(antigravity?.allowedHosts).toContain('www.googleapis.com');
   });
 });
 
