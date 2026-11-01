@@ -22,6 +22,9 @@ import type {
   PlatformCredentialDataChannelReady,
   PlatformCredentialDataChannelsUpdated,
   PlatformCredentialDataChannelOpen,
+  PlatformAntigravityBrowserAuthStart,
+  ProviderAntigravityBrowserAuthFailed,
+  ProviderAntigravityBrowserAuthStarted,
   PlatformJimengAuthCancel,
   PlatformJimengAuthStart,
   PlatformJimengCliInstall,
@@ -42,6 +45,7 @@ import type {
   ProviderUpgradeStatus,
 } from '../shared/protocol.js';
 import {
+  ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION,
   JIMENG_CLI_INSTALL_PROTOCOL_VERSION,
   PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION,
 } from '../shared/protocol.js';
@@ -151,6 +155,12 @@ export interface ProviderBridgeOptions {
   onPlatformCredentialRefreshHint?: (message: PlatformCredentialRefreshHint) => void;
   onPlatformUpgradeAvailable?: (message: PlatformUpgradeAvailable) => void | Promise<void>;
   jimengAuthorization?: JimengAuthorizationHandler;
+  antigravityBrowserAuth?: {
+    start: (
+      message: PlatformAntigravityBrowserAuthStart,
+      emit: (event: ProviderAntigravityBrowserAuthStarted | ProviderAntigravityBrowserAuthFailed) => void,
+    ) => void;
+  };
   jimengVideo?: JimengVideoHandler;
   jimengCliInstall?: {
     install: () => Promise<{ cliVersion: string }>;
@@ -1151,6 +1161,9 @@ export class ProviderBridge {
                       protocolVersions: [PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION],
                       implementation: 'platform_persona' as const,
                     },
+                    ...(this.options.antigravityBrowserAuth
+                      ? { antigravityBrowserAuth: { protocolVersions: [ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION] } }
+                      : {}),
                   }
                 : {}),
               ...(this.options.jimengCliInstall
@@ -1289,6 +1302,23 @@ export class ProviderBridge {
         return;
       }
       this.options.jimengAuthorization.start(start, (event) => this.send(event));
+      return;
+    }
+    if (message.type === 'platform.antigravity_browser_auth_start') {
+      const start = message as PlatformAntigravityBrowserAuthStart;
+      const nodeId = this.getConfig().nodeId;
+      if (start.nodeId !== nodeId) return;
+      if (start.protocolVersion !== ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION || !this.options.antigravityBrowserAuth) {
+        this.send({
+          type: 'provider.antigravity_browser_auth_failed',
+          protocolVersion: ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION,
+          requestId: start.requestId,
+          nodeId,
+          errorCode: 'antigravity_browser_auth_not_supported',
+        });
+        return;
+      }
+      this.options.antigravityBrowserAuth.start(start, (event) => this.send(event));
       return;
     }
     if (message.type === 'platform.jimeng_auth_cancel') {

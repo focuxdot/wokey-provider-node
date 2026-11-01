@@ -56,10 +56,11 @@ describe('console routes', () => {
     expect(res.body).toContain('startCodexDevice:');
     expect(res.body).toContain('startAntigravityOAuth:');
     expect(res.body).toContain('copyAntigravityAuthorizationLink:');
-    expect(res.body).toContain('submitAntigravityAuthorizationCode:');
     expect(res.body).toContain('searchParams.get("code")');
     expect(res.body).toContain('antigravityOAuthTitle');
-    expect(res.body).toContain('antigravityAuthorizationCodePlaceholder');
+    expect(res.body).toContain('antigravityBrowserOpened');
+    expect(res.body).toContain('startWorkBuddyOAuth');
+    expect(res.body).toContain('workbuddyOAuthTitle');
     expect(res.body).toContain('startJimengAuthorization:');
     expect(res.body).toContain('installJimengCli:');
     expect(res.body).toContain('cancelJimengAuthorization:');
@@ -585,8 +586,9 @@ describe('local Platform + OAuth stub Antigravity flow', () => {
     platformPort = Number(new URL(serverAddress).port);
     oauthBaseUrl = `http://127.0.0.1:${platformPort}`;
 
+    let csrf = '';
     try {
-      const csrf = await csrfToken();
+      csrf = await csrfToken();
       const config = await app.inject({ method: 'POST', url: '/api/config', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {
         nodeId,
         providerId,
@@ -603,7 +605,7 @@ describe('local Platform + OAuth stub Antigravity flow', () => {
       expect(JSON.parse(blocked.body).error).toBe('antigravity_risk_terms_required');
 
       oauth.riskAccepted = true;
-      const started = await app.inject({ method: 'POST', url: '/api/oauth/antigravity/start', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {} });
+      const started = await app.inject({ method: 'POST', url: '/api/oauth/antigravity/browser/start', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {} });
       expect(started.statusCode).toBe(200);
       const startBody = JSON.parse(started.body) as { authorizationUrl: string; flowId: string; state: string };
       expect(new URL(startBody.authorizationUrl).hostname).toBe('127.0.0.1');
@@ -617,12 +619,18 @@ describe('local Platform + OAuth stub Antigravity flow', () => {
       const code = callbackUrl.searchParams.get('code');
       expect(code).toBeTruthy();
 
-      const exchanged = await app.inject({ method: 'POST', url: '/api/oauth/antigravity/exchange', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: { code, state: startBody.state } });
-      expect(exchanged.statusCode).toBe(200);
-      expect(JSON.parse(exchanged.body)).toMatchObject({ ok: true, credential: { vendor: 'antigravity', credentialBindingId: 'e2e-antigravity-credential' } });
+      const callbackResponse = await fetch(callbackUrl, { redirect: 'manual' });
+      expect(callbackResponse.status).toBe(200);
+      const callbackHtml = await callbackResponse.text();
+      expect(callbackHtml).toContain('Google Antigravity connected');
+      expect(callbackHtml).toContain('window.close()');
+      expect(callbackHtml).toContain('3000');
+      const browserStatus = await app.inject({ method: 'GET', url: '/api/oauth/antigravity/browser/status', headers: { host: HOST } });
+      expect(JSON.parse(browserStatus.body)).toMatchObject({ ok: true, status: 'succeeded' });
       expect(oauth.tokenRequests).toBe(1);
       expect(oauth.boundCredential).toBeDefined();
     } finally {
+      await app.inject({ method: 'POST', url: '/api/oauth/antigravity/browser/stop', headers: { host: HOST, 'content-type': 'application/json', 'x-wokey-csrf': csrf }, payload: {} });
       await platform.close();
     }
   });

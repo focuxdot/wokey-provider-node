@@ -81,12 +81,18 @@ export const CURSOR_AUTH_CONTROL_PROTOCOL_VERSION = 1;
 export type CursorAuthControlProtocolVersion = typeof CURSOR_AUTH_CONTROL_PROTOCOL_VERSION;
 export const PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION = 1;
 export type ProviderOAuthEgressControlProtocolVersion = typeof PROVIDER_OAUTH_EGRESS_CONTROL_PROTOCOL_VERSION;
+export const ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION = 1;
+export type AntigravityBrowserAuthControlProtocolVersion = typeof ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION;
 
 export interface ProviderNodeControlCapabilities {
   /** Platform owns PKCE/tokens/persona; the node only carries rendered TCP egress. */
   credentialOAuthEgress?: {
     protocolVersions: ProviderOAuthEgressControlProtocolVersion[];
     implementation: 'platform_persona';
+  };
+  /** Catches the Google loopback callback for a dashboard-started authorization. */
+  antigravityBrowserAuth?: {
+    protocolVersions: AntigravityBrowserAuthControlProtocolVersion[];
   };
   cursorAuth?: {
     protocolVersions: CursorAuthControlProtocolVersion[];
@@ -380,6 +386,33 @@ export interface PlatformJimengAuthStart {
   providerId: string;
   nodeId: string;
   deadlineMs: number;
+}
+
+/** Runs the console's Antigravity browser authorization for a Platform dashboard start. */
+export interface PlatformAntigravityBrowserAuthStart {
+  type: 'platform.antigravity_browser_auth_start';
+  protocolVersion: AntigravityBrowserAuthControlProtocolVersion;
+  requestId: string;
+  nodeId: string;
+}
+
+export interface ProviderAntigravityBrowserAuthStarted {
+  type: 'provider.antigravity_browser_auth_started';
+  protocolVersion: AntigravityBrowserAuthControlProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  flowId: string;
+}
+
+/** Listening or the callback failed; flowId is absent when no flow was created. */
+export interface ProviderAntigravityBrowserAuthFailed {
+  type: 'provider.antigravity_browser_auth_failed';
+  protocolVersion: AntigravityBrowserAuthControlProtocolVersion;
+  requestId: string;
+  nodeId: string;
+  flowId?: string;
+  errorCode: string;
+  message?: string;
 }
 
 export interface PlatformJimengAuthCancel {
@@ -693,6 +726,8 @@ export type ProviderToPlatformMessage =
   | ProviderJimengAuthStarted
   | ProviderJimengAuthCompleted
   | ProviderJimengAuthFailed
+  | ProviderAntigravityBrowserAuthStarted
+  | ProviderAntigravityBrowserAuthFailed
   | ProviderCursorAuthStarted
   | ProviderCursorAuthCompleted
   | ProviderCursorAuthFailed
@@ -713,6 +748,7 @@ export type PlatformToProviderMessage =
   | PlatformUpgradeAvailable
   | PlatformJimengAuthStart
   | PlatformJimengAuthCancel
+  | PlatformAntigravityBrowserAuthStart
   | PlatformCursorAuthStart
   | PlatformCursorAuthCancel
   | PlatformJimengCliInstall

@@ -1214,6 +1214,31 @@ describe('ProviderBridge endpoint failover', () => {
     }
   });
 
+  it('advertises dashboard Antigravity authorization and forwards the start command', async () => {
+    const { defaultConfig } = await import('../src/provider-node/config.js');
+    const { ProviderBridge } = await import('../src/provider-node/bridge.js');
+    const base = defaultConfig();
+    const config = { ...base, officialExit: { ...base.officialExit, enabled: true } } as typeof base;
+    const start = vi.fn();
+    const bridge = new ProviderBridge(() => config, { antigravityBrowserAuth: { start } });
+    try {
+      bridge.start();
+      fakeSockets[0].readyState = FakeWebSocket.OPEN;
+      fakeSockets[0].emit('open');
+      const hello = fakeSockets[0].sent
+        .filter((message): message is string => typeof message === 'string')
+        .map((message) => JSON.parse(message) as Record<string, unknown>)
+        .find((message) => message.type === 'provider.hello');
+      expect(hello).toMatchObject({ controlCapabilities: { antigravityBrowserAuth: { protocolVersions: [1] } } });
+
+      const command = { type: 'platform.antigravity_browser_auth_start', protocolVersion: 1, requestId: 'agy-1', nodeId: config.nodeId };
+      fakeSockets[0].emit('message', Buffer.from(JSON.stringify(command)), false);
+      expect(start).toHaveBeenCalledWith(command, expect.any(Function));
+    } finally {
+      bridge.stop();
+    }
+  });
+
   it('publishes newly installed Jimeng capabilities without reconnecting', async () => {
     const { defaultConfig } = await import('../src/provider-node/config.js');
     const { ProviderBridge } = await import('../src/provider-node/bridge.js');

@@ -30,7 +30,7 @@ import {
   type ProviderOAuthConfig,
   type ProviderUpstreamMode,
 } from './config.js';
-import { ProviderBridge } from './bridge.js';
+import { ProviderBridge, type ProviderBridgeOptions } from './bridge.js';
 import { currentProviderNodeRuntimeIdentity } from './runtime-identity.js';
 import { AsyncMutex } from './single-flight.js';
 import { detectDreaminaCli, JimengAuthorizationHandler, type DreaminaCliDescriptor } from './jimeng-auth.js';
@@ -203,6 +203,12 @@ interface PlatformOAuthStart {
   redirectUri: string;
   expiresAt: string;
 }
+interface PlatformOAuthBrowserStart extends Record<string, unknown> {
+  flowId: string;
+  authorizationUrl: string;
+  state: string;
+  expiresAt: string;
+}
 interface PlatformOAuthDeviceStart extends Record<string, unknown> {
   flowId: string;
 }
@@ -212,14 +218,16 @@ interface PlatformOAuthPollResult extends Record<string, unknown> {
 const pendingCodexOAuth = new Map<string, PlatformOAuthStart>();
 const pendingAnthropicOAuth = new Map<string, PlatformOAuthStart>();
 const pendingAntigravityOAuth = new Map<string, PlatformOAuthStart>();
-let codexBrowserAttempt: {
+type OAuthBrowserAttempt = {
   flow: PlatformOAuthStart;
   port: number;
   server: HttpServer;
   status: 'pending' | 'succeeded' | 'failed';
   error?: string;
   startedAt: string;
-} | null = null;
+};
+let codexBrowserAttempt: OAuthBrowserAttempt | null = null;
+let antigravityBrowserAttempt: OAuthBrowserAttempt | null = null;
 let codexAuthJsonSyncInFlight = false;
 let codexAuthJsonSyncTimer: NodeJS.Timeout | undefined;
 let codexAuthJsonHintUntil = 0;
@@ -459,12 +467,42 @@ async function installDreaminaCliAndActivate(): Promise<{ cliVersion: string }> 
   return { cliVersion: detected.version };
 }
 
+const antigravityBrowserAuth: NonNullable<ProviderBridgeOptions['antigravityBrowserAuth']> = {
+  start(message, emit) {
+    const base = { protocolVersion: message.protocolVersion, requestId: message.requestId, nodeId: config.nodeId };
+    const failed = (errorCode: string, errorMessage?: string, flowId?: string) => emit({
+      type: 'provider.antigravity_browser_auth_failed',
+      ...base,
+      ...(flowId ? { flowId } : {}),
+      errorCode,
+      ...(errorMessage ? { message: errorMessage.slice(0, 500) } : {}),
+    });
+    void (async () => {
+      try {
+        await startAntigravityBrowserAttempt({
+          dashboardRequestId: message.requestId,
+          onCallbackFailed: (flowId, errorCode, errorMessage) => failed(errorCode, errorMessage, flowId),
+        });
+        const flowId = antigravityBrowserAttempt?.flow.flowId;
+        if (!flowId) throw new Error('antigravity_browser_auth_failed');
+        emit({ type: 'provider.antigravity_browser_auth_started', ...base, flowId });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code === 'EADDRINUSE'
+          ? 'antigravity_callback_port_unavailable'
+          : error instanceof ProviderNodeError ? error.errorCode : 'antigravity_browser_auth_failed';
+        failed(code, error instanceof Error ? error.message : undefined);
+      }
+    })();
+  },
+};
+
 const bridge = new ProviderBridge(() => config, {
   onPlatformReady: () => {
     scheduleCodexAuthJsonMirrorCheck(1_000);
     reportPersistedUpgradeState();
   },
   jimengAuthorization,
+  antigravityBrowserAuth,
   jimengVideo,
   jimengCliInstall: dreaminaCliInstaller.status().supported ? { install: installDreaminaCliAndActivate } : undefined,
   onPlatformCredentialRefreshHint: handlePlatformCredentialRefreshHint,
@@ -978,6 +1016,20 @@ app.post('/api/oauth/xai/device/poll', async (request) => {
   return { ok: result.status === 'pending' || result.status === 'succeeded', ...result };
 });
 
+app.post('/api/oauth/workbuddy/start', async () => {
+  const flow = await startPlatformOAuth<PlatformOAuthBrowserStart>('workbuddy', { flow: 'browser' });
+  return { ok: true, ...flow };
+});
+
+app.post('/api/oauth/workbuddy/poll', async (request) => {
+  const body = request.body as { flowId?: string };
+  if (!body.flowId) throw new Error('flow_id_required');
+  const result = await pollPlatformOAuth<PlatformOAuthPollResult>('workbuddy', body.flowId);
+  return result.status === 'succeeded'
+    ? { ok: true, ...result, authorization: result }
+    : { ok: result.status !== 'expired', ...result };
+});
+
 app.post('/api/oauth/anthropic/start', async () => {
   const flow = await startPlatformOAuth<PlatformOAuthStart>('anthropic', { flow: 'authorization_code' });
   pendingAnthropicOAuth.set(flow.state, flow);
@@ -1048,6 +1100,33 @@ app.post('/api/oauth/antigravity/start', async (request) => {
   pendingAntigravityOAuth.set(flow.state, flow);
   trimPendingOAuthFlows(pendingAntigravityOAuth);
   return publicOAuthStart(flow);
+});
+
+app.post('/api/oauth/antigravity/browser/start', async () => {
+  await startAntigravityBrowserAttempt();
+  return {
+    ok: true,
+    status: antigravityBrowserAttempt?.status,
+    port: antigravityBrowserAttempt?.port,
+    flowId: antigravityBrowserAttempt?.flow.flowId,
+    state: antigravityBrowserAttempt?.flow.state,
+    authorizationUrl: antigravityBrowserAttempt?.flow.authorizationUrl,
+    redirectUri: antigravityBrowserAttempt?.flow.redirectUri,
+    startedAt: antigravityBrowserAttempt?.startedAt,
+  };
+});
+
+app.get('/api/oauth/antigravity/browser/status', async () => ({
+  ok: true,
+  status: antigravityBrowserAttempt?.status ?? 'idle',
+  port: antigravityBrowserAttempt?.port,
+  error: antigravityBrowserAttempt?.error,
+  startedAt: antigravityBrowserAttempt?.startedAt,
+}));
+
+app.post('/api/oauth/antigravity/browser/stop', async () => {
+  await closeAntigravityBrowserAttempt();
+  return { ok: true, status: 'idle' };
 });
 
 app.post('/api/oauth/antigravity/exchange', async (request) => {
@@ -1917,8 +1996,127 @@ async function closeCodexBrowserAttempt(): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
-function htmlMessage(title: string, message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head><body style="font-family: system-ui; padding: 48px;"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></body></html>`;
+// A dashboard start (Platform control message) reuses the console flow; the
+// request id lets the Platform attribute the flow, and `onCallbackFailed`
+// reports a failed callback because the dashboard cannot see this listener.
+type AntigravityBrowserAttemptOptions = {
+  dashboardRequestId?: string;
+  onCallbackFailed?: (flowId: string, errorCode: string, message: string) => void;
+};
+
+async function startAntigravityBrowserAttempt(options: AntigravityBrowserAttemptOptions = {}): Promise<void> {
+  await closeAntigravityBrowserAttempt();
+  let lastError: unknown;
+  for (const port of [1455, 1457]) {
+    try {
+      antigravityBrowserAttempt = await createAntigravityBrowserAttempt(port, options);
+      return;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('antigravity_browser_start_failed');
+}
+
+async function createAntigravityBrowserAttempt(port: number, options: AntigravityBrowserAttemptOptions): Promise<OAuthBrowserAttempt> {
+  const redirectUri = `http://localhost:${port}/auth/callback`;
+  const server = createServer();
+  // Listen before creating the flow so a busy port never leaves a dangling Platform flow.
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, '127.0.0.1');
+  });
+  let flow: PlatformOAuthStart;
+  try {
+    flow = await startPlatformOAuth<PlatformOAuthStart>('antigravity', {
+      flow: 'authorization_code',
+      redirectUri,
+      ...(options.dashboardRequestId ? { dashboardRequestId: options.dashboardRequestId } : {}),
+    });
+  } catch (error) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
+  // A dashboard start was opened from the Wokey Provider page, so point the user back there.
+  const callbackPage = options.dashboardRequestId
+    ? {
+        connectedTitle: 'Google Antigravity 已连接 / connected',
+        connected: '可以关闭此窗口，回到 Wokey Provider 页面，授权结果会自动显示。\nYou can close this window and return to the Wokey Provider page; it updates automatically.',
+        failedTitle: 'Google Antigravity 授权失败 / authorization failed',
+        failed: (error: string) => `${error}\n请回到 Wokey Provider 页面重新授权。\nReturn to the Wokey Provider page and authorize again.`,
+      }
+    : {
+        connectedTitle: 'Google Antigravity connected',
+        connected: 'You can close this window and return to Wokey Node Management.',
+        failedTitle: 'Google Antigravity connection failed',
+        failed: (error: string) => error,
+      };
+  const attempt: OAuthBrowserAttempt = {
+    flow,
+    port,
+    server,
+    status: 'pending',
+    startedAt: new Date().toISOString(),
+  };
+
+  attempt.server.on('request', (request, response) => {
+    void (async () => {
+      try {
+        const requestUrl = new URL(request.url || '/', redirectUri);
+        if (requestUrl.pathname !== '/auth/callback') {
+          response.writeHead(404).end('Not found');
+          return;
+        }
+        if (requestUrl.searchParams.get('error')) throw new ProviderNodeError('antigravity_oauth_denied', 'Google authorization was cancelled or denied.');
+        const code = requestUrl.searchParams.get('code');
+        const state = requestUrl.searchParams.get('state');
+        if (!code || !state || !verifyOpaqueState(state, flow.state)) throw new Error('invalid_oauth_callback');
+        await exchangePlatformOAuth('antigravity', flow.flowId, { code, state, redirectUri: flow.redirectUri });
+        attempt.status = 'succeeded';
+        response
+          .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+          .end(htmlMessage(callbackPage.connectedTitle, callbackPage.connected, { autoCloseMs: 3_000 }));
+      } catch (error) {
+        attempt.status = 'failed';
+        attempt.error = error instanceof Error ? error.message : 'antigravity_browser_oauth_failed';
+        options.onCallbackFailed?.(
+          flow.flowId,
+          error instanceof ProviderNodeError ? error.errorCode : error instanceof Error && /^[a-z0-9_]{1,128}$/.test(error.message) ? error.message : 'antigravity_browser_oauth_failed',
+          attempt.error,
+        );
+        response
+          .writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+          .end(htmlMessage(callbackPage.failedTitle, callbackPage.failed(attempt.error)));
+      }
+    })();
+  });
+
+  return attempt;
+}
+
+async function closeAntigravityBrowserAttempt(): Promise<void> {
+  if (!antigravityBrowserAttempt) return;
+  const server = antigravityBrowserAttempt.server;
+  antigravityBrowserAttempt = null;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+function htmlMessage(title: string, message: string, options: { autoCloseMs?: number } = {}): string {
+  const requestedAutoCloseMs = options.autoCloseMs ?? 0;
+  const autoCloseMs = Number.isFinite(requestedAutoCloseMs) && requestedAutoCloseMs > 0 ? Math.floor(requestedAutoCloseMs) : 0;
+  const autoClose = autoCloseMs
+    ? `<p id="wokey-close-countdown">This window will close automatically in ${Math.ceil(autoCloseMs / 1000)} seconds.</p><button type="button" onclick="window.close()">Close now</button><script>const deadline=Date.now()+${autoCloseMs};const node=document.getElementById('wokey-close-countdown');const tick=()=>{const seconds=Math.max(0,Math.ceil((deadline-Date.now())/1000));if(node)node.textContent=seconds?\`This window will close automatically in \${seconds} seconds.\`:'Closing…';if(seconds) setTimeout(tick,250);else window.close();};tick();</script>`
+    : '';
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head><body style="font-family: system-ui; padding: 48px;"><h1>${escapeHtml(title)}</h1><p style="white-space: pre-line;">${escapeHtml(message)}</p>${autoClose}</body></html>`;
 }
 
 function scriptJson(value: unknown): string {
@@ -1943,6 +2141,7 @@ async function shutdown(): Promise<void> {
   if (codexAuthJsonSyncTimer) clearTimeout(codexAuthJsonSyncTimer);
   bridge.stop();
   await closeCodexBrowserAttempt();
+  await closeAntigravityBrowserAttempt();
   await app.close();
 }
 

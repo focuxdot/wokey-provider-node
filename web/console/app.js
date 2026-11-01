@@ -125,10 +125,8 @@ const messages = {
     fix: 'Fix',
     startClaudeOAuth: 'Start Claude OAuth from the manual add area below.',
     addCredentialTitle: 'Add a credential manually (Recommended for personal use and sharing)',
-    addCredentialBody: 'This node can authorize and add multiple Claude / Codex / Grok / Jimeng accounts.',
+    addCredentialBody: 'This node can authorize and add multiple Claude / Codex / Grok / Jimeng / Antigravity / WorkBuddy accounts.',
     chooseProvider: 'Choose account type',
-    claudeOAuth: 'Sign in with Claude OAuth',
-    codexOAuth: 'Use device code authorization',
     claudeOAuthTitle: 'Claude OAuth authorization',
     claudeOAuthBody: 'Authorize in Claude, then paste the returned URL or code here.',
     openClaudeAuthorize: 'Authorize on Claude.ai',
@@ -166,12 +164,10 @@ const messages = {
     deviceCodePopupBlocked: 'The authorization window could not open. Allow pop-ups and click Authorize in ChatGPT again.',
     deviceCodeLabel: 'Code to enter on the ChatGPT page',
     deviceCodeHint: 'When ChatGPT asks for the code shown in your terminal, use this code.',
-    grokOAuth: 'Use device code authorization',
     grokDeviceCodeBody: 'Click to generate a device code and open the Grok authorization page.',
     startGrokDeviceCode: 'Authorize in Grok',
     grokDeviceCodeLabel: 'Code to enter on the Grok page',
     grokDeviceCodeHint: 'When Grok asks for the code shown in your terminal, use this code.',
-    jimengOAuth: 'Use device code authorization',
     jimengOAuthTitle: 'Jimeng account authorization',
     jimengOAuthBody: 'Authorize through the Jimeng CLI installed on this node.',
     startJimengAuthorization: 'Authorize in Jimeng',
@@ -198,11 +194,13 @@ const messages = {
       'Authorize a paid Google AI Pro account. Wokey verifies the Cloud Code project and disables prompt data collection before saving.',
     antigravityAuthorize: 'Authorize with Google',
     antigravityCopyLink: 'Copy link',
-    antigravityAuthorizationCodePlaceholder: 'Paste callback URL or code...',
-    antigravitySubmit: 'Submit',
-    antigravityAuthorizationCodeRequired: 'Paste the callback URL or code first.',
-    antigravityCredentialAuthorized: 'Antigravity credential authorized and saved.',
     antigravityCredentialAuthorizedToast: 'Google Antigravity credential authorized.',
+    antigravityBrowserOpened: 'Google authorization opened. Complete it in the browser; this page will update automatically.',
+    workbuddyOAuthTitle: 'WorkBuddy OAuth authorization',
+    workbuddyOAuthBody: 'Authorize a WorkBuddy account in the browser. This page will update automatically after approval.',
+    workbuddyAuthorize: 'Authorize in WorkBuddy',
+    workbuddyBrowserOpened: 'WorkBuddy authorization opened. Complete it in the browser; this page will update automatically.',
+    workbuddyCredentialAuthorizedToast: 'WorkBuddy credential authorized and saved on Platform.',
     copyDeviceCode: 'Copy device code',
     deviceCodeStartFirst: 'Generate a device code first.',
     deviceCodeOpened:
@@ -413,10 +411,8 @@ const messages = {
     fix: '处理',
     startClaudeOAuth: '请在下方手动添加区域开始 Claude OAuth。',
     addCredentialTitle: '手动添加授权凭证（推荐，适合自用与共享）',
-    addCredentialBody: '节点可以授权添加多个不同 Claude / Codex / Grok / 即梦账号',
+    addCredentialBody: '节点可以授权添加多个不同 Claude / Codex / Grok / 即梦 / Antigravity / WorkBuddy 账号',
     chooseProvider: '选择账号类型',
-    claudeOAuth: '使用 Claude OAuth 登录',
-    codexOAuth: '使用设备码授权',
     claudeOAuthTitle: 'Claude OAuth 授权',
     claudeOAuthBody: '在 Claude 完成授权后，把返回的 URL 或授权码粘贴到这里提交。',
     openClaudeAuthorize: '在 Claude.ai 授权',
@@ -451,12 +447,10 @@ const messages = {
     deviceCodePopupBlocked: '未能打开授权窗口。请允许浏览器弹出窗口，再点击「去 ChatGPT 授权」。',
     deviceCodeLabel: 'ChatGPT 页面要输入的 9 位代码',
     deviceCodeHint: 'ChatGPT 页面提示“终端上显示的代码”时，请使用这里的代码。',
-    grokOAuth: '使用设备码授权',
     grokDeviceCodeBody: '点击后会生成设备码并打开 Grok 授权页。',
     startGrokDeviceCode: '去 Grok 授权',
     grokDeviceCodeLabel: 'Grok 页面要输入的代码',
     grokDeviceCodeHint: 'Grok 页面提示“终端上显示的代码”时，请使用这里的代码。',
-    jimengOAuth: '使用设备码授权',
     jimengOAuthTitle: '即梦账号授权',
     jimengOAuthBody: '通过当前节点安装的即梦 CLI 完成授权。',
     startJimengAuthorization: '去即梦授权',
@@ -481,11 +475,13 @@ const messages = {
     antigravityOAuthBody: '授权付费 Google AI Pro 账号。Wokey 会验证 Cloud Code 项目，并在保存前关闭提示词数据收集。',
     antigravityAuthorize: '使用 Google 授权',
     antigravityCopyLink: '复制链接',
-    antigravityAuthorizationCodePlaceholder: '粘贴回调 URL 或授权码...',
-    antigravitySubmit: '提交',
-    antigravityAuthorizationCodeRequired: '请先粘贴回调 URL 或授权码。',
-    antigravityCredentialAuthorized: 'Antigravity 凭证已授权并保存。',
     antigravityCredentialAuthorizedToast: 'Google Antigravity 凭证已授权。',
+    antigravityBrowserOpened: 'Google 授权页面已打开，完成授权后本页会自动更新。',
+    workbuddyOAuthTitle: 'WorkBuddy OAuth 授权',
+    workbuddyOAuthBody: '在浏览器中授权 WorkBuddy 账号，完成后本页会自动更新。',
+    workbuddyAuthorize: '在 WorkBuddy 授权',
+    workbuddyBrowserOpened: 'WorkBuddy 授权页面已打开，完成授权后本页会自动更新。',
+    workbuddyCredentialAuthorizedToast: 'WorkBuddy 凭证已授权并保存到 Platform。',
     copyDeviceCode: '复制设备码',
     deviceCodeStartFirst: '请先点击上方按钮生成设备码。',
     deviceCodeOpened:
@@ -600,6 +596,11 @@ let devicePollRunId = 0;
 let xaiStatusWatchTimer = null;
 let xaiStatusWatchRunId = 0;
 let activeAntigravityOAuth = null;
+let antigravityBrowserStatusTimer = null;
+let antigravityBrowserStatusRunId = 0;
+let activeWorkBuddyOAuth = null;
+let workbuddyPollTimer = null;
+let workbuddyPollRunId = 0;
 let jimengPollTimer = null;
 let jimengPollRunId = 0;
 let lastCredentialScanAt = null;
@@ -1027,7 +1028,6 @@ async function refreshStatus(autoScan = true) {
   renderDynamicMeta();
   renderJimengAvailability();
   renderXaiAuthorizationStatus(statusState.xai?.deviceAuthorization);
-  if (isBound) ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
   if (isBound && autoScan) runBoundPageAuthScan(true).catch(() => undefined);
   if (!isBound && statusState.binding?.serverStatus === 'invalid')
     setToast('unboundResult', t('nodeBindingExpired'), 'error');
@@ -1923,7 +1923,7 @@ function vendorLabel(vendor) {
 
 function selectProvider(provider) {
   activeProvider = provider;
-  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3, antigravity: 4 };
+  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3, antigravity: 4, workbuddy: 5 };
   document.querySelectorAll('.provider-option').forEach((item, index) => {
     const selected = index === (labels[provider] || 0);
     item.classList.toggle('selected', selected);
@@ -1934,24 +1934,130 @@ function selectProvider(provider) {
   document.getElementById('xaiAuthPanel')?.classList.toggle('hidden', provider !== 'grok');
   document.getElementById('jimengAuthPanel')?.classList.toggle('hidden', provider !== 'jimeng');
   document.getElementById('antigravityAuthPanel')?.classList.toggle('hidden', provider !== 'antigravity');
+  document.getElementById('workbuddyAuthPanel')?.classList.toggle('hidden', provider !== 'workbuddy');
   document.getElementById('advancedOAuthOptions')?.classList.toggle('hidden', provider === 'jimeng');
   const advanced = document.getElementById('advancedOAuthOptions');
   if (advanced) advanced.style.display = provider === 'jimeng' ? 'none' : '';
-  if (provider === 'claude')
-    ensureClaudeOAuthStart().catch((error) => setToast('oauthResult', formatApiError(error), 'error'));
   if (provider === 'jimeng') renderJimengAvailability();
 }
 
 async function startAntigravityOAuth() {
   try {
-    const flow = await api('/api/oauth/antigravity/start', { method: 'POST', body: '{}' });
+    const flow = await api('/api/oauth/antigravity/browser/start', { method: 'POST', body: '{}' });
     activeAntigravityOAuth = flow;
     const link = flow.authorizationUrl;
     window.open(link, 'wokeyAntigravityOAuth');
-    setToast('oauthResult', 'Google authorization link opened. Return here and paste the callback URL.', 'success');
+    setToast('oauthResult', t('antigravityBrowserOpened'), 'success');
+    watchAntigravityBrowserStatus();
   } catch (error) {
     setToast('oauthResult', formatApiError(error), 'error');
   }
+}
+
+function stopAntigravityBrowserStatusWatch() {
+  if (antigravityBrowserStatusTimer) clearTimeout(antigravityBrowserStatusTimer);
+  antigravityBrowserStatusTimer = null;
+  antigravityBrowserStatusRunId += 1;
+}
+
+function watchAntigravityBrowserStatus() {
+  stopAntigravityBrowserStatusWatch();
+  const runId = antigravityBrowserStatusRunId;
+  let failures = 0;
+  const poll = async () => {
+    if (runId !== antigravityBrowserStatusRunId) return;
+    try {
+      const status = await api('/api/oauth/antigravity/browser/status');
+      if (runId !== antigravityBrowserStatusRunId) return;
+      failures = 0;
+      if (status.status === 'succeeded') {
+        stopAntigravityBrowserStatusWatch();
+        activeAntigravityOAuth = null;
+        setToast('oauthResult', t('antigravityCredentialAuthorizedToast'), 'success');
+        await refreshStatus(false);
+        await loadCredentials(false);
+        return;
+      }
+      if (status.status === 'failed') {
+        stopAntigravityBrowserStatusWatch();
+        setToast('oauthResult', formatApiError({ message: status.error || 'antigravity_browser_oauth_failed' }), 'error');
+        return;
+      }
+    } catch (error) {
+      failures += 1;
+      if (failures >= 5) {
+        stopAntigravityBrowserStatusWatch();
+        setToast('oauthResult', formatApiError(error), 'error');
+        return;
+      }
+    }
+    antigravityBrowserStatusTimer = setTimeout(poll, 1000);
+  };
+  void poll();
+}
+
+async function startWorkBuddyOAuth() {
+  stopWorkBuddyPolling();
+  const authWindow = window.open('about:blank', 'wokeyWorkBuddyAuth');
+  try {
+    const flow = await api('/api/oauth/workbuddy/start', { method: 'POST', body: '{}' });
+    activeWorkBuddyOAuth = flow;
+    if (authWindow) {
+      authWindow.location.href = flow.authorizationUrl;
+      authWindow.focus();
+    }
+    setToast('oauthResult', t('workbuddyBrowserOpened'), 'success');
+    startWorkBuddyPolling(flow);
+  } catch (error) {
+    if (authWindow && !authWindow.closed) authWindow.close();
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+function stopWorkBuddyPolling() {
+  if (workbuddyPollTimer) clearTimeout(workbuddyPollTimer);
+  workbuddyPollTimer = null;
+  workbuddyPollRunId += 1;
+}
+
+function startWorkBuddyPolling(flow) {
+  stopWorkBuddyPolling();
+  const runId = workbuddyPollRunId;
+  const poll = async () => {
+    if (runId !== workbuddyPollRunId || !activeWorkBuddyOAuth) return;
+    try {
+      const result = await api('/api/oauth/workbuddy/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: flow.flowId }),
+      });
+      if (runId !== workbuddyPollRunId) return;
+      if (result.status === 'pending') {
+        workbuddyPollTimer = setTimeout(poll, 2000);
+        return;
+      }
+      if (result.status === 'expired') {
+        stopWorkBuddyPolling();
+        activeWorkBuddyOAuth = null;
+        setToast('oauthResult', t('deviceAuthorizationExpired'), 'error');
+        return;
+      }
+      if (result.status !== 'succeeded') {
+        workbuddyPollTimer = setTimeout(poll, 2000);
+        return;
+      }
+      stopWorkBuddyPolling();
+      activeWorkBuddyOAuth = null;
+      setToast('oauthResult', t('workbuddyCredentialAuthorizedToast'), 'success');
+      await refreshStatus(false);
+      await loadCredentials(false);
+    } catch (error) {
+      if (runId !== workbuddyPollRunId) return;
+      stopWorkBuddyPolling();
+      activeWorkBuddyOAuth = null;
+      setToast('oauthResult', formatApiError(error), 'error');
+    }
+  };
+  workbuddyPollTimer = setTimeout(poll, 1500);
 }
 
 async function copyAntigravityAuthorizationLink() {
@@ -1959,22 +2065,6 @@ async function copyAntigravityAuthorizationLink() {
   if (activeAntigravityOAuth?.authorizationUrl) {
     const copied = await copyTextToClipboard(activeAntigravityOAuth.authorizationUrl);
     setToast('oauthResult', copied ? 'Authorization link copied.' : 'Copy failed; use the opened Google window.', copied ? 'success' : 'error');
-  }
-}
-
-async function submitAntigravityAuthorizationCode() {
-  const input = document.getElementById('antigravityAuthorizationCodeInput');
-  const parsed = parseAuthorizationCodeInput(input?.value);
-  if (!parsed?.code) return setToast('antigravityAuthorizationCodeResult', t('antigravityAuthorizationCodeRequired'), 'error');
-  try {
-    const result = await api('/api/oauth/antigravity/exchange', {
-      method: 'POST',
-      body: JSON.stringify({ code: parsed.code, state: parsed.state || activeAntigravityOAuth?.state }),
-    });
-    setToast('antigravityAuthorizationCodeResult', result?.authorization?.message || t('antigravityCredentialAuthorized'), 'success');
-    setToast('oauthResult', t('antigravityCredentialAuthorizedToast'), 'success');
-  } catch (error) {
-    setToast('antigravityAuthorizationCodeResult', formatApiError(error), 'error');
   }
 }
 
@@ -2681,11 +2771,11 @@ Object.assign(window, {
   showBindingHelp,
   startClaudeOAuth,
   startAntigravityOAuth,
+  startWorkBuddyOAuth,
   startCodexDevice,
   startJimengAuthorization,
   startXaiDevice,
   submitClaudeAuthorizationCode,
-  submitAntigravityAuthorizationCode,
   submitManualOAuthToken,
   toggleSettingsMenu,
   toggleLanguageMenu,

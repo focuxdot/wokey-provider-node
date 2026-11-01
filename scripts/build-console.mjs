@@ -45,6 +45,8 @@ function replaceOnce(text, needle, replacement) {
 
 let out = replaceOnce(html, '<link rel="stylesheet" href="./styles.css">', `<style>\n${safeCss}\n</style>`);
 out = replaceOnce(out, '<script src="./app.js"></script>', `<script>${js}</script>`);
+const workbuddyIcon = readFileSync(join(srcDir, 'workbuddy-icon.png')).toString('base64');
+out = out.replace('src="./workbuddy-icon.png"', `src="data:image/png;base64,${workbuddyIcon}"`);
 if (!out.includes('__WOKEY_CSRF_JSON__')) throw new Error('build-console: CSRF placeholder missing from output');
 
 mkdirSync(outDir, { recursive: true });

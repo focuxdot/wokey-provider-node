@@ -459,43 +459,28 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 4p
 .step-title { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 
 /* ── Provider tabs ── */
-/* 桌面 4 列并排，窄屏折为 2 列；container-type 让下方容器查询按这一行的实际宽度决策。 */
-.provider-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: end; border-bottom: 1px solid var(--accent-line); container-type: inline-size; }
+/* 单行胶囊：宽度随内容，厂商变多时自然换行；下方面板是独立卡片，不与选中项相连。 */
+.provider-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .provider-option {
-  position: relative;
-  min-height: 64px;
-  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  min-height: 40px;
+  border-radius: var(--radius-pill);
   border: 1px solid var(--outline-variant);
-  border-bottom: 0;
   background: var(--surface-container-lowest);
   color: var(--on-surface-variant);
-  padding: 10px 16px 12px;
-  display: flex;
+  padding: 0 16px 0 12px;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
-  text-align: left;
-  box-shadow: none;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
   transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
 }
-.provider-icon { width: 22px; height: 22px; flex: none; color: var(--on-surface-variant); opacity: .9; }
-.provider-icon.claude-icon { color: #c96442; opacity: 1; }
-.provider-icon.codex-icon { color: var(--on-surface); }
-.provider-copy { min-width: 0; display: grid; gap: 2px; }
-.provider-option b { color: var(--on-surface); font-size: 16px; line-height: 1.15; }
-.provider-copy span { font-size: 11px; line-height: 1.25; }
-.provider-option:hover { background: var(--surface-variant); color: var(--on-surface); }
-.provider-option.selected { z-index: 1; border-color: var(--accent-line); border-bottom-color: var(--primary-soft); background: var(--primary-soft); color: var(--primary); }
-.provider-option.selected::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--primary-soft); }
-.provider-option.selected b { color: var(--primary); }
-/* 三列一行放不下副标题时(容器宽度阈值),隐藏副标题,只留图标+标题,保证三个仍并排一行。 */
-@container (max-width: 560px) {
-  .provider-copy span { display: none; }
-  .provider-option { min-height: 52px; padding: 8px 12px; gap: 8px; }
-  .provider-option b { font-size: 15px; }
-}
-.provider-option.selected .provider-icon { color: var(--primary); opacity: 1; }
-.provider-tabs + .auth-options { margin-top: -1px; }
+.provider-icon { width: 18px; height: 18px; flex: none; }
+.provider-icon.workbuddy-icon { border-radius: 5px; object-fit: cover; }
+.provider-option:hover { border-color: var(--accent-line); color: var(--on-surface); }
+.provider-option.selected { border-color: var(--primary); background: var(--primary-soft); color: var(--primary); }
 
 /* ── Auth options ── */
 .auth-options { display: flex; flex-direction: column; gap: 14px; }
@@ -505,7 +490,6 @@ input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 4p
 .auth-option.hidden { display: none; }
 .auth-option.compact { margin-top: 10px; }
 .auth-option.primary { background: var(--primary-soft); border-color: var(--accent-line); }
-.provider-panel .auth-option.primary { border-top-left-radius: 0; border-top-right-radius: 0; }
 .auth-option.primary .primary-btn { background: var(--primary); }
 .auth-option.primary .primary-btn:hover { background: var(--primary-press); }
 .advanced-oauth { border-top: 1px solid var(--outline-variant); padding-top: 12px; }
@@ -579,9 +563,6 @@ label { display: grid; gap: 6px; color: var(--on-surface-variant); font-size: 12
   main { width: min(100vw - 28px, 860px); padding-top: 32px; }
   .bottom-bar { min-height: 56px; }
   .credential-grid { grid-template-columns: 1fr; }
-  .provider-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
-  .provider-option { padding: 10px 8px 12px; gap: 7px; }
-  .provider-icon { width: 18px; height: 18px; }
   .meta-row, .section-head, .danger-card, .auth-row, .button-row { flex-direction: column; align-items: stretch; }
   .hero h1 { font-size: 36px; }
 }
