@@ -25,10 +25,17 @@ export type OfficialExitEarlyDataProtocol = 'buffered_v1';
 export type OfficialExitLifecycleProtocol = 'request_v1' | 'persistent_tunnel_v1';
 export type OfficialExitTrafficClass = 'interactive' | 'bulk';
 
+/**
+ * window_floor_v1: a credential data channel's queue budget is never split
+ * below two bulk windows, so every channel can carry a full bulk session.
+ */
+export type OfficialExitBulkChannelBudget = 'window_floor_v1';
+
 export interface OfficialExitBulkTransferCapabilities {
   minInitialWindowBytes: number;
   maxInitialWindowBytes: number;
   maxConnectionQueueBytes: number;
+  channelBudgets?: OfficialExitBulkChannelBudget[];
 }
 
 export interface ProviderTransportCapabilities {
@@ -297,6 +304,7 @@ export interface PlatformProviderReady {
     bulkTransfer?: {
       initialWindowBytes: number;
       connectionQueueBudgetBytes: number;
+      channelBudget?: OfficialExitBulkChannelBudget;
     };
   };
   credentialDataChannels?: PlatformCredentialDataChannelPlan;

@@ -237,7 +237,7 @@ export class ProviderOfficialExitTunnelManager {
     ) return;
     session.webSocketBytesIn += wireBytes;
     session.outboundCredit += frame.creditBytes;
-    if (session.outboundCredit > 16 * 1024 * 1024) {
+    if (session.outboundCredit > OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES) {
       this.sendErrorAndClose(frame.sessionId, session, 'official_exit_invalid_window_update');
       return;
     }

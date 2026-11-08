@@ -5,10 +5,12 @@ export const OFFICIAL_EXIT_BINARY_MAX_SESSION_ID_BYTES = 128;
 export const OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES = 64 * 1024;
 export const OFFICIAL_EXIT_BINARY_INITIAL_WINDOW_BYTES = 256 * 1024;
 export const OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES = 1024 * 1024;
-export const OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES = 4 * 1024 * 1024;
+// Windows above 4 MiB matter on long paths: a session can send at most one
+// window per round trip, and 4 MiB over 300 ms is about 13 MB/s.
+export const OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES = 16 * 1024 * 1024;
 export const OFFICIAL_EXIT_BULK_DEFAULT_INITIAL_WINDOW_BYTES =
   OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES;
-export const OFFICIAL_EXIT_DEFAULT_CONNECTION_QUEUE_BUDGET_BYTES = 16 * 1024 * 1024;
+export const OFFICIAL_EXIT_DEFAULT_CONNECTION_QUEUE_BUDGET_BYTES = 64 * 1024 * 1024;
 // Legacy JSON/base64 data frames and control messages are larger than one
 // binary payload, but should never need ws's 100 MiB default message allowance.
 export const OFFICIAL_EXIT_WEBSOCKET_MAX_MESSAGE_BYTES = 1024 * 1024;

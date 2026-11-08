@@ -59,7 +59,7 @@ vi.mock('ws', () => ({ default: FakeWebSocket }));
 
 describe('ProviderBridge reconnect policy', () => {
   it('returns only a locally valid negotiated bulk queue budget', () => {
-    const ready = (connectionQueueBudgetBytes: number) =>
+    const ready = (connectionQueueBudgetBytes: number, channelBudget?: 'window_floor_v1') =>
       ({
         type: 'platform.ready',
         nodeId: 'node_123',
@@ -68,15 +68,17 @@ describe('ProviderBridge reconnect policy', () => {
           bulkTransfer: {
             initialWindowBytes: 1024 * 1024,
             connectionQueueBudgetBytes,
+            ...(channelBudget ? { channelBudget } : {}),
           },
         },
       }) as const;
 
-    expect(selectedOfficialExitBulkTransfer(ready(16 * 1024 * 1024), 'binary_v1')).toEqual({
+    expect(selectedOfficialExitBulkTransfer(ready(64 * 1024 * 1024, 'window_floor_v1'), 'binary_v1')).toEqual({
       bulkInitialWindowBytes: 1024 * 1024,
-      connectionQueueBudgetBytes: 16 * 1024 * 1024,
+      connectionQueueBudgetBytes: 64 * 1024 * 1024,
+      channelBudget: 'window_floor_v1',
     });
-    expect(selectedOfficialExitBulkTransfer(ready(16 * 1024 * 1024 + 1), 'binary_v1')).toBeUndefined();
+    expect(selectedOfficialExitBulkTransfer(ready(64 * 1024 * 1024 + 1), 'binary_v1')).toBeUndefined();
     expect(selectedOfficialExitBulkTransfer(ready(1024), 'binary_v1')).toBeUndefined();
   });
 
@@ -425,7 +427,8 @@ describe('ProviderBridge endpoint failover', () => {
           officialExitLifecycleProtocols: ['request_v1', 'persistent_tunnel_v1'],
           officialExitBulkTransfer: {
             minInitialWindowBytes: 1024 * 1024,
-            maxInitialWindowBytes: 4 * 1024 * 1024,
+            maxInitialWindowBytes: 16 * 1024 * 1024,
+            channelBudgets: ['window_floor_v1'],
           },
         },
       });
@@ -562,9 +565,65 @@ describe('ProviderBridge endpoint failover', () => {
       ).credentialDataChannels.channels.values()]
         .map((channel) => channel.scheduler.maxQueuedBytes);
       expect(channelQueueBudgets).toEqual([
-        Math.floor((16 * 1024 * 1024) / 3),
-        Math.floor((16 * 1024 * 1024) / 3),
-        Math.floor((16 * 1024 * 1024) / 3),
+        Math.floor((64 * 1024 * 1024) / 3),
+        Math.floor((64 * 1024 * 1024) / 3),
+        Math.floor((64 * 1024 * 1024) / 3),
+      ]);
+
+      // With the window floor negotiated, no channel's share drops below two bulk windows.
+      control.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({
+            type: 'platform.ready',
+            nodeId: 'node_123',
+            transport: {
+              officialExitDataProtocol: 'binary_v1',
+              flowControl: 'credit_v1',
+              initialWindowBytes: 256 * 1024,
+              maxBinaryFrameBytes: 64 * 1024,
+              bulkTransfer: {
+                initialWindowBytes: 16 * 1024 * 1024,
+                connectionQueueBudgetBytes: 64 * 1024 * 1024,
+                channelBudget: 'window_floor_v1',
+              },
+            },
+            credentialDataChannels: {
+              protocolVersion: 1,
+              epochId: 'epoch_1',
+              revision: 2,
+              connectionToken: 'epoch_token',
+              credentialBindingIds: ['credential_a', 'credential_b', 'credential_c'],
+            },
+          }),
+        ),
+        false,
+      );
+      await Promise.resolve();
+      const flooredChannels = [
+        ...(
+          bridge as unknown as {
+            credentialDataChannels: {
+              channels: Map<
+                string,
+                {
+                  scheduler: { maxQueuedBytes: number };
+                  tunnels: { negotiatedBulkInitialWindowBytes?: number };
+                }
+              >;
+            };
+          }
+        ).credentialDataChannels.channels.values(),
+      ];
+      expect(flooredChannels.map((channel) => channel.scheduler.maxQueuedBytes)).toEqual([
+        32 * 1024 * 1024,
+        32 * 1024 * 1024,
+        32 * 1024 * 1024,
+      ]);
+      expect(flooredChannels.map((channel) => channel.tunnels.negotiatedBulkInitialWindowBytes)).toEqual([
+        16 * 1024 * 1024,
+        16 * 1024 * 1024,
+        16 * 1024 * 1024,
       ]);
 
       fakeSockets[2].emit('close', 1006, Buffer.alloc(0));

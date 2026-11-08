@@ -43,6 +43,7 @@ import type {
   ProviderHeartbeat,
   ProviderHello,
   ProviderUpgradeStatus,
+  OfficialExitBulkChannelBudget,
 } from '../shared/protocol.js';
 import {
   ANTIGRAVITY_BROWSER_AUTH_CONTROL_PROTOCOL_VERSION,
@@ -647,7 +648,13 @@ class ProviderCredentialDataChannelPool {
     const channelCount = this.plan?.mode === 'on_demand'
       ? Math.max(1, this.channels.size)
       : Math.max(1, this.plan?.credentialBindingIds.length ?? 1);
-    return Math.max(1, Math.floor(totalBudget / channelCount));
+    // A budget is a ceiling on queued bytes, not memory held per channel. Split
+    // evenly, a node with many credentials left each channel too little for any
+    // bulk session; most channels are idle at any moment.
+    const floor = this.bulkTransfer?.channelBudget === 'window_floor_v1'
+      ? 2 * this.bulkTransfer.bulkInitialWindowBytes
+      : 0;
+    return Math.max(1, floor, Math.floor(totalBudget / channelCount));
   }
 
   private channelBulkTransfer(): SelectedOfficialExitBulkTransfer | undefined {
@@ -1138,6 +1145,7 @@ export class ProviderBridge {
           minInitialWindowBytes: OFFICIAL_EXIT_BULK_MIN_INITIAL_WINDOW_BYTES,
           maxInitialWindowBytes: OFFICIAL_EXIT_BULK_MAX_INITIAL_WINDOW_BYTES,
           maxConnectionQueueBytes: PROVIDER_WS_SEND_QUEUE_BUDGET_BYTES,
+          channelBudgets: ['window_floor_v1'],
         },
         flowControl: ['credit_v1'],
         maxBinaryFrameBytes: OFFICIAL_EXIT_BINARY_MAX_PAYLOAD_BYTES,
@@ -1590,6 +1598,7 @@ function selectedOfficialExitEarlyDataProtocol(
 
 export interface SelectedOfficialExitBulkTransfer extends PlatformBulkTransferSelection {
   connectionQueueBudgetBytes: number;
+  channelBudget?: OfficialExitBulkChannelBudget;
 }
 
 export function selectedOfficialExitBulkTransfer(
@@ -1612,6 +1621,7 @@ export function selectedOfficialExitBulkTransfer(
   return {
     bulkInitialWindowBytes: bulkTransfer.initialWindowBytes,
     connectionQueueBudgetBytes: bulkTransfer.connectionQueueBudgetBytes,
+    ...(bulkTransfer.channelBudget === 'window_floor_v1' ? { channelBudget: bulkTransfer.channelBudget } : {}),
   };
 }
 

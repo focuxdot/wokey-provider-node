@@ -6,6 +6,15 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Changed
+- Accept bulk-transfer windows up to 16 MiB (was 4 MiB) and raise the default
+  connection queue budget to 64 MiB. A session sends at most one window per
+  round trip, so 4 MiB held a 300 ms path to about 13 MB/s.
+- Advertise `window_floor_v1`: once Platform selects it, a credential data
+  channel's queue budget is never split below two bulk windows. Splitting the
+  budget evenly across credentials left nodes with more than about twelve of
+  them no room for any bulk session.
+
 ### Added
 - Allow official exit to `opencode.ai` so OpenCode Go subscriptions can be
   hosted. Exact host only; the Platform asserts the `/zen/go/` path prefix.
