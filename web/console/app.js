@@ -196,6 +196,14 @@ const messages = {
     antigravityCopyLink: 'Copy link',
     antigravityCredentialAuthorizedToast: 'Google Antigravity credential authorized.',
     antigravityBrowserOpened: 'Google authorization opened. Complete it in the browser; this page will update automatically.',
+    devinOAuthTitle: 'Devin authorization',
+    devinOAuthBody: 'Sign in to a Devin Pro account in the browser. This page updates automatically after approval.',
+    devinAuthorize: 'Authorize with Devin',
+    devinCopyLink: 'Copy link',
+    devinCallbackHint: "Signed in on another device? After approval the browser lands on a page that cannot load. Paste that page's address here.",
+    devinSubmitCallback: 'Submit address',
+    devinCredentialAuthorizedToast: 'Devin credential authorized.',
+    devinBrowserOpened: 'Devin sign-in opened. Complete it in the browser; this page will update automatically.',
     workbuddyOAuthTitle: 'WorkBuddy OAuth authorization',
     workbuddyOAuthBody: 'Authorize a WorkBuddy account in the browser. This page will update automatically after approval.',
     workbuddyAuthorize: 'Authorize in WorkBuddy',
@@ -477,6 +485,14 @@ const messages = {
     antigravityCopyLink: '复制链接',
     antigravityCredentialAuthorizedToast: 'Google Antigravity 凭证已授权。',
     antigravityBrowserOpened: 'Google 授权页面已打开，完成授权后本页会自动更新。',
+    devinOAuthTitle: 'Devin 授权',
+    devinOAuthBody: '在浏览器里登录 Devin Pro 账号，确认后本页会自动更新。',
+    devinAuthorize: '使用 Devin 授权',
+    devinCopyLink: '复制链接',
+    devinCallbackHint: '在另一台设备上登录的？确认后浏览器会跳到一个打不开的页面，把那个页面的地址贴到这里。',
+    devinSubmitCallback: '提交地址',
+    devinCredentialAuthorizedToast: 'Devin 凭证已授权。',
+    devinBrowserOpened: 'Devin 登录页面已打开，完成授权后本页会自动更新。',
     workbuddyOAuthTitle: 'WorkBuddy OAuth 授权',
     workbuddyOAuthBody: '在浏览器中授权 WorkBuddy 账号，完成后本页会自动更新。',
     workbuddyAuthorize: '在 WorkBuddy 授权',
@@ -596,6 +612,9 @@ let devicePollRunId = 0;
 let xaiStatusWatchTimer = null;
 let xaiStatusWatchRunId = 0;
 let activeAntigravityOAuth = null;
+let activeDevinOAuth = null;
+let devinBrowserStatusTimer = null;
+let devinBrowserStatusRunId = 0;
 let antigravityBrowserStatusTimer = null;
 let antigravityBrowserStatusRunId = 0;
 let activeWorkBuddyOAuth = null;
@@ -1923,7 +1942,7 @@ function vendorLabel(vendor) {
 
 function selectProvider(provider) {
   activeProvider = provider;
-  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3, antigravity: 4, workbuddy: 5 };
+  const labels = { claude: 0, codex: 1, grok: 2, jimeng: 3, antigravity: 4, workbuddy: 5, devin: 6 };
   document.querySelectorAll('.provider-option').forEach((item, index) => {
     const selected = index === (labels[provider] || 0);
     item.classList.toggle('selected', selected);
@@ -1935,9 +1954,12 @@ function selectProvider(provider) {
   document.getElementById('jimengAuthPanel')?.classList.toggle('hidden', provider !== 'jimeng');
   document.getElementById('antigravityAuthPanel')?.classList.toggle('hidden', provider !== 'antigravity');
   document.getElementById('workbuddyAuthPanel')?.classList.toggle('hidden', provider !== 'workbuddy');
-  document.getElementById('advancedOAuthOptions')?.classList.toggle('hidden', provider === 'jimeng');
+  document.getElementById('devinAuthPanel')?.classList.toggle('hidden', provider !== 'devin');
+  // Jimeng and Devin have no OAuth token bundle to paste.
+  const noTokenPaste = provider === 'jimeng' || provider === 'devin';
+  document.getElementById('advancedOAuthOptions')?.classList.toggle('hidden', noTokenPaste);
   const advanced = document.getElementById('advancedOAuthOptions');
-  if (advanced) advanced.style.display = provider === 'jimeng' ? 'none' : '';
+  if (advanced) advanced.style.display = noTokenPaste ? 'none' : '';
   if (provider === 'jimeng') renderJimengAvailability();
 }
 
@@ -1992,6 +2014,84 @@ function watchAntigravityBrowserStatus() {
       }
     }
     antigravityBrowserStatusTimer = setTimeout(poll, 1000);
+  };
+  void poll();
+}
+
+async function startDevinOAuth() {
+  try {
+    const flow = await api('/api/oauth/devin/browser/start', { method: 'POST', body: '{}' });
+    activeDevinOAuth = flow;
+    window.open(flow.authorizationUrl, 'wokeyDevinOAuth');
+    setToast('oauthResult', t('devinBrowserOpened'), 'success');
+    watchDevinBrowserStatus();
+  } catch (error) {
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+async function copyDevinAuthorizationLink() {
+  try {
+    if (!activeDevinOAuth?.authorizationUrl) {
+      activeDevinOAuth = await api('/api/oauth/devin/browser/start', { method: 'POST', body: '{}' });
+      watchDevinBrowserStatus();
+    }
+    const copied = await copyTextToClipboard(activeDevinOAuth.authorizationUrl);
+    setToast('oauthResult', copied ? 'Authorization link copied.' : 'Copy failed.', copied ? 'success' : 'error');
+  } catch (error) {
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+async function submitDevinCallbackUrl() {
+  const input = document.getElementById('devinCallbackUrlInput');
+  try {
+    await api('/api/oauth/devin/exchange', { method: 'POST', body: JSON.stringify({ callbackUrl: input?.value || '' }) });
+    if (input) input.value = '';
+  } catch (error) {
+    setToast('oauthResult', formatApiError(error), 'error');
+  }
+}
+
+function stopDevinBrowserStatusWatch() {
+  if (devinBrowserStatusTimer) clearTimeout(devinBrowserStatusTimer);
+  devinBrowserStatusTimer = null;
+  devinBrowserStatusRunId += 1;
+}
+
+function watchDevinBrowserStatus() {
+  stopDevinBrowserStatusWatch();
+  const runId = devinBrowserStatusRunId;
+  let failures = 0;
+  const poll = async () => {
+    if (runId !== devinBrowserStatusRunId) return;
+    try {
+      const status = await api('/api/oauth/devin/browser/status');
+      if (runId !== devinBrowserStatusRunId) return;
+      failures = 0;
+      if (status.status === 'succeeded') {
+        stopDevinBrowserStatusWatch();
+        activeDevinOAuth = null;
+        setToast('oauthResult', t('devinCredentialAuthorizedToast'), 'success');
+        await refreshStatus(false);
+        await loadCredentials(false);
+        return;
+      }
+      if (status.status === 'failed' || status.status === 'idle') {
+        stopDevinBrowserStatusWatch();
+        activeDevinOAuth = null;
+        if (status.status === 'failed') setToast('oauthResult', formatApiError({ message: status.error || 'devin_browser_oauth_failed' }), 'error');
+        return;
+      }
+    } catch (error) {
+      failures += 1;
+      if (failures >= 5) {
+        stopDevinBrowserStatusWatch();
+        setToast('oauthResult', formatApiError(error), 'error');
+        return;
+      }
+    }
+    devinBrowserStatusTimer = setTimeout(poll, 1000);
   };
   void poll();
 }

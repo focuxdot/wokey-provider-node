@@ -127,6 +127,7 @@ describe('official-exit vendor defaults', () => {
       'cursor',
       'volcengine',
       'opencode',
+      'devin',
     ]);
   });
 

@@ -167,6 +167,12 @@
                   <img class="provider-icon workbuddy-icon" src="./workbuddy-icon.png" alt="" aria-hidden="true">
                   <span class="provider-name">WorkBuddy</span>
                 </button>
+                <button class="provider-option" id="devinProviderTab" type="button" role="tab" aria-selected="false" aria-controls="devinAuthPanel" onclick="selectProvider('devin')">
+                  <svg class="provider-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"></path>
+                  </svg>
+                  <span class="provider-name">Devin</span>
+                </button>
               </div>
               <div class="auth-options">
               <div class="provider-panel" id="claudeAuthPanel" role="tabpanel" aria-labelledby="claudeProviderTab">
@@ -266,6 +272,25 @@
                       <p class="muted" data-i18n="workbuddyOAuthBody">Authorize a WorkBuddy account in the browser. This page will update automatically after approval.</p>
                     </div>
                     <button class="primary-btn" type="button" onclick="startWorkBuddyOAuth()" data-i18n="workbuddyAuthorize">Authorize in WorkBuddy</button>
+                  </div>
+                </div>
+              </div>
+              <div class="provider-panel hidden" id="devinAuthPanel" role="tabpanel" aria-labelledby="devinProviderTab">
+                <div class="auth-option primary">
+                  <div class="auth-row">
+                    <div>
+                      <h4 data-i18n="devinOAuthTitle">Devin authorization</h4>
+                      <p class="muted" data-i18n="devinOAuthBody">Sign in to a Devin Pro account in the browser. This page updates automatically after approval.</p>
+                    </div>
+                    <div class="button-row">
+                      <button class="primary-btn" type="button" onclick="startDevinOAuth()" data-i18n="devinAuthorize">Authorize with Devin</button>
+                      <button class="secondary-btn" type="button" onclick="copyDevinAuthorizationLink()" data-i18n="devinCopyLink">Copy link</button>
+                    </div>
+                  </div>
+                  <p class="muted" data-i18n="devinCallbackHint">Signed in on another device? After approval the browser lands on a page that cannot load. Paste that page's address here.</p>
+                  <div class="advanced-actions">
+                    <input id="devinCallbackUrlInput" type="text" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:.../callback?state=...&code=...">
+                    <button class="secondary-btn" type="button" onclick="submitDevinCallbackUrl()" data-i18n="devinSubmitCallback">Submit address</button>
                   </div>
                 </div>
               </div>

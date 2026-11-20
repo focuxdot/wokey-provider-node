@@ -16,6 +16,13 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   them no room for any bulk session.
 
 ### Added
+- Devin browser authorization in the console: the node listens on a free
+  loopback port for the sign-in callback and hands the code to the Platform.
+  A callback URL from a browser on another machine can be pasted instead.
+- Allow official exit to `server.self-serve.windsurf.com` and `static.devin.ai`
+  so Devin subscriptions can be hosted. Exact hosts only; the Platform asserts
+  the first before sending a Devin session token, and the second serves the CLI
+  release manifest.
 - Allow official exit to `opencode.ai` so OpenCode Go subscriptions can be
   hosted. Exact host only; the Platform asserts the `/zen/go/` path prefix.
 - Report `dnsMs`, `tcpConnectMs`, `resolvedAddressCount`, `connectAttempts`

@@ -15,7 +15,8 @@ export type OfficialExitVendorId =
   | 'volcengine'
   | 'opencode'
   | 'antigravity'
-  | 'workbuddy';
+  | 'workbuddy'
+  | 'devin';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -133,6 +134,13 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // same key on /zen/v1/ silently bills per token). A domain pattern here
     // would drop a check without enabling anything the Platform dials.
     allowedHosts: ['opencode.ai'],
+  },
+  {
+    id: 'devin',
+    displayName: 'Devin',
+    // Exact hosts: inference and account status live on the first origin, and the Platform
+    // asserts it before sending a Devin session token. The second serves the CLI release manifest.
+    allowedHosts: ['server.self-serve.windsurf.com', 'static.devin.ai'],
   },
 ]);
 

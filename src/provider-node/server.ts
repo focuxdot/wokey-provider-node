@@ -228,6 +228,7 @@ type OAuthBrowserAttempt = {
 };
 let codexBrowserAttempt: OAuthBrowserAttempt | null = null;
 let antigravityBrowserAttempt: OAuthBrowserAttempt | null = null;
+let devinBrowserAttempt: OAuthBrowserAttempt | null = null;
 let codexAuthJsonSyncInFlight = false;
 let codexAuthJsonSyncTimer: NodeJS.Timeout | undefined;
 let codexAuthJsonHintUntil = 0;
@@ -1147,6 +1148,48 @@ app.post('/api/oauth/antigravity/exchange', async (request) => {
   return { ok: true, ...authorization };
 });
 
+app.post('/api/oauth/devin/browser/start', async () => {
+  await startDevinBrowserAttempt();
+  return {
+    ok: true,
+    status: devinBrowserAttempt?.status,
+    port: devinBrowserAttempt?.port,
+    flowId: devinBrowserAttempt?.flow.flowId,
+    authorizationUrl: devinBrowserAttempt?.flow.authorizationUrl,
+    redirectUri: devinBrowserAttempt?.flow.redirectUri,
+    startedAt: devinBrowserAttempt?.startedAt,
+  };
+});
+
+app.get('/api/oauth/devin/browser/status', async () => ({
+  ok: true,
+  status: devinBrowserAttempt?.status ?? 'idle',
+  port: devinBrowserAttempt?.port,
+  error: devinBrowserAttempt?.error,
+  startedAt: devinBrowserAttempt?.startedAt,
+}));
+
+app.post('/api/oauth/devin/browser/stop', async () => {
+  await closeDevinBrowserAttempt();
+  return { ok: true, status: 'idle' };
+});
+
+// The browser that signed in may be on another machine, where the redirect to this
+// node's loopback port cannot land. The user pastes that address-bar URL here instead.
+app.post('/api/oauth/devin/exchange', async (request) => {
+  const body = request.body as { callbackUrl?: string };
+  const attempt = devinBrowserAttempt;
+  if (!attempt || attempt.status !== 'pending') throw new Error('devin_oauth_start_required');
+  let callback: URL;
+  try {
+    callback = new URL(String(body.callbackUrl || '').trim());
+  } catch {
+    throw new Error('devin_callback_url_invalid');
+  }
+  await completeDevinBrowserAttempt(attempt, callback.searchParams);
+  return { ok: true, status: attempt.status };
+});
+
 let cachedConsoleHtml: string | undefined;
 
 // The console is built into dist/console/index.html by scripts/build-console.mjs.
@@ -1749,7 +1792,7 @@ function platformHttpUrl(wsUrl: string, path: string): string {
   return url.toString();
 }
 
-type PlatformOAuthVendor = 'openai' | 'anthropic' | 'xai' | 'moonshot' | 'cursor' | 'antigravity' | 'workbuddy';
+type PlatformOAuthVendor = 'openai' | 'anthropic' | 'xai' | 'moonshot' | 'cursor' | 'antigravity' | 'workbuddy' | 'devin';
 
 async function startPlatformOAuth<T = Record<string, unknown>>(
   vendor: PlatformOAuthVendor,
@@ -1771,7 +1814,7 @@ async function startPlatformOAuth<T = Record<string, unknown>>(
 }
 
 async function exchangePlatformOAuth<T = Record<string, unknown>>(
-  vendor: 'openai' | 'anthropic' | 'antigravity',
+  vendor: 'openai' | 'anthropic' | 'antigravity' | 'devin',
   flowId: string,
   body: Record<string, unknown>,
 ): Promise<T> {
@@ -2101,6 +2144,88 @@ async function createAntigravityBrowserAttempt(port: number, options: Antigravit
   });
 
   return attempt;
+}
+
+// Devin's login page redirects to the CLI's own `http://127.0.0.1:<port>/callback`, on a port
+// the CLI picks freely, so this listener takes any free port.
+async function startDevinBrowserAttempt(): Promise<void> {
+  await closeDevinBrowserAttempt();
+  const server = createServer();
+  // Listen before creating the flow so a failed bind never leaves a dangling Platform flow.
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off('listening', onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(0, '127.0.0.1');
+  });
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const redirectUri = `http://127.0.0.1:${port}/callback`;
+  let flow: PlatformOAuthStart;
+  try {
+    if (!port) throw new Error('devin_callback_port_unavailable');
+    flow = await startPlatformOAuth<PlatformOAuthStart>('devin', { flow: 'authorization_code', redirectUri });
+  } catch (error) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    throw error;
+  }
+  const attempt: OAuthBrowserAttempt = { flow, port, server, status: 'pending', startedAt: new Date().toISOString() };
+  server.on('request', (request, response) => {
+    void (async () => {
+      const requestUrl = new URL(request.url || '/', redirectUri);
+      if (requestUrl.pathname !== '/callback') {
+        response.writeHead(404).end('Not found');
+        return;
+      }
+      try {
+        await completeDevinBrowserAttempt(attempt, requestUrl.searchParams);
+        response
+          .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+          .end(htmlMessage('Devin connected', 'You can close this window and return to Wokey Node Management.', { autoCloseMs: 3_000 }));
+      } catch {
+        response
+          .writeHead(400, { 'content-type': 'text/html; charset=utf-8' })
+          .end(htmlMessage('Devin connection failed', attempt.error || 'devin_browser_oauth_failed'));
+      }
+    })();
+  });
+  devinBrowserAttempt = attempt;
+}
+
+/** Hands the callback's code to the Platform, which exchanges it through this node's egress. */
+async function completeDevinBrowserAttempt(attempt: OAuthBrowserAttempt, params: URLSearchParams): Promise<void> {
+  // The authorization code is single-use: a second callback (browser reload, pasted URL after
+  // the redirect already landed) must not spend the flow again.
+  if (attempt.status !== 'pending') {
+    if (attempt.status === 'failed') throw new Error(attempt.error || 'devin_browser_oauth_failed');
+    return;
+  }
+  try {
+    if (params.get('error')) throw new ProviderNodeError('devin_oauth_denied', 'Devin authorization was cancelled or denied.');
+    const code = params.get('code');
+    const state = params.get('state');
+    if (!code || !state || !verifyOpaqueState(state, attempt.flow.state)) throw new Error('invalid_oauth_callback');
+    await exchangePlatformOAuth('devin', attempt.flow.flowId, { code, state, redirectUri: attempt.flow.redirectUri });
+    attempt.status = 'succeeded';
+  } catch (error) {
+    attempt.status = 'failed';
+    attempt.error = error instanceof Error ? error.message : 'devin_browser_oauth_failed';
+    throw error;
+  }
+}
+
+async function closeDevinBrowserAttempt(): Promise<void> {
+  if (!devinBrowserAttempt) return;
+  const server = devinBrowserAttempt.server;
+  devinBrowserAttempt = null;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
 async function closeAntigravityBrowserAttempt(): Promise<void> {
