@@ -16,7 +16,8 @@ export type OfficialExitVendorId =
   | 'opencode'
   | 'antigravity'
   | 'workbuddy'
-  | 'devin';
+  | 'devin'
+  | 'vertex';
 
 export interface OfficialExitVendorConfig {
   id: OfficialExitVendorId;
@@ -141,6 +142,13 @@ export const OFFICIAL_EXIT_VENDOR_CONFIGS: readonly OfficialExitVendorConfig[] =
     // Exact hosts: inference and account status live on the first origin, and the Platform
     // asserts it before sending a Devin session token. The second serves the CLI release manifest.
     allowedHosts: ['server.self-serve.windsurf.com', 'static.devin.ai'],
+  },
+  {
+    id: 'vertex',
+    displayName: 'Google Vertex AI',
+    // Exact host: inference and key authorization (countTokens) both use the
+    // global endpoint. Regional `*-aiplatform` hosts are not dialed.
+    allowedHosts: ['aiplatform.googleapis.com'],
   },
 ]);
 

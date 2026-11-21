@@ -16,6 +16,8 @@ project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   them no room for any bulk session.
 
 ### Added
+- Allow official exit to `aiplatform.googleapis.com` so Google Vertex AI API
+  keys can be hosted. Exact host only.
 - Devin browser authorization in the console: the node listens on a free
   loopback port for the sign-in callback and hands the code to the Platform.
   A callback URL from a browser on another machine can be pasted instead.

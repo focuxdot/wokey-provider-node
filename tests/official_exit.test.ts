@@ -128,6 +128,7 @@ describe('official-exit vendor defaults', () => {
       'volcengine',
       'opencode',
       'devin',
+      'vertex',
     ]);
   });
 
